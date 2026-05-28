@@ -1,0 +1,792 @@
+:root {
+    --page-bg: #eef3f8;
+    --paper: #ffffff;
+    --ink: #19344d;
+    --muted: #6b7f92;
+    --line: #d8e2ec;
+    --line-strong: #b7c8da;
+    --accent: #0b4a8b;
+    --accent-rgb: 11, 74, 139;
+    --accent-soft: #eef4fb;
+    --header-fill: #f4f8fc;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+    background:
+        radial-gradient(circle at top left, rgba(var(--accent-rgb), 0.1), transparent 30%),
+        linear-gradient(180deg, #fbfdff 0%, var(--page-bg) 100%);
+    color: var(--ink);
+    font-family: "Segoe UI", Arial, Helvetica, sans-serif;
+}
+
+body {
+    padding: 18px;
+}
+
+.print-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    width: min(210mm, 100%);
+    margin: 0 auto 10px;
+}
+
+.print-actions button {
+    border: 1px solid var(--line-strong);
+    background: #ffffff;
+    color: var(--ink);
+    padding: 9px 14px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    border-radius: 999px;
+    cursor: pointer;
+}
+
+.sheet-page {
+    width: min(210mm, 100%);
+    min-height: 297mm;
+    margin: 0 auto;
+    padding: 7mm;
+    background: var(--paper);
+    box-shadow: 0 20px 44px rgba(11, 74, 139, 0.08);
+    display: grid;
+    gap: 3mm;
+}
+
+.sheet-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 42mm;
+    gap: 3mm;
+    align-items: stretch;
+}
+
+.brand-block,
+.sheet-id-card,
+.panel,
+.signature-panel {
+    border: 1px solid var(--line);
+    background: #ffffff;
+}
+
+.brand-block {
+    display: grid;
+    grid-template-columns: 30mm minmax(0, 1fr);
+    gap: 4mm;
+    align-items: center;
+    padding: 4mm;
+    background: linear-gradient(180deg, #ffffff 0%, var(--header-fill) 100%);
+}
+
+.sheet-logo {
+    width: 100%;
+    max-width: 30mm;
+    height: auto;
+    object-fit: contain;
+}
+
+.brand-copy {
+    display: grid;
+    gap: 1mm;
+}
+
+.sheet-kicker {
+    margin: 0;
+    color: var(--accent);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    font-weight: 700;
+}
+
+.brand-copy h1 {
+    margin: 0;
+    font-size: 20px;
+    line-height: 1.05;
+}
+
+.brand-copy span {
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.sheet-id-card {
+    display: grid;
+    align-content: center;
+    gap: 1.5mm;
+    padding: 4mm;
+    background: linear-gradient(160deg, var(--accent) 0%, #093868 100%);
+    color: #ffffff;
+}
+
+.id-label {
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    opacity: 0.9;
+}
+
+.sheet-id-card strong {
+    font-size: 20px;
+    line-height: 1;
+}
+
+.sheet-id-card small {
+    font-size: 10px;
+    opacity: 0.92;
+}
+
+.summary-grid,
+.selection-grid,
+.signature-strip {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 3mm;
+}
+
+.summary-grid {
+    grid-template-columns: 1fr;
+}
+
+.panel {
+    display: grid;
+    gap: 0;
+}
+
+.panel-title {
+    padding: 2.2mm 3mm;
+    border-bottom: 1px solid var(--line);
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.detail-grid {
+    display: grid;
+    gap: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.info-table {
+    table-layout: fixed;
+}
+
+.info-table th,
+.info-table td {
+    padding: 2.1mm 2.8mm;
+    vertical-align: middle;
+    font-size: 10px;
+    line-height: 1.15;
+}
+
+.info-table th {
+    width: 12%;
+    background: #f6f9fd;
+    color: var(--accent);
+    font-size: 8.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.info-table td {
+    background: #ffffff;
+    font-weight: 600;
+}
+
+.detail-item {
+    padding: 2.2mm 3mm;
+    border-right: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    min-height: 13mm;
+    display: grid;
+    gap: 0.6mm;
+    align-content: start;
+}
+
+.detail-item:nth-child(2n) {
+    border-right: none;
+}
+
+.detail-item.wide {
+    grid-column: 1 / -1;
+    border-right: none;
+}
+
+.detail-item span {
+    color: var(--muted);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.detail-item strong,
+.grid-table td,
+.check-item span:last-child,
+.signature-meta strong,
+.signature-meta span,
+.lined-area {
+    overflow-wrap: anywhere;
+}
+
+.detail-item strong {
+    font-size: 11.5px;
+    line-height: 1.2;
+}
+
+.check-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.compact-checks {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.check-item {
+    min-height: 8.8mm;
+    padding: 1.9mm 2.4mm;
+    border-right: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    gap: 2mm;
+    font-size: 10.5px;
+}
+
+.check-item:nth-child(2n) {
+    border-right: none;
+}
+
+.compact-checks .check-item:nth-child(2n) {
+    border-right: 1px solid var(--line);
+}
+
+.compact-checks .check-item:nth-child(3n) {
+    border-right: none;
+}
+
+.check-item.is-active {
+    background: rgba(var(--accent-rgb), 0.07);
+    font-weight: 700;
+}
+
+.check-box {
+    width: 4.2mm;
+    height: 4.2mm;
+    border: 1px solid var(--line-strong);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #ffffff;
+    color: var(--accent);
+    font-size: 9px;
+    flex: 0 0 auto;
+}
+
+.check-box.is-checked::before {
+    content: "X";
+    font-weight: 800;
+    line-height: 1;
+}
+
+.selected-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.8mm;
+    padding: 2.2mm;
+}
+
+.selected-grid-compact {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.selected-item,
+.selected-empty {
+    min-height: 9mm;
+    border: 1px solid var(--line);
+    background: #fbfcff;
+    display: flex;
+    align-items: center;
+    padding: 2.2mm 2.8mm;
+    font-size: 10px;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+}
+
+.selected-item {
+    border-left: 3px solid var(--accent);
+    background: rgba(var(--accent-rgb), 0.07);
+    font-weight: 700;
+}
+
+.selected-empty {
+    grid-column: 1 / -1;
+    color: var(--muted);
+    font-style: italic;
+}
+
+.lined-area {
+    min-height: 16mm;
+    padding: 2.8mm 3.2mm;
+    font-size: 11px;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 250, 254, 0.98)),
+        repeating-linear-gradient(
+            0deg,
+            transparent 0,
+            transparent 8.2mm,
+            rgba(var(--accent-rgb), 0.06) 8.2mm,
+            rgba(var(--accent-rgb), 0.06) 8.45mm
+        );
+}
+
+.lined-area-short {
+    min-height: 8mm;
+}
+
+.lined-area-tall {
+    min-height: 10mm;
+}
+
+.lined-area-short.is-empty {
+    min-height: 14mm;
+}
+
+.lined-area-tall.is-empty {
+    min-height: 36mm;
+}
+
+.grid-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+.grid-table th,
+.grid-table td {
+    border-bottom: 1px solid var(--line);
+    border-right: 1px solid var(--line);
+    padding: 2mm 2.4mm;
+    vertical-align: top;
+    font-size: 10px;
+    line-height: 1.18;
+}
+
+.grid-table th:last-child,
+.grid-table td:last-child {
+    border-right: none;
+}
+
+.grid-table thead th {
+    background: #f7faf9;
+    color: var(--accent);
+    text-align: left;
+    font-size: 8.8px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+}
+
+.materials-table tbody td {
+    height: 6.6mm;
+}
+
+.ref-col {
+    width: 24%;
+}
+
+.qty-col {
+    width: 11%;
+}
+
+.center {
+    text-align: center;
+}
+
+.blank-row td {
+    color: transparent;
+}
+
+.empty-state-row td {
+    color: var(--muted);
+    font-style: italic;
+}
+
+.tech-lines-table td,
+.tech-lines-table th {
+    vertical-align: middle;
+}
+
+.tech-lines-table tbody td {
+    height: 7mm;
+}
+
+.signature-strip {
+    grid-template-columns: minmax(46mm, 0.72fr) minmax(0, 1.28fr);
+    align-items: stretch;
+}
+
+.signature-panel {
+    display: grid;
+    grid-template-rows: auto 30mm auto;
+}
+
+.signature-info-panel {
+    grid-template-rows: auto 1fr;
+}
+
+.signature-image {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 30mm;
+    padding: 2.6mm 3.6mm;
+    border-bottom: 1px solid var(--line);
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(246, 250, 255, 0.98)),
+        repeating-linear-gradient(
+            0deg,
+            transparent 0,
+            transparent 7.8mm,
+            rgba(var(--accent-rgb), 0.055) 7.8mm,
+            rgba(var(--accent-rgb), 0.055) 8mm
+        );
+}
+
+.signature-image img {
+    display: block;
+    width: auto;
+    height: 20mm;
+    max-width: 82%;
+    max-height: 100%;
+    object-fit: contain;
+    object-position: center center;
+    filter: contrast(1.32) saturate(0.72) brightness(0.6);
+    transform-origin: center center;
+}
+
+.signature-image span {
+    display: block;
+    width: 100%;
+    color: var(--muted);
+    font-size: 9px;
+    font-style: italic;
+}
+
+.signature-image.has-signature {
+    box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.06);
+}
+
+.signature-panel-customer .signature-meta strong {
+    font-size: 11px;
+}
+
+.signature-meta {
+    padding: 2.2mm 3mm 2.6mm;
+    display: grid;
+    gap: 0.6mm;
+}
+
+.signature-meta-info {
+    align-content: center;
+    min-height: 20mm;
+}
+
+.signature-meta strong {
+    font-size: 10px;
+}
+
+.signature-meta span {
+    font-size: 9px;
+    color: var(--muted);
+}
+
+@media (max-width: 620px) {
+    body {
+        padding: 10px;
+    }
+
+    .sheet-page {
+        width: 100%;
+        min-height: auto;
+        padding: 16px;
+    }
+
+    .sheet-header,
+    .summary-grid,
+    .selection-grid,
+    .signature-strip,
+    .brand-block {
+        grid-template-columns: 1fr;
+    }
+
+    .detail-grid,
+    .check-grid,
+    .selected-grid,
+    .selected-grid-compact {
+        grid-template-columns: 1fr;
+    }
+
+    .compact-checks {
+        grid-template-columns: 1fr;
+    }
+
+    .detail-item,
+    .check-item {
+        border-right: none;
+    }
+
+    .compact-checks .check-item:nth-child(2n) {
+        border-right: none;
+    }
+
+    .info-table th {
+        width: 24%;
+    }
+}
+
+@page {
+    size: A4;
+    margin: 7mm;
+}
+
+@media print {
+    html,
+    body {
+        background: #ffffff;
+    }
+
+    body {
+        padding: 0;
+    }
+
+    .print-actions {
+        display: none;
+    }
+
+    .sheet-page {
+        width: auto;
+        min-height: auto;
+        padding: 0;
+        box-shadow: none;
+        gap: 2.4mm;
+    }
+
+    .sheet-header,
+    .summary-grid,
+    .selection-grid,
+    .signature-strip {
+        gap: 2.4mm;
+    }
+
+    .brand-block {
+        grid-template-columns: 28mm minmax(0, 1fr);
+        gap: 3mm;
+        padding: 3mm;
+    }
+
+    .sheet-logo {
+        max-width: 28mm;
+    }
+
+    .sheet-kicker {
+        font-size: 9px;
+    }
+
+    .brand-copy {
+        gap: 1mm;
+    }
+
+    .brand-copy h1 {
+        font-size: 18px;
+    }
+
+    .brand-copy span {
+        font-size: 9px;
+    }
+
+    .sheet-id-card {
+        gap: 1.5mm;
+        padding: 3mm;
+    }
+
+    .id-label {
+        font-size: 9px;
+    }
+
+    .sheet-id-card strong {
+        font-size: 18px;
+    }
+
+    .sheet-id-card small {
+        font-size: 9px;
+    }
+
+    .panel-title {
+        padding: 2mm 2.5mm;
+        font-size: 9px;
+    }
+
+    .info-table th,
+    .info-table td {
+        padding: 1.8mm 2.2mm;
+        font-size: 8.8px;
+        line-height: 1.15;
+    }
+
+    .info-table th {
+        font-size: 7.8px;
+    }
+
+    .detail-item {
+        min-height: 10mm;
+        padding: 1.8mm 2.2mm;
+        gap: 0.6mm;
+    }
+
+    .detail-item span {
+        font-size: 8.2px;
+    }
+
+    .detail-item strong {
+        font-size: 9.4px;
+        line-height: 1.18;
+    }
+
+    .check-item {
+        min-height: 7.6mm;
+        padding: 1.6mm 2mm;
+        gap: 1.7mm;
+        font-size: 9px;
+    }
+
+    .check-item:nth-child(2n) {
+        border-right: none;
+    }
+
+    .compact-checks .check-item:nth-child(2n) {
+        border-right: 1px solid var(--line);
+    }
+
+    .compact-checks .check-item:nth-child(3n) {
+        border-right: none;
+    }
+
+    .check-box {
+        width: 3.8mm;
+        height: 3.8mm;
+        font-size: 8px;
+    }
+
+    .selected-grid,
+    .selected-grid-compact {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 1.4mm;
+        padding: 1.8mm;
+    }
+
+    .selected-item,
+    .selected-empty {
+        min-height: 6.4mm;
+        padding: 1.6mm 2mm;
+        font-size: 8.6px;
+    }
+
+    .lined-area {
+        padding: 2.1mm 2.5mm;
+        font-size: 9.4px;
+        line-height: 1.25;
+        background:
+            linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 250, 254, 0.98)),
+            repeating-linear-gradient(
+                0deg,
+                transparent 0,
+                transparent 7.1mm,
+                rgba(var(--accent-rgb), 0.06) 7.1mm,
+                rgba(var(--accent-rgb), 0.06) 7.3mm
+            );
+    }
+
+    .lined-area-short {
+        min-height: 8mm;
+    }
+
+    .lined-area-tall {
+        min-height: 10mm;
+    }
+
+    .lined-area-short.is-empty {
+        min-height: 12mm;
+    }
+
+    .lined-area-tall.is-empty {
+        min-height: 30mm;
+    }
+
+    .grid-table th,
+    .grid-table td {
+        padding: 1.6mm 2mm;
+        font-size: 8.8px;
+        line-height: 1.15;
+    }
+
+    .grid-table thead th {
+        font-size: 7.8px;
+    }
+
+    .materials-table tbody td {
+        height: 6mm;
+    }
+
+    .tech-lines-table td {
+        height: 5.6mm;
+    }
+
+    .signature-panel {
+        grid-template-rows: auto 24mm auto;
+    }
+
+    .signature-image {
+        min-height: 24mm;
+        padding: 1.8mm 2.4mm;
+    }
+
+    .signature-image img {
+        height: 16mm;
+        max-width: 82%;
+    }
+
+    .signature-meta {
+        padding: 1.8mm 2.2mm 2mm;
+        gap: 0.5mm;
+    }
+
+    .signature-meta strong {
+        font-size: 9px;
+    }
+
+    .signature-meta span {
+        font-size: 8px;
+    }
+
+    .panel,
+    .signature-panel,
+    .brand-block,
+    .sheet-id-card,
+    .lined-area,
+    .grid-table,
+    .tech-lines-table {
+        break-inside: avoid;
+    }
+}

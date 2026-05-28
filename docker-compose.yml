@@ -1,0 +1,19 @@
+services:
+  app:
+    build: .
+    image: folhas-servico:latest
+    container_name: folhas-servico
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - app-data:/app/data
+    env_file:
+      - .env
+    environment:
+      - FS_APP_DATA_DIR=/app/data
+      - GRAPH_CACHE_DIR=/app/data/graph-cache
+
+volumes:
+  app-data:
+    driver: local

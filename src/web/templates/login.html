@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0b4a8b">
+    <title>Login | Folhas de Serviço</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/field-app.css', v=asset_version) }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css', v=asset_version) }}">
+</head>
+<body class="auth-page">
+    <main class="auth-shell">
+        <section class="auth-card">
+            <img
+                class="auth-logo"
+                src="{{ url_for('static', filename='img/sensorpoint-logo.png', v=asset_version) }}"
+                alt="Sensorpoint"
+            >
+            <p class="eyebrow">Acesso reservado</p>
+            <h1>Folhas de Serviço</h1>
+
+            {% if auth_provider == "microsoft" %}
+            <p class="auth-copy">
+                Entre com a sua conta Microsoft da Sensorpoint. Apenas e-mails
+                @sensorpoint.pt ou @sensorpoint.com são aceites.
+            </p>
+            {% else %}
+            <p class="auth-copy">Entre com as iniciais do técnico e a password atribuída.</p>
+            {% endif %}
+
+            {% if error %}
+            <p class="auth-error" role="alert">{{ error }}</p>
+            {% endif %}
+
+            {% if auth_provider == "microsoft" %}
+            <a class="btn btn-primary auth-submit auth-ms-button" href="{{ url_for('microsoft_auth_start', next=next_url) }}">
+                Entrar com Microsoft
+            </a>
+            {% else %}
+            <form class="auth-form" method="post" action="{{ url_for('login') }}" autocomplete="on">
+                <input type="hidden" name="next" value="{{ next_url }}">
+                <div class="form-field">
+                    <label for="username">Utilizador ou iniciais</label>
+                    <input
+                        id="username"
+                        name="username"
+                        type="text"
+                        autocomplete="username"
+                        autocapitalize="characters"
+                        placeholder="Ex.: LD"
+                        required
+                        autofocus
+                    >
+                </div>
+                <div class="form-field">
+                    <label for="password">Password</label>
+                    <input
+                        id="password"
+                        name="password"
+                        type="password"
+                        autocomplete="current-password"
+                        placeholder="Ex.: LDsensor"
+                        required
+                    >
+                </div>
+                <button class="btn btn-primary auth-submit" type="submit">Entrar</button>
+            </form>
+            {% endif %}
+        </section>
+    </main>
+</body>
+</html>

@@ -1,0 +1,15 @@
+.env
+.runtime/
+.tmp-tests/
+__pycache__/
+*.pyc
+build/
+dist/
+.chrome-headless/
+.pytest_cache/
+tests/.tmp*/
+*.log
+Excel/
+PDF/
+data/
+*.sqlite3

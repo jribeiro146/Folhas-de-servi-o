@@ -1,0 +1,10 @@
+{
+  "name": "Folhas de Serviço",
+  "short_name": "Folhas",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#eef3f8",
+  "theme_color": "#0b4a8b",
+  "lang": "pt-PT",
+  "description": "Webapp de campo para preencher e fechar folhas de serviço."
+}

@@ -1,0 +1,452 @@
+﻿<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0b4a8b">
+    <title>Folhas de Serviço</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/field-app.css', v=asset_version) }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/document-editor.css', v=asset_version) }}">
+</head>
+{% set has_selected_data = selected_document_data is not none %}
+<body class="{% if has_selected_data %}has-active-file{% endif %}">
+    <div class="shell">
+        <aside class="sidebar" id="sidebar">
+            <div class="brand">
+                <img
+                    class="brand-logo"
+                    src="{{ url_for('static', filename='img/sensorpoint-logo.png', v=asset_version) }}"
+                    alt="Sensorpoint"
+                >
+                <h1>Folhas de Serviço</h1>
+            </div>
+
+            <div class="sidebar-tools">
+                <input id="file-search" type="search" placeholder="Procurar folha..." autocomplete="off">
+                <button id="btn-refresh" class="btn btn-secondary" type="button">Atualizar</button>
+            </div>
+
+            <div class="list-meta">
+                <span id="file-counter">{{ files|length }} folha(s)</span>
+                <span class="legend">Prontas, em execução, em uso e inválidas</span>
+            </div>
+
+            <ul class="file-list" id="file-list">
+                {% if not files %}
+                    <li class="empty-state">Nenhuma folha encontrada.</li>
+                {% else %}
+                    {% for file in files %}
+                        {% if file.status in ['ready', 'in_progress'] %}
+                        <li class="file-card {{ file.status }} {% if selected_file_name == file.name %}active{% endif %}" data-search="{{ (file.name ~ ' ' ~ (file.summary.customer_name or '') ~ ' ' ~ (file.summary.contact_name or '') ~ ' ' ~ (file.summary.address or '') ~ ' ' ~ (file.summary.phone or ''))|lower }}">
+                            <a class="file-card-link" href="{{ url_for('index', file=file.name) }}" data-name="{{ file.name }}">
+                                <div class="file-card-main">
+                                    <strong>{{ file.name }}</strong>
+                                    <span class="status-pill {% if file.status == 'in_progress' %}progress{% else %}ok{% endif %}">
+                                        {% if file.status == 'in_progress' %}Em execução{% else %}Pronta{% endif %}
+                                    </span>
+                                </div>
+                                <div class="file-card-lines">
+                                    {% if file.summary.customer_name %}
+                                    <p>{{ file.summary.customer_name }}</p>
+                                    {% endif %}
+                                    {% if file.summary.contact_name %}
+                                    <p>{{ file.summary.contact_name }}</p>
+                                    {% endif %}
+                                    {% if file.summary.address %}
+                                    <p>{{ file.summary.address }}</p>
+                                    {% endif %}
+                                    {% if file.summary.phone %}
+                                    <p>{{ file.summary.phone }}</p>
+                                    {% endif %}
+                                    {% if not file.summary.customer_name and not file.summary.contact_name and not file.summary.address and not file.summary.phone %}
+                                    <p class="file-card-empty-meta">Sem dados adicionais.</p>
+                                    {% endif %}
+                                </div>
+                            </a>
+                        </li>
+                        {% else %}
+                        <li class="file-card {{ file.status }}" data-search="{{ (file.name ~ ' ' ~ (file.summary.customer_name or '') ~ ' ' ~ (file.summary.contact_name or '') ~ ' ' ~ (file.summary.address or '') ~ ' ' ~ (file.summary.phone or ''))|lower }}">
+                            <div class="file-card-main">
+                                <strong>{{ file.name }}</strong>
+                                <span class="status-pill {% if file.status == 'locked' %}locked{% else %}error{% endif %}">
+                                    {% if file.status == 'locked' %}Em uso{% else %}Inválida{% endif %}
+                                </span>
+                            </div>
+                            <p>{{ file.error }}</p>
+                        </li>
+                        {% endif %}
+                    {% endfor %}
+                {% endif %}
+            </ul>
+        </aside>
+        <button
+            class="sidebar-scrim"
+            id="sidebar-scrim"
+            type="button"
+            aria-label="Fechar lista de folhas"
+            hidden
+        ></button>
+
+        <main class="workspace">
+            <header class="topbar">
+                <div class="topbar-copy">
+                    <button
+                        id="btn-toggle-sidebar"
+                        class="btn btn-secondary mobile-only"
+                        type="button"
+                        aria-controls="sidebar"
+                        aria-expanded="false"
+                        data-i18n="sheets_nav"
+                    >Folhas</button>
+                    <p class="eyebrow" data-i18n="topbar_eyebrow">Folha de serviço</p>
+                    <h2 id="active-file-title">
+                        {% if has_selected_data %}A editar: {{ selected_file_name }}.xlsx{% else %}Selecione uma folha ativa{% endif %}
+                    </h2>
+                    <p
+                        id="status-message"
+                        class="status-message"
+                        {% if not selected_file_error %}hidden{% endif %}
+                    >
+                        {% if selected_file_error %}
+                            {{ selected_file_error }}
+                        {% endif %}
+                    </p>
+                </div>
+                <div class="topbar-side">
+                    {% if current_user %}
+                    <div class="session-card">
+                        <span>
+                            Sessão:
+                            <strong>{{ current_user.display_name if current_user else "Técnico" }}</strong>
+                        </span>
+                        <form class="logout-form" method="post" action="{{ url_for('logout') }}">
+                            <button class="btn btn-secondary btn-logout" type="submit">Sair</button>
+                        </form>
+                    </div>
+                    {% endif %}
+                    <div class="actions" id="action-buttons" {% if not has_selected_data %}hidden{% endif %}>
+                        <button id="btn-preview-document" class="btn btn-secondary" type="button" data-i18n="preview">Pré-visualizar</button>
+                        <button id="btn-export-pdf" class="btn btn-secondary" type="button" data-i18n="export_pdf">Exportar PDF</button>
+                        <button id="btn-cancel-edit" class="btn btn-secondary" type="button" data-i18n="reload">Recarregar</button>
+                        <label class="language-switch" for="document-language-select">
+                            <span data-i18n="language_label">Idioma</span>
+                            <select id="document-language-select" aria-label="Idioma do documento">
+                                <option value="pt">PT</option>
+                                <option value="en">EN</option>
+                            </select>
+                        </label>
+                    </div>
+                </div>
+            </header>
+
+            <section id="confirm-panel" class="confirm-panel" hidden aria-live="polite">
+                <div class="confirm-panel-copy">
+                    <p class="eyebrow" id="confirm-eyebrow">Confirmar ação</p>
+                    <h3 id="confirm-title">Confirmar ação</h3>
+                    <p id="confirm-message">Tem a certeza que pretende continuar?</p>
+                </div>
+                <div class="confirm-actions">
+                    <button id="confirm-cancel" class="btn btn-secondary" type="button">Voltar</button>
+                    <button id="confirm-accept" class="btn btn-primary" type="button">Confirmar</button>
+                </div>
+            </section>
+
+            <section id="busy-panel" class="busy-panel" hidden aria-live="polite">
+                <div class="busy-panel-copy">
+                    <div class="spinner" aria-hidden="true"></div>
+                    <div>
+                        <p class="eyebrow">A processar</p>
+                        <h3 id="busy-title">A guardar a folha</h3>
+                        <p id="busy-message">Estamos a atualizar o LINK. Pode demorar alguns segundos.</p>
+                    </div>
+                </div>
+            </section>
+
+            <section class="form-shell" id="form-wrapper" {% if not has_selected_data %}hidden{% endif %}>
+                <form id="service-form" class="document-form" novalidate>
+                    <section class="group-card section-card">
+                        <div class="section-header">
+                            <div>
+                                <p class="eyebrow" data-i18n="header_eyebrow">Cabeçalho</p>
+                                <h3 data-i18n="sheet_identification">Identificação da folha</h3>
+                            </div>
+                        </div>
+                        <div class="form-grid">
+                            <div class="form-field">
+                                <label for="service-number" data-i18n="service_number">Nº da folha de serviço</label>
+                                <input id="document-language" type="hidden" data-field="document_language" value="pt">
+                                <input id="service-number" type="text" data-field="service_number" readonly>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="group-card section-card">
+                        <div class="section-header">
+                            <div>
+                                <p class="eyebrow" data-i18n="customer_eyebrow">Cliente</p>
+                                <h3 data-i18n="customer_data">Dados do cliente</h3>
+                            </div>
+                        </div>
+                        <div class="form-grid">
+                            <div class="form-field">
+                                <label for="customer-name"><span data-i18n="customer">Cliente</span> <span class="required">*</span></label>
+                                <input id="customer-name" type="text" data-field="customer_name">
+                            </div>
+                            <div class="form-field">
+                                <label for="requested-by" data-i18n="requested_by">Pedido por</label>
+                                <input id="requested-by" type="text" data-field="requested_by">
+                            </div>
+                            <div class="form-field">
+                                <label for="request-date" data-i18n="request_date">Em</label>
+                                <input id="request-date" type="date" data-field="request_date">
+                            </div>
+                            <div class="form-field">
+                                <label for="customer-number" data-i18n="customer_number">Nº de cliente</label>
+                                <input id="customer-number" type="text" data-field="customer_number">
+                            </div>
+                            <div class="form-field">
+                                <label for="nif-number">NIF / VAT n.º</label>
+                                <input id="nif-number" type="text" data-field="nif_number" data-mirror-field="vat_number" inputmode="numeric" maxlength="32">
+                            </div>
+                            <div class="form-field">
+                                <label for="customer-email">E-mail</label>
+                                <input id="customer-email" type="email" data-field="customer_email">
+                            </div>
+                            <div class="form-field">
+                                <label for="customer-phone" data-i18n="phone">Telefone</label>
+                                <input id="customer-phone" type="tel" data-field="customer_phone">
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="group-card section-card">
+                        <div class="section-header">
+                            <div>
+                                <p class="eyebrow" data-i18n="site_eyebrow">Instalação</p>
+                                <h3 data-i18n="site_data">Dados da instalação</h3>
+                            </div>
+                        </div>
+                        <div class="form-grid">
+                            <div class="form-field">
+                                <label for="site-contact" data-i18n="contact">Contacto</label>
+                                <input id="site-contact" type="text" data-field="site_contact">
+                            </div>
+                            <div class="form-field">
+                                <label for="site-phone" data-i18n="phone">Telefone</label>
+                                <input id="site-phone" type="tel" data-field="site_phone">
+                            </div>
+                            <div class="form-field">
+                                <label for="local-store" data-i18n="local_store">Local / loja</label>
+                                <input id="local-store" type="text" data-field="local_store">
+                            </div>
+                            <div class="form-field">
+                                <label for="contract-number" data-i18n="contract">Contrato</label>
+                                <input id="contract-number" type="text" data-field="contract_number">
+                            </div>
+                            <div class="form-field field-full">
+                                <label for="address" data-i18n="address">Morada</label>
+                                <input id="address" type="text" data-field="address">
+                            </div>
+                            <div class="form-field">
+                                <label for="store-number" data-i18n="store_number">Loja n.º</label>
+                                <input id="store-number" type="text" data-field="store_number">
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="two-column-sections">
+                        <section class="group-card section-card compact-card">
+                            <div class="section-header">
+                                <div>
+                                    <p class="eyebrow" data-i18n="service_eyebrow">Serviço</p>
+                                    <h3 data-i18n="service_type">Tipo de serviço</h3>
+                                </div>
+                            </div>
+                            <div class="option-grid">
+                                {% for option in service_type_options %}
+                                <label class="choice-chip">
+                                    <input type="checkbox" data-group="service_types" data-option="{{ option.key }}">
+                                    <span data-service-label="{{ option.key }}">{{ option.label }}</span>
+                                </label>
+                                {% endfor %}
+                            </div>
+                        </section>
+
+                        <section class="group-card section-card compact-card">
+                            <div class="section-header">
+                                <div>
+                                    <p class="eyebrow" data-i18n="equipment_eyebrow">Equipamentos</p>
+                                    <h3 data-i18n="equipment_systems">Sistemas intervencionados</h3>
+                                </div>
+                            </div>
+                            <div class="option-grid">
+                                {% for option in equipment_options %}
+                                <label class="choice-chip">
+                                    <input type="checkbox" data-group="equipments" data-option="{{ option.key }}">
+                                    <span>{{ option.label }}</span>
+                                </label>
+                                {% endfor %}
+                            </div>
+                        </section>
+                    </section>
+
+                    <section class="group-card section-card">
+                        <div class="section-header">
+                            <div>
+                                <p class="eyebrow" data-i18n="planning_eyebrow">Planeamento</p>
+                                <h3 data-i18n="requested_tasks_title">Trabalhos a efectuar</h3>
+                            </div>
+                        </div>
+                        <div class="form-grid">
+                            <div class="form-field field-full">
+                                <label for="requested-tasks" data-i18n="requested_tasks">Descrição dos trabalhos</label>
+                                <textarea id="requested-tasks" data-field="requested_tasks"></textarea>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="group-card section-card">
+                        <div class="section-header">
+                            <div>
+                                <p class="eyebrow" data-i18n="intervention_eyebrow">Intervenção</p>
+                                <h3 data-i18n="intervention_report_title">Relatório técnico da intervenção</h3>
+                            </div>
+                        </div>
+                        <div class="form-grid">
+                            <div class="form-field field-full">
+                                <label for="intervention-report" data-i18n="intervention_report">Relatório técnico</label>
+                                <textarea id="intervention-report" data-field="intervention_report"></textarea>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="group-card section-card">
+                        <div class="section-header section-header-split">
+                            <div>
+                                <p class="eyebrow" data-i18n="materials_eyebrow">Materiais</p>
+                                <h3 data-i18n="materials_title">Materiais / artigos / peças</h3>
+                            </div>
+                            <button id="btn-add-material" class="btn btn-secondary" type="button" data-i18n="add_line">Adicionar linha</button>
+                        </div>
+                        <div class="table-block">
+                            <div class="table-head table-materials">
+                                <span>Ref.</span>
+                                <span data-i18n="description">Descrição</span>
+                                <span>Qtd</span>
+                                <span></span>
+                            </div>
+                            <div id="materials-list" class="table-body"></div>
+                        </div>
+                    </section>
+
+                    <section class="group-card section-card">
+                        <div class="section-header section-header-split">
+                            <div>
+                                <p class="eyebrow" data-i18n="technicians_eyebrow">Técnicos</p>
+                                <h3 data-i18n="technicians_title">Registo de técnicos e horas</h3>
+                            </div>
+                            <button id="btn-add-technician" class="btn btn-secondary" type="button" data-i18n="add_technician">Adicionar técnico</button>
+                        </div>
+                        <div class="table-block">
+                            <div class="table-head table-technicians">
+                                <span data-i18n="technician">Técnico</span>
+                                <span data-i18n="start_time">Hora Início</span>
+                                <span data-i18n="end_time">Hora Fim</span>
+                                <span data-i18n="total_hours">Total Horas</span>
+                                <span>Data</span>
+                                <span></span>
+                            </div>
+                            <div id="technicians-list" class="table-body"></div>
+                        </div>
+                    </section>
+
+                    <section class="group-card section-card signature-group">
+                        <div class="section-header">
+                            <div>
+                                <p class="eyebrow" data-i18n="closing_eyebrow">Fecho</p>
+                                <h3 data-i18n="customer_signature_title">Assinatura do cliente</h3>
+                            </div>
+                        </div>
+                        <div class="signature-grid">
+                            <section class="signature-card">
+                                <div class="signature-card-head">
+                                    <div>
+                                        <h3 data-i18n="customer">Cliente</h3>
+                                    </div>
+                                    <button class="btn btn-secondary signature-clear" type="button" data-signature-clear="Assinatura Cliente" data-i18n="clear">Limpar</button>
+                                </div>
+                                <div class="form-field signature-date">
+                                    <label for="customer-signature-date" data-i18n="customer_signature_date">Cliente - data</label>
+                                    <input id="customer-signature-date" type="date" data-field="customer_signature_date">
+                                </div>
+                                <canvas
+                                    id="signature-client-canvas"
+                                    class="signature-canvas"
+                                    width="640"
+                                    height="140"
+                                ></canvas>
+                                <input
+                                    id="signature-client-input"
+                                    type="hidden"
+                                    name="Assinatura Cliente"
+                                    data-label="Assinatura Cliente"
+                                    value="{{ '' if not selected_signatures else (selected_signatures.get('Assinatura Cliente') or '') }}"
+                                >
+                            </section>
+                        </div>
+                    </section>
+
+                    <section class="form-end-actions" aria-label="Ações da folha">
+                        <div class="form-end-actions-left">
+                            <button id="btn-save-send" class="btn btn-success" type="button" data-i18n="save_send">Guardar e enviar</button>
+                            <button id="btn-cancel-file" class="btn btn-danger" type="button" data-i18n="cancel_sheet">Cancelar folha</button>
+                        </div>
+                        <button id="btn-save-draft" class="btn btn-primary" type="button" data-i18n="save_draft">Guardar rascunho</button>
+                    </section>
+                </form>
+            </section>
+
+            <div class="toast-zone" id="toast-zone" aria-live="polite" aria-atomic="true"></div>
+        </main>
+    </div>
+
+    <template id="material-row-template">
+        <div class="table-row table-materials repeat-row" data-repeat="materials">
+            <input type="text" data-repeat-field="ref" placeholder="Ref.">
+            <input type="text" data-repeat-field="description" placeholder="Descrição" data-i18n-placeholder="description">
+            <input type="number" min="0" step="1" data-repeat-field="qty" placeholder="Qtd">
+            <button class="btn btn-secondary btn-icon row-remove" type="button" data-row-remove>&times;</button>
+        </div>
+    </template>
+
+    <template id="technician-row-template">
+        <div class="table-row table-technicians repeat-row" data-repeat="technician_records">
+            <select data-repeat-field="technician">
+                <option value="" data-i18n="select_technician">Selecionar técnico</option>
+                {% for technician in technician_options %}
+                <option value="{{ technician }}">{{ technician }}</option>
+                {% endfor %}
+            </select>
+            <input type="time" data-repeat-field="start_time">
+            <input type="time" data-repeat-field="end_time">
+            <input type="text" data-repeat-field="total_hours" placeholder="0 min" readonly>
+            <input type="date" data-repeat-field="date">
+            <button class="btn btn-secondary btn-icon row-remove" type="button" data-row-remove>&times;</button>
+        </div>
+    </template>
+
+    <script>
+        window.__FILES_APP__ = {
+            requiredFields: {{ document_required_fields | tojson }},
+            serviceTypeOptions: {{ service_type_options | tojson }},
+            equipmentOptions: {{ equipment_options | tojson }},
+            selectedFileName: {{ selected_file_name | tojson }},
+            selectedFileData: {{ selected_file_data | tojson }},
+            selectedDocumentData: {{ selected_document_data | tojson }},
+            selectedSignatures: {{ selected_signatures | tojson }},
+            selectedFileError: {{ selected_file_error | tojson }}
+        };
+    </script>
+    <script src="{{ url_for('static', filename='js/document-editor.js', v=asset_version) }}"></script>
+</body>
+</html>
