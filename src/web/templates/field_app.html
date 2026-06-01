@@ -4,7 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="theme-color" content="#0b4a8b">
+    <meta name="application-name" content="Sensorpoint Service">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Sensorpoint Service">
     <title>Folhas de Serviço</title>
+    <link rel="manifest" href="{{ url_for('manifest') }}">
+    <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='img/pwa/icon-192.png', v=asset_version) }}">
+    <link rel="icon" type="image/png" sizes="512x512" href="{{ url_for('static', filename='img/pwa/icon-512.png', v=asset_version) }}">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/pwa/icon-192.png', v=asset_version) }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/field-app.css', v=asset_version) }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/document-editor.css', v=asset_version) }}">
 </head>
@@ -24,6 +32,9 @@
             <div class="sidebar-tools">
                 <input id="file-search" type="search" placeholder="Procurar folha..." autocomplete="off">
                 <button id="btn-refresh" class="btn btn-secondary" type="button">Atualizar</button>
+                <button class="btn btn-secondary pwa-install-button" type="button" data-pwa-install hidden>
+                    Instalar app
+                </button>
             </div>
 
             <div class="list-meta">
@@ -144,6 +155,14 @@
                     <p class="eyebrow" id="confirm-eyebrow">Confirmar ação</p>
                     <h3 id="confirm-title">Confirmar ação</h3>
                     <p id="confirm-message">Tem a certeza que pretende continuar?</p>
+                    <div class="confirm-extra" id="confirm-internal-notes-field" hidden>
+                        <label for="confirm-internal-notes">Observações internas</label>
+                        <textarea
+                            id="confirm-internal-notes"
+                            rows="4"
+                            placeholder="Notas para consulta interna"
+                        ></textarea>
+                    </div>
                 </div>
                 <div class="confirm-actions">
                     <button id="confirm-cancel" class="btn btn-secondary" type="button">Voltar</button>
@@ -448,5 +467,6 @@
         };
     </script>
     <script src="{{ url_for('static', filename='js/document-editor.js', v=asset_version) }}"></script>
+    <script src="{{ url_for('static', filename='js/pwa.js', v=asset_version) }}"></script>
 </body>
 </html>

@@ -62,7 +62,7 @@ _DEFAULT_BASE_PATH = _detect_default_base_path()
 BASE_PATH: Path = Path(os.environ.get("FS_BASE_PATH", str(_DEFAULT_BASE_PATH)))
 
 def _default_app_data_dir() -> Path:
-    """Guarda dados operacionais fora do OneDrive para evitar bloqueios SQLite."""
+    """Guarda dados operacionais fora do OneDrive quando não existe override."""
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
         return Path(local_app_data) / "Sensorpoint" / "FolhasServico"
@@ -70,7 +70,6 @@ def _default_app_data_dir() -> Path:
 
 
 APP_DATA_DIR: Path = Path(os.environ.get("FS_APP_DATA_DIR", str(_default_app_data_dir())))
-AUTH_DATABASE_PATH: Path = APP_DATA_DIR / "folhas_servico.sqlite3"
 
 # ---------------------------------------------------------------------------
 # Autenticação
@@ -118,7 +117,8 @@ GRAPH_CACHE_DIR: Path = Path(os.environ.get("GRAPH_CACHE_DIR", str(APP_DATA_DIR 
 # Subpastas do projecto
 # ---------------------------------------------------------------------------
 
-_EXCEL_ROOT: Path = GRAPH_CACHE_DIR / "Excel" if STORAGE_BACKEND == "graph" else BASE_PATH / "Excel"
+_DEFAULT_EXCEL_ROOT: Path = GRAPH_CACHE_DIR / "Excel" if STORAGE_BACKEND == "graph" else BASE_PATH / "Excel"
+_EXCEL_ROOT: Path = Path(os.environ.get("FS_EXCEL_ROOT", str(_DEFAULT_EXCEL_ROOT)))
 
 EXCEL_ACTIVAS_DIR: Path = _EXCEL_ROOT / "Activas"
 EXCEL_ARQUIVADAS_DIR: Path = _EXCEL_ROOT / "Arquivadas"

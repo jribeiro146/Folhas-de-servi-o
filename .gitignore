@@ -1,4 +1,7 @@
 .env
+.codex_tmp/
+Aplicação/
+aplicação/
 .runtime/
 .tmp-tests/
 __pycache__/
@@ -12,4 +15,3 @@ tests/.tmp*/
 Excel/
 PDF/
 data/
-*.sqlite3

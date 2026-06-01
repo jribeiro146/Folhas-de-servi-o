@@ -14,18 +14,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ "Service Sheet" if doc_lang == "en" else "Folha de Servico" }} {{ document.service_number or file_name }}</title>
+    <title>{{ "Service Sheet" if doc_lang == "en" else "Folha de Serviço" }} {{ document.service_number or file_name }}</title>
     <style>{{ embedded_styles | safe }}</style>
 </head>
 <body>
     {% set materials = document.materials if document.materials else [] %}
     {% set technician_records = document.technician_records if document.technician_records else [] %}
-    {% set technician_row_target = 3 %}
+    {% set technician_row_target = 4 %}
     {% set visible_materials = materials[:5] %}
     {% set visible_technician_records = technician_records[:technician_row_target] %}
 
     <div class="print-actions">
-        <button type="button" onclick="window.print()">{{ "Print / Save PDF" if doc_lang == "en" else "Imprimir / Guardar PDF" }}</button>
+        <button type="button" onclick="window.print()">{{ "Print / Save PDF" if doc_lang == "en" else "Imprimir / Guardar em PDF" }}</button>
         <button type="button" onclick="window.close()">{{ "Close" if doc_lang == "en" else "Fechar" }}</button>
     </div>
 
@@ -36,13 +36,13 @@
                 <img class="sheet-logo" src="{{ logo_src }}" alt="Sensorpoint">
                 {% endif %}
                 <div class="brand-copy">
-                    <p class="sheet-kicker">{{ "Service Sheet" if doc_lang == "en" else "Folha de Servico" }}</p>
-                    <h1>{{ "Service Report" if doc_lang == "en" else "Relatorio de Intervencao" }}</h1>
+                    <p class="sheet-kicker">{{ "Service Sheet" if doc_lang == "en" else "Folha de Serviço" }}</p>
+                    <h1>{{ "Service Report" if doc_lang == "en" else "Relatório de Intervenção" }}</h1>
                 </div>
             </div>
 
             <div class="sheet-id-card">
-                <span class="id-label">{{ "Sheet no." if doc_lang == "en" else "N. da folha" }}</span>
+                <span class="id-label">{{ "Sheet no." if doc_lang == "en" else "N.º da folha" }}</span>
                 <strong>{{ document.service_number or file_name }}</strong>
                 <small>{{ document.request_date or "-" }}</small>
             </div>
@@ -50,13 +50,13 @@
 
         <section class="summary-grid">
             <article class="panel">
-                <div class="panel-title">{{ "Customer details" if doc_lang == "en" else "Dados do Cliente" }}</div>
+                <div class="panel-title">{{ "Customer details" if doc_lang == "en" else "Dados do cliente" }}</div>
                 <table class="grid-table info-table">
                     <tbody>
                         <tr>
                             <th>{{ "Customer" if doc_lang == "en" else "Cliente" }}</th>
                             <td colspan="3">{{ document.customer_name or "-" }}</td>
-                            <th>{{ "Customer no." if doc_lang == "en" else "Nº de cliente" }}</th>
+                            <th>{{ "Customer no." if doc_lang == "en" else "N.º de cliente" }}</th>
                             <td>{{ document.customer_number or "-" }}</td>
                         </tr>
                         <tr>
@@ -66,7 +66,7 @@
                             <td>{{ document.request_date or "-" }}</td>
                         </tr>
                         <tr>
-                            <th>NIF / VAT</th>
+                            <th>{{ "NIF / VAT" if doc_lang == "en" else "NIF / N.º de IVA" }}</th>
                             <td colspan="3">{{ document.nif_number or document.vat_number or "-" }}</td>
                             <th>{{ "Phone" if doc_lang == "en" else "Telefone" }}</th>
                             <td>{{ document.customer_phone or "-" }}</td>
@@ -80,7 +80,7 @@
             </article>
 
             <article class="panel">
-                <div class="panel-title">{{ "Site information" if doc_lang == "en" else "Dados da Instalacao" }}</div>
+                <div class="panel-title">{{ "Site information" if doc_lang == "en" else "Dados da instalação" }}</div>
                 <table class="grid-table info-table">
                     <tbody>
                         <tr>
@@ -92,13 +92,13 @@
                         <tr>
                             <th>{{ "Local / store" if doc_lang == "en" else "Local / loja" }}</th>
                             <td colspan="3">{{ document.local_store or "-" }}</td>
-                            <th>{{ "Store no." if doc_lang == "en" else "Loja n." }}</th>
+                            <th>{{ "Store no." if doc_lang == "en" else "Loja n.º" }}</th>
                             <td>{{ document.store_number or "-" }}</td>
                         </tr>
                         <tr>
                             <th>{{ "Contract" if doc_lang == "en" else "Contrato" }}</th>
                             <td>{{ document.contract_number or "-" }}</td>
-                            <th>Site</th>
+                            <th>{{ "Site" if doc_lang == "en" else "Instalação" }}</th>
                             <td>{{ document.local_store or "-" }}</td>
                             <th>{{ "Date" if doc_lang == "en" else "Data" }}</th>
                             <td>{{ document.request_date or "-" }}</td>
@@ -114,12 +114,12 @@
 
         <section class="selection-grid">
             <article class="panel">
-                <div class="panel-title">{{ "Service type" if doc_lang == "en" else "Tipo de servico" }}</div>
+                <div class="panel-title">{{ "Service type" if doc_lang == "en" else "Tipo de serviço" }}</div>
                 <div class="selected-grid">
                     {% for option in service_type_options if document.service_types.get(option.key) %}
                     <div class="selected-item">{{ service_type_labels_en.get(option.key, option.label) if doc_lang == "en" else option.label }}</div>
                     {% else %}
-                    <div class="selected-empty">{{ "No service types selected." if doc_lang == "en" else "Sem tipos de servico selecionados." }}</div>
+                    <div class="selected-empty">{{ "No service types selected." if doc_lang == "en" else "Sem tipos de serviço selecionados." }}</div>
                     {% endfor %}
                 </div>
             </article>
@@ -137,23 +137,23 @@
         </section>
 
         <section class="panel">
-            <div class="panel-title">{{ "Requested tasks" if doc_lang == "en" else "Trabalhos a efectuar" }}</div>
+            <div class="panel-title">{{ "Requested tasks" if doc_lang == "en" else "Trabalhos a efetuar" }}</div>
             <div class="lined-area lined-area-short {{ 'is-empty' if not document.requested_tasks else '' }}">{{ document.requested_tasks or "" }}</div>
         </section>
 
         <section class="panel">
-            <div class="panel-title">{{ "Technical intervention report" if doc_lang == "en" else "Relatorio tecnico da intervencao" }}</div>
+            <div class="panel-title">{{ "Technical intervention report" if doc_lang == "en" else "Relatório técnico da intervenção" }}</div>
             <div class="lined-area lined-area-tall {{ 'is-empty' if not document.intervention_report else '' }}">{{ document.intervention_report or "" }}</div>
         </section>
 
         <section class="panel">
-            <div class="panel-title">{{ "Materials / items / parts" if doc_lang == "en" else "Materiais / artigos / pecas" }}</div>
+            <div class="panel-title">{{ "Materials / items / parts" if doc_lang == "en" else "Materiais / artigos / peças" }}</div>
             <table class="grid-table materials-table">
                 <thead>
                     <tr>
                         <th class="ref-col">Ref.</th>
-                        <th>{{ "Description" if doc_lang == "en" else "Descricao" }}</th>
-                        <th class="qty-col">{{ "Qty" if doc_lang == "en" else "Qtd" }}</th>
+                        <th>{{ "Description" if doc_lang == "en" else "Descrição" }}</th>
+                        <th class="qty-col">{{ "Qty" if doc_lang == "en" else "Qtd." }}</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -175,13 +175,13 @@
         </section>
 
         <section class="panel">
-            <div class="panel-title">{{ "Technician time records" if doc_lang == "en" else "Registo de tecnicos e horas" }}</div>
+            <div class="panel-title">{{ "Technician time records" if doc_lang == "en" else "Registo de técnicos e horas" }}</div>
             <table class="grid-table tech-lines-table">
                 <thead>
                     <tr>
-                        <th>{{ "Technician" if doc_lang == "en" else "Tecnico" }}</th>
+                        <th>{{ "Technician" if doc_lang == "en" else "Técnico" }}</th>
                         <th>{{ "Date" if doc_lang == "en" else "Data" }}</th>
-                        <th>{{ "Start" if doc_lang == "en" else "Inicio" }}</th>
+                        <th>{{ "Start" if doc_lang == "en" else "Início" }}</th>
                         <th>{{ "End" if doc_lang == "en" else "Fim" }}</th>
                         <th>Total</th>
                     </tr>
@@ -199,7 +199,7 @@
                         {% endfor %}
                     {% else %}
                     <tr class="empty-state-row">
-                        <td colspan="5">{{ "No technician records." if doc_lang == "en" else "Sem registos de tecnicos." }}</td>
+                        <td colspan="5">{{ "No technician records." if doc_lang == "en" else "Sem registos de técnicos." }}</td>
                     </tr>
                     {% endif %}
                 </tbody>
@@ -208,17 +208,17 @@
 
         <section class="signature-strip">
             <article class="signature-panel signature-info-panel">
-                <div class="panel-title">{{ "Responsible technician" if doc_lang == "en" else "Tecnico responsavel" }}</div>
+                <div class="panel-title">{{ "Responsible technician" if doc_lang == "en" else "Técnico responsável" }}</div>
                 <div class="signature-meta signature-meta-info">
                     <strong>{{ responsible_technician or "-" }}</strong>
                 </div>
             </article>
 
             <article class="signature-panel signature-panel-customer">
-                <div class="panel-title">{{ "Customer signature" if doc_lang == "en" else "Assinatura Cliente" }}</div>
+                <div class="panel-title">{{ "Customer signature" if doc_lang == "en" else "Assinatura do cliente" }}</div>
                 <div class="signature-image {{ 'has-signature' if signatures.get('Assinatura Cliente') else 'is-empty' }}">
                     {% if signatures.get("Assinatura Cliente") %}
-                    <img src="{{ signatures.get('Assinatura Cliente') }}" alt="Assinatura cliente">
+                    <img src="{{ signatures.get('Assinatura Cliente') }}" alt="Assinatura do cliente">
                     {% else %}
                     <span>{{ "No signature captured." if doc_lang == "en" else "Sem assinatura recolhida." }}</span>
                     {% endif %}

@@ -1,5 +1,9 @@
 ﻿# Folhas de Servico
 
+Versao recomendada para servidor: `v1.0.0-servidor`.
+
+Para deploy em Plesk/Docker, usar a tag acima e seguir `docs/IMPLEMENTACAO_SERVIDOR.md`.
+
 Estrutura principal do projeto:
 
 - `src/`: codigo da aplicacao.
@@ -23,7 +27,7 @@ Fluxo oficial atual:
 2. Editar apenas a sheet `LINK`.
 3. Guardar rascunho ou arquivar/cancelar o Excel.
 4. Nao gerar PDF na webapp.
-5. Preferir `http://127.0.0.1:5001` ou a proxima porta livre.
+5. Preferir `http://localhost:5001` ou a proxima porta livre.
 
 Notas de consistencia:
 

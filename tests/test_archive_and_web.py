@@ -1,3 +1,4 @@
+import json
 import shutil
 import tempfile
 import uuid
@@ -154,6 +155,7 @@ def test_web_api_flow_send_and_cancel(isolated_dirs):
         json={
             "customer_name": "Cliente Final",
             "intervention_report": "Fecho",
+            "_internal_observations": "Nota interna para consulta da equipa.",
             "technician_records": [
                 {
                     "technician": "João Freire",
@@ -169,13 +171,19 @@ def test_web_api_flow_send_and_cancel(isolated_dirs):
     archived_dir = isolated_dirs["archived"] / draft_result["file"]
     assert (archived_dir / f"{draft_result['file']}.xlsx").exists()
     archived_html = archived_dir / f"{draft_result['file']}__folha_final.html"
+    internal_notes = archived_dir / f"{draft_result['file']}__observacoes_internas.txt"
+    document_json = archived_dir / f"{draft_result['file']}__documento.json"
     assert archived_html.exists()
-    assert (archived_dir / f"{draft_result['file']}__documento.json").exists()
+    assert document_json.exists()
+    assert internal_notes.exists()
+    assert internal_notes.read_text(encoding="utf-8").strip() == "Nota interna para consulta da equipa."
     assert (archived_dir / f"{draft_result['file']}__assinatura_cliente.png").exists()
     html_content = archived_html.read_text(encoding="utf-8")
     assert "<!DOCTYPE html>" in html_content
     assert "Cliente Final" in html_content
     assert "data:image/png;base64," in html_content
+    assert "Nota interna para consulta da equipa." not in html_content
+    assert "_internal_observations" not in json.loads(document_json.read_text(encoding="utf-8"))
     archived_positions, archived_row_height = get_fs_image_positions(
         archived_dir / f"{draft_result['file']}.xlsx"
     )
@@ -259,6 +267,16 @@ def test_document_preview_returns_html(isolated_dirs):
     assert payload["success"] is True
     assert "<!DOCTYPE html>" in payload["html"]
     assert "Cliente Preview" in payload["html"]
+    assert "Folha de Serviço" in payload["html"]
+    assert "Relatório de Intervenção" in payload["html"]
+    assert "Dados do cliente" in payload["html"]
+    assert "Dados da instalação" in payload["html"]
+    assert "NIF / N.º de IVA" in payload["html"]
+    assert "Trabalhos a efetuar" in payload["html"]
+    assert "Descrição" in payload["html"]
+    assert "Registo de técnicos e horas" in payload["html"]
+    assert "Técnico responsável" in payload["html"]
+    assert "Relatorio tecnico da intervencao" not in payload["html"]
     assert "data:image/png;base64," in payload["html"]
 
 

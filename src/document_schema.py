@@ -79,7 +79,7 @@ DOCUMENT_SIMPLE_FIELDS = (
 )
 
 DOCUMENT_MAX_MATERIALS = 12
-DOCUMENT_MAX_TECHNICIANS = 3
+DOCUMENT_MAX_TECHNICIANS = 4
 
 
 def create_empty_material() -> dict[str, str]:

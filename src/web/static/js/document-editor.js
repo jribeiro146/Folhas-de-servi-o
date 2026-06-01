@@ -31,6 +31,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const confirmEyebrow = document.getElementById("confirm-eyebrow");
     const confirmTitle = document.getElementById("confirm-title");
     const confirmMessage = document.getElementById("confirm-message");
+    const confirmInternalNotesField = document.getElementById("confirm-internal-notes-field");
+    const confirmInternalNotes = document.getElementById("confirm-internal-notes");
     const confirmCancel = document.getElementById("confirm-cancel");
     const confirmAccept = document.getElementById("confirm-accept");
 
@@ -54,6 +56,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const serviceTypeInputs = Array.from(form.querySelectorAll('[data-group="service_types"]'));
     const equipmentInputs = Array.from(form.querySelectorAll('[data-group="equipments"]'));
     let currentLanguage = "pt";
+    const MAX_TECHNICIANS = 4;
 
     const translations = {
         pt: {
@@ -462,6 +465,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const hideConfirm = () => {
         pendingConfirmation = null;
+        if (confirmInternalNotes) {
+            confirmInternalNotes.value = "";
+        }
+        if (confirmInternalNotesField) {
+            confirmInternalNotesField.hidden = true;
+        }
         confirmPanel.hidden = true;
         resetConfirmButton();
     };
@@ -472,17 +481,24 @@ document.addEventListener("DOMContentLoaded", () => {
         message = "Tem a certeza que pretende continuar?",
         confirmLabel = "Confirmar",
         confirmVariant = "primary",
+        showInternalNotes = false,
         onAccept = null
     }) => {
         pendingConfirmation = typeof onAccept === "function" ? onAccept : null;
         confirmEyebrow.textContent = eyebrow;
         confirmTitle.textContent = title;
         confirmMessage.textContent = message;
+        if (confirmInternalNotes) {
+            confirmInternalNotes.value = "";
+        }
+        if (confirmInternalNotesField) {
+            confirmInternalNotesField.hidden = !showInternalNotes;
+        }
         confirmAccept.textContent = confirmLabel;
         confirmAccept.className = `btn btn-${confirmVariant}`;
         confirmPanel.hidden = false;
         confirmPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-        confirmAccept.focus();
+        (showInternalNotes ? confirmInternalNotes : confirmAccept)?.focus();
     };
 
     const setBusy = (
@@ -500,6 +516,7 @@ document.addEventListener("DOMContentLoaded", () => {
             btnAddMaterial,
             btnAddTechnician,
             languageSelect,
+            confirmInternalNotes,
             confirmCancel,
             confirmAccept
         ].forEach((button) => {
@@ -685,14 +702,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const updateTechnicianControls = () => {
         if (btnAddTechnician) {
-            btnAddTechnician.disabled = techniciansList.children.length >= 3;
+            btnAddTechnician.disabled = techniciansList.children.length >= MAX_TECHNICIANS;
         }
     };
 
     const renderTechnicians = (rows = []) => {
         techniciansList.innerHTML = "";
         const safeRows = Array.isArray(rows) && rows.length > 0
-            ? rows.slice(0, 3)
+            ? rows.slice(0, MAX_TECHNICIANS)
             : [{ technician: "", start_time: "", end_time: "", total_hours: "", date: "" }];
 
         safeRows.forEach((row) => techniciansList.appendChild(createTechnicianRow(row)));
@@ -1137,8 +1154,8 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     btnAddTechnician?.addEventListener("click", () => {
-        if (techniciansList.children.length >= 3) {
-            showToast("Máximo de 3 técnicos por folha.", "info");
+        if (techniciansList.children.length >= MAX_TECHNICIANS) {
+            showToast(`Máximo de ${MAX_TECHNICIANS} técnicos por folha.`, "info");
             return;
         }
 
@@ -1187,7 +1204,9 @@ document.addEventListener("DOMContentLoaded", () => {
             message: "A folha será guardada e movida para Arquivadas.",
             confirmLabel: "Guardar e arquivar",
             confirmVariant: "success",
+            showInternalNotes: true,
             onAccept: async () => {
+                payload._internal_observations = confirmInternalNotes?.value.trim() || "";
                 await sendFile(payload);
             }
         });
@@ -1209,12 +1228,6 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         });
     });
-
-    if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.getRegistrations()
-            .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
-            .catch(() => {});
-    }
 
     initializeSignaturePads();
     resetActiveState();

@@ -65,3 +65,21 @@
     justify-content: center;
     text-decoration: none;
 }
+
+.auth-install-button {
+    width: 100%;
+    min-height: 44px;
+    margin-top: 12px;
+}
+
+.auth-install-copy {
+    margin: 10px 0 0;
+    color: var(--muted);
+    font-size: 0.82rem;
+    line-height: 1.35;
+}
+
+.auth-install-button[hidden],
+.auth-install-copy[hidden] {
+    display: none;
+}

@@ -12,7 +12,6 @@ from pathlib import Path
 from flask import Flask, g, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 
 from src.config import (
-    APP_DATA_DIR,
     AUTH_PROVIDER,
     MICROSOFT_AUTH_REDIRECT_URI,
     STORAGE_BACKEND,
@@ -32,7 +31,6 @@ from src.document_schema import (
 )
 from src.field_map import FIELD_MAP, FIELDS_BY_GROUP
 from src.services.archive_service import ArchiveService
-from src.services.auth_service import AuthService
 from src.services.document_artifact_service import DocumentArtifactService
 from src.services.document_data_service import DocumentDataService
 from src.services.excel_service import ExcelService, ExcelValidationError
@@ -42,36 +40,18 @@ from src.services.microsoft_auth_service import MicrosoftAuthError, MicrosoftAut
 from src.services.signature_service import SignatureService
 
 
-LEGACY_AUTH_ENABLED = os.environ.get("FS_AUTH_ENABLED") == "1"
-ACTIVE_AUTH_PROVIDER = AUTH_PROVIDER or ("local" if LEGACY_AUTH_ENABLED else "none")
-AUTH_ENABLED = ACTIVE_AUTH_PROVIDER in {"local", "microsoft"}
+ACTIVE_AUTH_PROVIDER = "microsoft" if AUTH_PROVIDER == "microsoft" else "none"
+AUTH_ENABLED = ACTIVE_AUTH_PROVIDER == "microsoft"
+INTERNAL_OBSERVATIONS_KEY = "_internal_observations"
 
 
 def _load_secret_key() -> str:
-    if not AUTH_ENABLED:
-        return os.environ.get("FS_SECRET_KEY", "dev-local-secret")
-
-    configured_secret = os.environ.get("FS_SECRET_KEY", "").strip()
-    if configured_secret:
-        return configured_secret
-
-    try:
-        APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
-        secret_path = APP_DATA_DIR / "secret.key"
-        if secret_path.exists():
-            return secret_path.read_text(encoding="utf-8").strip()
-
-        generated_secret = secrets.token_hex(32)
-        secret_path.write_text(generated_secret, encoding="utf-8")
-        return generated_secret
-    except OSError:
-        return "dev-local-secret"
+    return os.environ.get("FS_SECRET_KEY", "dev-local-secret")
 
 
 def create_app(
     file_service: FileService | None = None,
     archive_service: ArchiveService | None = None,
-    auth_service: AuthService | None = None,
     graph_service: GraphStorageService | None = None,
     microsoft_auth_service: MicrosoftAuthService | None = None,
 ) -> Flask:
@@ -88,12 +68,9 @@ def create_app(
     file_service = file_service or FileService()
     archive_service = archive_service or ArchiveService()
     graph_service = graph_service or (GraphStorageService() if STORAGE_BACKEND == "graph" else None)
-    auth_service = auth_service or (AuthService() if ACTIVE_AUTH_PROVIDER == "local" else None)
     microsoft_auth_service = microsoft_auth_service or (
         MicrosoftAuthService() if ACTIVE_AUTH_PROVIDER == "microsoft" else None
     )
-    if auth_service is not None:
-        auth_service.initialize()
 
     @app.after_request
     def apply_cache_headers(response):
@@ -128,11 +105,17 @@ def create_app(
     def microsoft_redirect_uri() -> str:
         return MICROSOFT_AUTH_REDIRECT_URI or url_for("microsoft_auth_callback", _external=True)
 
-    def set_current_user() -> None:
-        if ACTIVE_AUTH_PROVIDER == "local":
-            g.current_user = auth_service.get_user(session.get("user_id")) if auth_service else None
-            return
+    def friendly_graph_login_error(error: GraphStorageError) -> str:
+        detail = str(error)
+        if "AADSTS7000215" in detail or "invalid_client" in detail:
+            return (
+                "Não foi possível ligar ao Microsoft Graph. "
+                "Verifique se o GRAPH_CLIENT_SECRET contém o Secret Value do Entra ID, "
+                "não o Secret ID."
+            )
+        return f"Microsoft Graph indisponível: {detail}"
 
+    def set_current_user() -> None:
         if ACTIVE_AUTH_PROVIDER == "microsoft":
             g.current_user = (
                 microsoft_auth_service.user_from_session(session.get("microsoft_user"))
@@ -185,33 +168,18 @@ def create_app(
                 asset_version=app.config["ASSET_VERSION"],
             )
 
-        if auth_service is None:
-            return redirect(url_for("index"))
-
-        error = None
-        if request.method == "POST":
-            identifier = request.form.get("username", "")
-            password = request.form.get("password", "")
-            user = auth_service.authenticate(identifier, password, ip_address=request.remote_addr)
-            if user:
-                session.clear()
-                session.permanent = True
-                session["user_id"] = user.id
-                return redirect(safe_next_url(request.form.get("next")))
-
-            error = "Utilizador ou password inválidos."
-
-        return render_template(
-            "login.html",
-            error=error,
-            next_url=safe_next_url(request.args.get("next")),
-            asset_version=app.config["ASSET_VERSION"],
-        )
+        return redirect(url_for("index"))
 
     @app.route("/auth/microsoft")
     def microsoft_auth_start():
         if ACTIVE_AUTH_PROVIDER != "microsoft" or microsoft_auth_service is None:
             return redirect(url_for("login"))
+
+        if graph_service is not None:
+            try:
+                graph_service.test_connection()
+            except GraphStorageError as exc:
+                return redirect(url_for("login", error=friendly_graph_login_error(exc)))
 
         state = secrets.token_urlsafe(32)
         nonce = secrets.token_urlsafe(32)
@@ -264,13 +232,6 @@ def create_app(
 
     @app.route("/logout", methods=["POST"])
     def logout():
-        if auth_service is not None and g.get("current_user"):
-            auth_service.log_action(
-                g.current_user.id,
-                "logout",
-                g.current_user.username,
-                ip_address=request.remote_addr,
-            )
         session.clear()
         return redirect(url_for("login"))
 
@@ -282,6 +243,18 @@ def create_app(
         if isinstance(value, list):
             return [serialize_payload(item) for item in value]
         return value
+
+    def pop_internal_observations(payload: dict[str, object]) -> str:
+        return str(payload.pop(INTERNAL_OBSERVATIONS_KEY, "") or "").strip()
+
+    def write_internal_observations(path, observations: str) -> Path | None:
+        if not observations:
+            return None
+
+        notes_path = Path(path).with_name(f"{Path(path).stem}__observacoes_internas.txt")
+        notes_path.parent.mkdir(parents=True, exist_ok=True)
+        notes_path.write_text(f"{observations}\n", encoding="utf-8")
+        return notes_path
 
     def serialize_file_entry(entry: dict[str, object]) -> dict[str, object]:
         serialized = dict(entry)
@@ -525,13 +498,6 @@ def create_app(
                     fail_if_exists=created_copy,
                 )
             file_service.invalidate_cache()
-            if auth_service is not None and g.get("current_user"):
-                auth_service.log_action(
-                    g.current_user.id,
-                    "draft_saved",
-                    draft_path.stem,
-                    ip_address=request.remote_addr,
-                )
             return jsonify({
                 "success": True,
                 "message": "Rascunho guardado.",
@@ -557,11 +523,13 @@ def create_app(
             return json_error("Sem dados", 400)
 
         try:
-            document_data = normalize_document_payload(data)
+            document_payload = dict(data)
+            internal_observations = pop_internal_observations(document_payload)
+            document_data = normalize_document_payload(document_payload)
             missing_fields = document_missing_required_fields(document_data)
             excel_service = ExcelService(path)
             signature_service = SignatureService(path)
-            resolved_signatures = signature_service.resolve_from_form_data(data)
+            resolved_signatures = signature_service.resolve_from_form_data(document_payload)
             missing_signature_fields = [
                 label for label in SignatureService.required_labels()
                 if not resolved_signatures.get(label)
@@ -584,11 +552,12 @@ def create_app(
                 signatures=resolved_signatures,
             )
             DocumentDataService(archived_path).write(strip_signature_payload(document_data))
-            signature_service.save_from_form_data(data)
+            signature_service.save_from_form_data(document_payload)
+            internal_observations_path = write_internal_observations(archived_path, internal_observations)
             document_html = build_document_html(
                 file_name=archived_path.stem,
                 path=archived_path,
-                payload=data,
+                payload=document_payload,
                 auto_print=False,
             )
             DocumentArtifactService(archived_path).write_html(document_html)
@@ -598,17 +567,11 @@ def create_app(
                 graph_uploaded_files = graph_service.upload_archive_bundle(archived_path)
                 graph_removed_active = graph_service.remove_active_entry(source_path)
             file_service.invalidate_cache()
-            if auth_service is not None and g.get("current_user"):
-                auth_service.log_action(
-                    g.current_user.id,
-                    "sheet_archived",
-                    archived_path.stem,
-                    ip_address=request.remote_addr,
-                )
             return jsonify({
                 "success": True,
                 "message": "Folha finalizada com sucesso.",
                 "archived_excel": archived_path.name,
+                "internal_observations": internal_observations_path.name if internal_observations_path else None,
                 "graph_uploaded_files": graph_uploaded_files,
                 "graph_removed_active": graph_removed_active,
             })
@@ -627,13 +590,6 @@ def create_app(
         try:
             canceled_path = archive_service.cancel(path)
             file_service.invalidate_cache()
-            if auth_service is not None and g.get("current_user"):
-                auth_service.log_action(
-                    g.current_user.id,
-                    "sheet_canceled",
-                    canceled_path.stem,
-                    ip_address=request.remote_addr,
-                )
             return jsonify({
                 "success": True,
                 "message": "Folha cancelada com sucesso.",

@@ -139,6 +139,14 @@ body {
     align-items: stretch;
 }
 
+.pwa-install-button {
+    grid-column: 1 / -1;
+}
+
+.pwa-install-button[hidden] {
+    display: none;
+}
+
 .list-meta {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
@@ -342,6 +350,25 @@ textarea[readonly] {
 .confirm-panel-copy p:last-of-type {
     margin: 8px 0 0;
     line-height: 1.5;
+}
+
+.confirm-extra {
+    display: grid;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+.confirm-extra[hidden] {
+    display: none;
+}
+
+.confirm-extra label {
+    color: var(--text);
+    font-weight: 700;
+}
+
+.confirm-extra textarea {
+    min-height: 92px;
 }
 
 .busy-panel {
