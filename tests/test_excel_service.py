@@ -7,6 +7,7 @@ Testa leitura, escrita e validação sem tocar em ficheiros de produção.
 
 import shutil
 import tempfile
+import datetime as dt
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,109 @@ def get_test_copy():
     tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
     tmp.close()
     shutil.copy2(str(SAMPLE_FILE), tmp.name)
+    return Path(tmp.name)
+
+
+def create_shifted_link_file():
+    """Cria um workbook com as colunas essenciais do LINK deslocadas."""
+    import openpyxl
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+    tmp.close()
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "LINK"
+    wb.create_sheet("FS")
+
+    headers = [
+        "Folha nº",
+        "Pedido por:",
+        "Email",
+        "Telefone",
+        "Contacto",
+        "Telefone",
+        "Contrato nº",
+        "Loja nº",
+        "Data\npedido",
+        "Cliente nº",
+        "ASSIST",
+        "MAN",
+        "COL.SERV",
+        "GAR",
+        "INST",
+        "PIQ",
+        "FORM",
+        "REP.OF",
+        "ACOMP.COM",
+        "SADI",
+        "CCTV",
+        "PA/VA",
+        "SAI",
+        "EXT",
+        "SCA",
+        "EAS",
+        "SADG",
+        "SCH",
+        "OTHER",
+        "Cliente nome",
+        "Local",
+        "Morada",
+        "Cód.\nPostal",
+        "CP",
+        "NIF",
+        "Avaria reportada",
+        "Fim",
+        "Data serviço",
+    ]
+    values = [
+        "2023/3021",
+        "Sr. João Bernardo",
+        "joao@acordo.pt",
+        "917212167",
+        "Sr. Ricardo António",
+        "924222685",
+        "n/a",
+        "n/a",
+        "22/11/2023",
+        "1103",
+        "X",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "X",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "ACORDO - Comércio e Serviços, Lda",
+        "Hospital Misericórdia",
+        "Av. Sanches de Miranda, 30",
+        "7006-805 Évora",
+        "70",
+        "501398392",
+        "Corrigir as ligações",
+        dt.time(14, 30),
+        dt.date(2026, 6, 16),
+    ]
+
+    for column_index, header in enumerate(headers, start=1):
+        ws.cell(row=2, column=column_index, value=header)
+    for column_index, value in enumerate(values, start=1):
+        ws.cell(row=3, column=column_index, value=value)
+
+    wb.save(tmp.name)
+    wb.close()
     return Path(tmp.name)
 
 
@@ -87,6 +191,28 @@ class TestExcelServiceRead:
         # Checkbox ASSIST deve ser False (não marcado)
         assert form_data["ASSIST"] is False
 
+    def test_read_link_uses_headers_when_columns_shift(self):
+        from src.services.excel_service import ExcelService
+        test_file = create_shifted_link_file()
+        try:
+            service = ExcelService(test_file)
+            form_data = service.read_link_as_form_data()
+
+            assert form_data["Folha nº"] == "2023/3021"
+            assert form_data["Pedido por"] == "Sr. João Bernardo"
+            assert form_data["Telefone"] == "917212167"
+            assert form_data["Telefone (2)"] == "924222685"
+            assert form_data["Cliente nome"] == "ACORDO - Comércio e Serviços, Lda"
+            assert form_data["Local"] == "Hospital Misericórdia"
+            assert form_data["Cód. Postal"] == "7006-805 Évora"
+            assert form_data["ASSIST"] is True
+            assert form_data["SADI"] is True
+            assert form_data["Avaria reportada"] == "Corrigir as ligações"
+            assert "Fim" not in form_data
+            assert "Data serviço" not in form_data
+        finally:
+            test_file.unlink(missing_ok=True)
+
 
 class TestExcelServiceWrite:
     """Testes de escrita na sheet LINK."""
@@ -97,12 +223,12 @@ class TestExcelServiceWrite:
         try:
             service = ExcelService(test_file)
 
-            # Escrever um valor novo
-            service.write_link({"BR": "Teste de escrita automática"})
+            # Escrever um valor novo num campo presente no LINK
+            service.write_link({"E": "Teste de escrita automática"})
 
             # Ler de volta
             data = service.read_link()
-            assert data["BR"] == "Teste de escrita automática"
+            assert data["E"] == "Teste de escrita automática"
         finally:
             test_file.unlink(missing_ok=True)
 
@@ -133,6 +259,37 @@ class TestExcelServiceWrite:
 
             data = service.read_link()
             assert data["L"] == "X"
+        finally:
+            test_file.unlink(missing_ok=True)
+
+    def test_write_link_uses_headers_when_columns_shift(self):
+        import openpyxl
+
+        from src.services.excel_service import ExcelService
+        test_file = create_shifted_link_file()
+        try:
+            service = ExcelService(test_file)
+
+            service.write_link_from_form({
+                "Cliente nome": "Cliente atualizado",
+                "Telefone (2)": "910000000",
+                "ASSIST": False,
+                "Avaria reportada": "Nova avaria",
+            })
+
+            form_data = service.read_link_as_form_data()
+            assert form_data["Cliente nome"] == "Cliente atualizado"
+            assert form_data["Telefone (2)"] == "910000000"
+            assert form_data["ASSIST"] is False
+            assert form_data["Avaria reportada"] == "Nova avaria"
+
+            wb = openpyxl.load_workbook(str(test_file), read_only=True, data_only=True)
+            try:
+                ws = wb["LINK"]
+                assert ws["AD3"].value == "Cliente atualizado"
+                assert ws["AE3"].value == "Hospital Misericórdia"
+            finally:
+                wb.close()
         finally:
             test_file.unlink(missing_ok=True)
 

@@ -8,6 +8,8 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="Sensorpoint Service">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="format-detection" content="telephone=no">
     <title>Folhas de Serviço</title>
     <link rel="manifest" href="{{ url_for('manifest') }}">
     <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='img/pwa/icon-192.png', v=asset_version) }}">
@@ -35,6 +37,9 @@
                 <button class="btn btn-secondary pwa-install-button" type="button" data-pwa-install hidden>
                     Instalar app
                 </button>
+                <p class="pwa-ios-install-copy" data-pwa-ios-install hidden>
+                    No iPhone, abra no Safari, toque em Partilhar e escolha Adicionar ao ecrã principal.
+                </p>
             </div>
 
             <div class="list-meta">

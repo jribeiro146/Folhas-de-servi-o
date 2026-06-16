@@ -147,6 +147,22 @@ body {
     display: none;
 }
 
+.pwa-ios-install-copy {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid rgba(var(--primary-rgb), 0.18);
+    border-radius: 12px;
+    background: var(--panel-soft);
+    color: var(--muted);
+    font-size: 0.78rem;
+    line-height: 1.4;
+}
+
+.pwa-ios-install-copy[hidden] {
+    display: none;
+}
+
 .list-meta {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);

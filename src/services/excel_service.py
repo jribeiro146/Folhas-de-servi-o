@@ -8,8 +8,11 @@ Usa o field_map como contrato estavel para acesso aos campos.
 
 from __future__ import annotations
 
+import datetime as dt
 import time
 import gc
+import re
+import unicodedata
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -19,7 +22,7 @@ from openpyxl.drawing.image import Image as WorksheetImage
 from openpyxl.utils import column_index_from_string, get_column_letter
 from PIL import Image as PILImage
 
-from src.config import LINK_DATA_ROW, REQUIRED_SHEETS, SHEET_LINK, SHEET_TEMPLATE
+from src.config import LINK_DATA_ROW, LINK_LABELS_ROW, REQUIRED_SHEETS, SHEET_LINK, SHEET_TEMPLATE
 from src.field_map import FIELD_BY_COLUMN, FIELD_MAP, FieldDef, FieldType
 from src.services.signature_service import (
     CLIENT_SIGNATURE_LABEL,
@@ -35,6 +38,65 @@ FS_LEGACY_SIGNATURE_TARGETS = {
 }
 FS_SIGNATURE_ROW_HEIGHT_POINTS = 42.0
 FS_SIGNATURE_MARGIN_PIXELS = 6
+
+FIELD_HEADER_ALIASES = {
+    "Pedido por": ("Pedido por:",),
+    "Data pedido": ("Data\npedido",),
+    "Telefone (2)": ("Telefone",),
+    "Cód. Postal": ("Cód.\nPostal", "Codigo Postal", "Código Postal"),
+    "Relatório Técnico": (
+        "Relatório Técnico da Intervenção",
+        "Relatório Técnico da Intervenção | Intervention report",
+    ),
+    "T.Total h (2)": ("T.Total h",),
+    "T.Total m (2)": ("T.Total m",),
+}
+
+FIELD_HEADER_OCCURRENCES = {
+    ("Telefone (2)", "Telefone"): 2,
+    ("T.Total h (2)", "T.Total h"): 2,
+    ("T.Total m (2)", "T.Total m"): 2,
+}
+
+LINK_FORM_INPUT_LABELS = {
+    "Folha nº",
+    "Pedido por",
+    "Email",
+    "Telefone",
+    "Contacto",
+    "Telefone (2)",
+    "Contrato nº",
+    "Loja nº",
+    "Data pedido",
+    "Cliente nº",
+    "Ident",
+    "ASSIST",
+    "MAN",
+    "COL.SERV",
+    "GAR",
+    "INST",
+    "PIQ",
+    "FORM",
+    "REP.OF",
+    "ACOMP.COM",
+    "SADI",
+    "CCTV",
+    "PA/VA",
+    "SAI",
+    "EXT",
+    "SCA",
+    "EAS",
+    "SADG",
+    "SCH",
+    "OTHER",
+    "Cliente nome",
+    "Local",
+    "Morada",
+    "Cód. Postal",
+    "CP",
+    "NIF",
+    "Avaria reportada",
+}
 
 
 class ExcelValidationError(Exception):
@@ -96,17 +158,17 @@ class ExcelService:
             wb.close()
             gc.collect()
 
-    def read_link(self) -> dict[str, Any]:
+    def read_link(self, fields: list[FieldDef] | tuple[FieldDef, ...] | None = None) -> dict[str, Any]:
         wb = self._load_workbook(read_only=True, data_only=True)
         try:
             self._validate_sheet_names(wb.sheetnames)
             ws = wb[SHEET_LINK]
+            field_columns = self._resolve_link_columns(ws)
             data: dict[str, Any] = {}
 
-            for field in FIELD_MAP:
-                col_idx = column_index_from_string(field.column)
-                cell = ws.cell(row=LINK_DATA_ROW, column=col_idx)
-                data[field.column] = cell.value
+            for field in fields or FIELD_MAP:
+                col_idx = field_columns.get(field.column)
+                data[field.column] = ws.cell(row=LINK_DATA_ROW, column=col_idx).value if col_idx else None
 
             return data
         finally:
@@ -114,10 +176,11 @@ class ExcelService:
             gc.collect()
 
     def read_link_as_form_data(self) -> dict[str, Any]:
-        raw_data = self.read_link()
+        input_fields = tuple(field for field in FIELD_MAP if field.label in LINK_FORM_INPUT_LABELS)
+        raw_data = self.read_link(input_fields)
         form_data: dict[str, Any] = {}
 
-        for field in FIELD_MAP:
+        for field in input_fields:
             value = raw_data.get(field.column)
             form_data[field.label] = self._format_for_form(field, value)
 
@@ -133,14 +196,18 @@ class ExcelService:
         try:
             self._validate_sheet_names(wb.sheetnames)
             ws = wb[SHEET_LINK]
+            field_columns = self._resolve_link_columns(ws)
 
             for column, value in data.items():
                 field = FIELD_BY_COLUMN.get(column)
                 if field is None or field.read_only:
                     continue
 
-                col_idx = column_index_from_string(column)
-                ws.cell(row=LINK_DATA_ROW, column=col_idx, value=value)
+                col_idx = field_columns.get(field.column)
+                if col_idx is None:
+                    continue
+
+                ws.cell(row=LINK_DATA_ROW, column=col_idx).value = value
 
             if signatures is not None:
                 self._write_fs_signatures(wb[SHEET_TEMPLATE], signatures)
@@ -208,6 +275,15 @@ class ExcelService:
         if field.field_type == FieldType.CHECKBOX:
             return str(value).strip().upper() == "X"
 
+        if isinstance(value, dt.datetime):
+            return value.strftime("%Y-%m-%d")
+
+        if isinstance(value, dt.date):
+            return value.strftime("%Y-%m-%d")
+
+        if isinstance(value, dt.time):
+            return value.strftime("%H:%M")
+
         return value
 
     @staticmethod
@@ -240,6 +316,64 @@ class ExcelService:
             return value.strip() == ""
 
         return False
+
+    @classmethod
+    def _resolve_link_columns(cls, worksheet) -> dict[str, int]:
+        header_columns = cls._build_header_columns(worksheet)
+        has_link_headers = sum(len(columns) for columns in header_columns.values()) >= 5
+        resolved: dict[str, int] = {}
+
+        for field in FIELD_MAP:
+            col_idx = cls._find_column_for_field(field, header_columns)
+            if col_idx is not None:
+                resolved[field.column] = col_idx
+                continue
+
+            if not has_link_headers:
+                resolved[field.column] = column_index_from_string(field.column)
+
+        return resolved
+
+    @classmethod
+    def _build_header_columns(cls, worksheet) -> dict[str, list[int]]:
+        header_columns: dict[str, list[int]] = {}
+
+        for col_idx in range(1, worksheet.max_column + 1):
+            normalized = cls._normalize_header_label(worksheet.cell(row=LINK_LABELS_ROW, column=col_idx).value)
+            if not normalized:
+                continue
+            header_columns.setdefault(normalized, []).append(col_idx)
+
+        return header_columns
+
+    @classmethod
+    def _find_column_for_field(
+        cls,
+        field: FieldDef,
+        header_columns: dict[str, list[int]],
+    ) -> int | None:
+        for candidate in (field.label, *FIELD_HEADER_ALIASES.get(field.label, ())):
+            normalized = cls._normalize_header_label(candidate)
+            matches = header_columns.get(normalized, [])
+            if not matches:
+                continue
+
+            occurrence = FIELD_HEADER_OCCURRENCES.get((field.label, candidate), 1)
+            if len(matches) >= occurrence:
+                return matches[occurrence - 1]
+
+        return None
+
+    @staticmethod
+    def _normalize_header_label(value: Any) -> str:
+        text = "" if value is None else str(value)
+        text = text.replace("\n", " ").replace("\r", " ")
+        text = text.replace("º", "o").replace("ª", "a").replace("°", "o")
+        text = unicodedata.normalize("NFKD", text)
+        text = "".join(char for char in text if not unicodedata.combining(char))
+        text = text.casefold().strip()
+        text = re.sub(r"[^a-z0-9]+", " ", text)
+        return re.sub(r"\s+", " ", text).strip()
 
     def _write_fs_signatures(
         self,

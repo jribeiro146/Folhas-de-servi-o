@@ -135,6 +135,8 @@ def normalize_document_payload(payload: dict[str, Any] | None) -> dict[str, Any]
     for key in DOCUMENT_SIMPLE_FIELDS:
         document[key] = _stringify(source.get(key))
 
+    document["address"] = _normalize_address(document["address"])
+
     if document["document_language"] not in {"pt", "en"}:
         document["document_language"] = "pt"
 
@@ -248,6 +250,9 @@ def document_to_excel_form(document_payload: dict[str, Any]) -> dict[str, Any]:
     hours_total = _decimal_hours(first_record.get("total_hours"))
     hours_integer, minutes_integer = _split_decimal_hours(hours_total)
 
+    address_street, address_postal_code = _split_address_parts(document["address"])
+    address_cp_zone = _postal_zone(address_postal_code)
+
     excel_form = {
         "Pedido por": _or_none(document["requested_by"]),
         "Email": _or_none(document["customer_email"]),
@@ -261,7 +266,9 @@ def document_to_excel_form(document_payload: dict[str, Any]) -> dict[str, Any]:
         "Ident": _or_none(shared_tax_number),
         "Cliente nome": _or_none(document["customer_name"]),
         "Local": _or_none(document["local_store"]),
-        "Morada": _or_none(document["address"]),
+        "Morada": _or_none(address_street),
+        "Cód. Postal": _or_none(address_postal_code),
+        "CP": _or_none(address_cp_zone),
         "NIF": _or_none(shared_tax_number),
         "Avaria reportada": _or_none(document["requested_tasks"]),
         "Data serviço": _or_none(first_record.get("date")),
@@ -572,13 +579,62 @@ def _format_date_value(value: Any) -> str:
     return _stringify(value)
 
 
+POSTAL_CODE_RE = re.compile(r"\b\d{4}-\d{3}(?:\s+[^,;|]+)?")
+
+
 def _compose_address(excel_form_data: dict[str, Any]) -> str:
-    parts = [
-        _stringify(excel_form_data.get("Morada")),
-        _stringify(excel_form_data.get("Cód. Postal")),
-        _stringify(excel_form_data.get("CP")),
-    ]
-    return ", ".join(part for part in parts if part)
+    street, embedded_postal_code = _split_address_parts(excel_form_data.get("Morada"))
+    _, explicit_postal_code = _split_address_parts(excel_form_data.get("Cód. Postal"))
+    postal_code = explicit_postal_code or embedded_postal_code
+
+    parts = []
+    for part in (street, postal_code):
+        normalized = _stringify(part)
+        if normalized and normalized not in parts:
+            parts.append(normalized)
+
+    return ", ".join(parts)
+
+
+def _normalize_address(value: Any) -> str:
+    street, postal_code = _split_address_parts(value)
+    return ", ".join(part for part in (street, postal_code) if part)
+
+
+def _split_address_parts(value: Any) -> tuple[str, str]:
+    text = _stringify(value)
+    if not text:
+        return "", ""
+
+    matches = list(POSTAL_CODE_RE.finditer(text))
+    if not matches:
+        return _clean_address_text(text), ""
+
+    postal_code = matches[0].group(0).strip(" ,;|")
+    text_without_cp_suffix = text
+    cp_zone = _postal_zone(postal_code)
+    if cp_zone:
+        text_without_cp_suffix = re.sub(
+            rf"({POSTAL_CODE_RE.pattern})(?:\s*[,;|]\s*{re.escape(cp_zone)}\b)+",
+            r"\1",
+            text_without_cp_suffix,
+        )
+
+    street = POSTAL_CODE_RE.sub(" ", text_without_cp_suffix)
+    street = _clean_address_text(street)
+    return street, postal_code
+
+
+def _clean_address_text(value: str) -> str:
+    text = re.sub(r"\s+", " ", _stringify(value))
+    text = re.sub(r"\s*[,;|]\s*", ", ", text)
+    text = re.sub(r"(?:,\s*){2,}", ", ", text)
+    return text.strip(" ,;|")
+
+
+def _postal_zone(postal_code: str) -> str:
+    match = re.search(r"\d{2}", _stringify(postal_code))
+    return match.group(0) if match else ""
 
 
 def _normalize_quantity(value: Any) -> str:

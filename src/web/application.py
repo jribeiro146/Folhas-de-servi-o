@@ -236,11 +236,19 @@ def create_app(
         return redirect(url_for("login"))
 
     def serialize_payload(value):
-        if isinstance(value, (dt.datetime, dt.date)):
+        if isinstance(value, dt.datetime):
             return value.strftime("%Y-%m-%d")
+        if isinstance(value, dt.date):
+            return value.strftime("%Y-%m-%d")
+        if isinstance(value, dt.time):
+            return value.strftime("%H:%M")
+        if isinstance(value, Path):
+            return str(value)
         if isinstance(value, dict):
             return {key: serialize_payload(item) for key, item in value.items()}
         if isinstance(value, list):
+            return [serialize_payload(item) for item in value]
+        if isinstance(value, tuple):
             return [serialize_payload(item) for item in value]
         return value
 
@@ -258,9 +266,7 @@ def create_app(
 
     def serialize_file_entry(entry: dict[str, object]) -> dict[str, object]:
         serialized = dict(entry)
-        if serialized.get("path") is not None:
-            serialized["path"] = str(serialized["path"])
-        return serialized
+        return serialize_payload(serialized)
 
     def load_editor_state(path):
         excel_form_data = serialize_payload(ExcelService(path).read_link_as_form_data())

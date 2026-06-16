@@ -3,11 +3,27 @@
 
     const installButtons = () => Array.from(document.querySelectorAll("[data-pwa-install]"));
     const installCopies = () => Array.from(document.querySelectorAll("[data-pwa-install-copy]"));
+    const iosInstallCopies = () => Array.from(document.querySelectorAll("[data-pwa-ios-install]"));
 
     const isStandalone = () => (
         window.matchMedia?.("(display-mode: standalone)")?.matches ||
         window.navigator.standalone === true
     );
+
+    const isIOS = () => (
+        /iphone|ipad|ipod/i.test(window.navigator.userAgent || "") ||
+        (window.navigator.platform === "MacIntel" && window.navigator.maxTouchPoints > 1)
+    );
+
+    const showIOSInstallControls = () => {
+        if (!isIOS() || isStandalone()) {
+            return;
+        }
+
+        iosInstallCopies().forEach((copy) => {
+            copy.hidden = false;
+        });
+    };
 
     const showInstallControls = () => {
         if (!deferredInstallPrompt || isStandalone()) {
@@ -28,6 +44,9 @@
             button.hidden = true;
         });
         installCopies().forEach((copy) => {
+            copy.hidden = true;
+        });
+        iosInstallCopies().forEach((copy) => {
             copy.hidden = true;
         });
     };
@@ -67,6 +86,7 @@
 
     window.addEventListener("load", () => {
         navigator.serviceWorker.register("/service-worker.js", { scope: "/" }).catch(() => {});
+        showIOSInstallControls();
         showInstallControls();
     });
 })();
