@@ -939,6 +939,7 @@ body.has-active-file .brand-logo {
         --page-space: 10px;
         --panel-space: 12px;
         --control-height: 42px;
+        --mobile-topbar-height: 112px;
     }
 
     body.has-active-file {
@@ -994,7 +995,7 @@ body.has-active-file .brand-logo {
     }
 
     body.has-active-file .workspace {
-        padding: 10px;
+        padding: calc(var(--mobile-topbar-height) + env(safe-area-inset-top, 0px) + 12px) 10px 10px;
     }
 
     body.has-active-file .workspace > :not(.toast-zone) {
@@ -1002,57 +1003,113 @@ body.has-active-file .brand-logo {
     }
 
     body.has-active-file .topbar {
-        position: sticky;
-        top: 8px;
+        position: fixed;
+        top: calc(env(safe-area-inset-top, 0px) + 8px);
+        left: 8px;
+        right: 8px;
         z-index: 80;
-        grid-template-columns: 1fr;
-        gap: 12px;
-        border-radius: 16px;
+        width: auto;
+        max-height: var(--mobile-topbar-height);
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px 10px;
+        align-items: center;
+        border-radius: 14px;
+        padding: 8px;
+        overflow: hidden;
     }
 
     body.has-active-file .topbar-copy {
         grid-template-columns: auto minmax(0, 1fr);
-        gap: 4px 10px;
+        gap: 2px 8px;
         align-items: center;
     }
 
     body.has-active-file #btn-toggle-sidebar {
-        grid-row: 1 / span 2;
+        grid-row: 1 / span 1;
         grid-column: 1;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-width: 86px;
-        align-self: stretch;
+        min-width: 70px;
+        min-height: 36px;
+        padding: 6px 12px;
+        align-self: center;
     }
 
     body.has-active-file .topbar-copy .eyebrow,
-    body.has-active-file .topbar-copy h2,
     body.has-active-file .topbar-copy .status-message {
+        display: none;
+    }
+
+    body.has-active-file .topbar-copy h2 {
         grid-column: 2;
     }
 
     body.has-active-file .topbar h2 {
         max-width: none;
-        font-size: clamp(1.05rem, 5vw, 1.35rem);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: clamp(0.98rem, 4.2vw, 1.16rem);
+    }
+
+    body.has-active-file .topbar-side {
+        display: contents;
+    }
+
+    body.has-active-file .session-card {
+        grid-column: 2;
+        grid-row: 1;
+        justify-content: end;
+        width: auto;
+        gap: 0;
+    }
+
+    body.has-active-file .session-card span {
+        display: none;
+    }
+
+    body.has-active-file .btn-logout {
+        min-height: 36px;
+        padding: 6px 12px;
     }
 
     body.has-active-file .actions {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 8px;
-        justify-content: stretch;
+        grid-column: 1 / -1;
+        display: flex;
+        gap: 6px;
+        justify-content: flex-start;
+        width: 100%;
+        max-width: none;
+        overflow-x: auto;
+        padding: 2px 0 4px;
+        scrollbar-width: none;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    body.has-active-file .actions::-webkit-scrollbar {
+        display: none;
     }
 
     body.has-active-file .actions .btn,
     body.has-active-file .actions .language-switch {
-        width: 100%;
+        flex: 0 0 auto;
+        width: auto;
+        min-height: 36px;
+        white-space: nowrap;
+        font-size: 0.86rem;
     }
 
     body.has-active-file .language-switch {
-        justify-content: space-between;
-        grid-column: 1 / -1;
+        justify-content: center;
+        gap: 6px;
         padding: 0 2px;
+    }
+
+    body.has-active-file .language-switch select {
+        min-height: 36px;
+        min-width: 66px;
+        padding-inline: 10px;
     }
 
     body.has-active-file .brand-logo {

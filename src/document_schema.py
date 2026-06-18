@@ -49,7 +49,7 @@ TECHNICIAN_OPTIONS = [
     "Luis Henrique",
     "Valdecir Junior",
     "Luis Duarte",
-    "José Caldeira",
+    "José Califórnia",
 ]
 
 DOCUMENT_REQUIRED_FIELDS: list[dict[str, str]] = [
