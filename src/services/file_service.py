@@ -122,6 +122,7 @@ class FileService:
 
         return {
             "customer_name": str(document.get("customer_name") or "").strip(),
+            "local_store": str(document.get("local_store") or "").strip(),
             "contact_label": "Contacto" if contact_name else ("Pedido por" if fallback_contact_name else "Pessoa"),
             "contact_name": contact_name or fallback_contact_name,
             "address": str(document.get("address") or "").strip(),

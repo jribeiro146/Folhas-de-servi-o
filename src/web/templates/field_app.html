@@ -53,7 +53,7 @@
                 {% else %}
                     {% for file in files %}
                         {% if file.status in ['ready', 'in_progress'] %}
-                        <li class="file-card {{ file.status }} {% if selected_file_name == file.name %}active{% endif %}" data-search="{{ (file.name ~ ' ' ~ (file.summary.customer_name or '') ~ ' ' ~ (file.summary.contact_name or '') ~ ' ' ~ (file.summary.address or '') ~ ' ' ~ (file.summary.phone or ''))|lower }}">
+                        <li class="file-card {{ file.status }} {% if selected_file_name == file.name %}active{% endif %}" data-search="{{ (file.name ~ ' ' ~ (file.summary.customer_name or '') ~ ' ' ~ (file.summary.local_store or '') ~ ' ' ~ (file.summary.contact_name or '') ~ ' ' ~ (file.summary.address or '') ~ ' ' ~ (file.summary.phone or ''))|lower }}">
                             <a class="file-card-link" href="{{ url_for('index', file=file.name) }}" data-name="{{ file.name }}">
                                 <div class="file-card-main">
                                     <strong>{{ file.name }}</strong>
@@ -65,6 +65,9 @@
                                     {% if file.summary.customer_name %}
                                     <p>{{ file.summary.customer_name }}</p>
                                     {% endif %}
+                                    {% if file.summary.local_store %}
+                                    <p>{{ file.summary.local_store }}</p>
+                                    {% endif %}
                                     {% if file.summary.contact_name %}
                                     <p>{{ file.summary.contact_name }}</p>
                                     {% endif %}
@@ -74,14 +77,14 @@
                                     {% if file.summary.phone %}
                                     <p>{{ file.summary.phone }}</p>
                                     {% endif %}
-                                    {% if not file.summary.customer_name and not file.summary.contact_name and not file.summary.address and not file.summary.phone %}
+                                    {% if not file.summary.customer_name and not file.summary.local_store and not file.summary.contact_name and not file.summary.address and not file.summary.phone %}
                                     <p class="file-card-empty-meta">Sem dados adicionais.</p>
                                     {% endif %}
                                 </div>
                             </a>
                         </li>
                         {% else %}
-                        <li class="file-card {{ file.status }}" data-search="{{ (file.name ~ ' ' ~ (file.summary.customer_name or '') ~ ' ' ~ (file.summary.contact_name or '') ~ ' ' ~ (file.summary.address or '') ~ ' ' ~ (file.summary.phone or ''))|lower }}">
+                        <li class="file-card {{ file.status }}" data-search="{{ (file.name ~ ' ' ~ (file.summary.customer_name or '') ~ ' ' ~ (file.summary.local_store or '') ~ ' ' ~ (file.summary.contact_name or '') ~ ' ' ~ (file.summary.address or '') ~ ' ' ~ (file.summary.phone or ''))|lower }}">
                             <div class="file-card-main">
                                 <strong>{{ file.name }}</strong>
                                 <span class="status-pill {% if file.status == 'locked' %}locked{% else %}error{% endif %}">

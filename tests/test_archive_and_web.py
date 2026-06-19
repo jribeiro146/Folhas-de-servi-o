@@ -100,6 +100,7 @@ def test_web_api_flow_send_and_cancel(isolated_dirs):
     assert files_payload["success"] is True
     assert files_payload["files"][0]["name"] == "2026_4572"
     assert files_payload["files"][0]["summary"]["customer_name"] == "Hospital CUF Descobertas, SA"
+    assert files_payload["files"][0]["summary"]["local_store"] == "CUF Descobertas"
     assert files_payload["files"][0]["summary"]["contact_label"] == "Pedido por"
     assert files_payload["files"][0]["summary"]["contact_name"] == "Sra. Jéssica Silv"
     assert "R. Mário Botas" in files_payload["files"][0]["summary"]["address"]
