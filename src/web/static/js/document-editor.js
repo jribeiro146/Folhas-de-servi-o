@@ -5,6 +5,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const filesApp = window.__FILES_APP__ || {};
     const requiredFields = Array.isArray(filesApp.requiredFields) ? filesApp.requiredFields : [];
     const selectedFileName = filesApp.selectedFileName || null;
+    const selectedFileIsDraft = filesApp.selectedFileIsDraft;
     const selectedDocumentData = filesApp.selectedDocumentData || null;
     const selectedSignatures = filesApp.selectedSignatures || {};
     const selectedFileError = filesApp.selectedFileError || null;
@@ -136,6 +137,7 @@ document.addEventListener("DOMContentLoaded", () => {
             select_technician: "Selecionar técnico",
             ready_title: "Selecione uma folha ativa",
             editing_title: "A editar",
+            private_editing_title: "Novo rascunho privado",
             preparing_document: "A preparar documento...",
             remove_materials_eyebrow: "Materiais",
             remove_materials_title: "Remover materiais registados?",
@@ -215,6 +217,7 @@ document.addEventListener("DOMContentLoaded", () => {
             select_technician: "Select technician",
             ready_title: "Select an active sheet",
             editing_title: "Editing",
+            private_editing_title: "New private draft",
             preparing_document: "Preparing document...",
             remove_materials_eyebrow: "Materials",
             remove_materials_title: "Remove recorded materials?",
@@ -286,7 +289,10 @@ document.addEventListener("DOMContentLoaded", () => {
         durationRows.forEach((row) => updateTechnicianDurationMeta(row));
 
         if (activeFileName) {
-            titleHeader.textContent = `${t("editing_title")}: ${activeFileName}.xlsx`;
+            const titleKey = selectedFileIsDraft === false
+                ? "private_editing_title"
+                : "editing_title";
+            titleHeader.textContent = `${t(titleKey)}: ${activeFileName}.xlsx`;
         } else {
             titleHeader.textContent = t("ready_title");
         }

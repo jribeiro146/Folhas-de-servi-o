@@ -5,6 +5,7 @@ const startEditingCoordinator = () => {
     const filesApp = window.__FILES_APP__ || {};
     const editor = window.__FILES_EDITOR__;
     const activeFileName = filesApp.selectedFileName || null;
+    const isPrivateSource = filesApp.selectedFileIsDraft === false;
     const form = document.getElementById("service-form");
     const autosaveStatus = document.getElementById("autosave-status");
     const lockBanner = document.getElementById("editing-lock-banner");
@@ -146,8 +147,7 @@ const startEditingCoordinator = () => {
         return withStore("readonly", (store) => store.get(key));
     };
 
-    const deleteRecovery = async () => {
-        const key = recoveryKey();
+    const deleteRecovery = async (key = recoveryKey()) => {
         await withStore("readwrite", (store) => store.delete(key));
     };
 
@@ -269,12 +269,12 @@ const startEditingCoordinator = () => {
     };
 
     const setCommitActionsEnabled = (enabled) => {
-        ["btn-save-draft", "btn-save-send", "btn-cancel-file"].forEach((id) => {
-            const control = document.getElementById(id);
-            if (control) {
-                control.disabled = !enabled;
-            }
-        });
+        const draftButton = document.getElementById("btn-save-draft");
+        const sendButton = document.getElementById("btn-save-send");
+        const cancelButton = document.getElementById("btn-cancel-file");
+        if (draftButton) draftButton.disabled = !enabled;
+        if (sendButton) sendButton.disabled = !enabled || isPrivateSource;
+        if (cancelButton) cancelButton.disabled = !enabled || isPrivateSource;
     };
 
     const editMetadata = (idempotencyKey = "") => ({
@@ -334,7 +334,10 @@ const startEditingCoordinator = () => {
             };
         }
         const requestState = { ...pendingAutosave };
-        setAutosaveStatus("A sincronizar com o servidor…", "saving");
+        setAutosaveStatus(
+            isPrivateSource ? "A guardar na sua área privada…" : "A sincronizar com o servidor…",
+            "saving",
+        );
         try {
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/autosave`, {
                 method: "POST",
@@ -379,7 +382,10 @@ const startEditingCoordinator = () => {
                     hour: "2-digit",
                     minute: "2-digit",
                 });
-                setAutosaveStatus(`Sincronizado às ${savedTime}`, "saved");
+                setAutosaveStatus(
+                    isPrivateSource ? `Rascunho privado guardado às ${savedTime}` : `Sincronizado às ${savedTime}`,
+                    "saved",
+                );
             } else {
                 dirty = true;
                 await persistLocalRecovery();
@@ -417,7 +423,10 @@ const startEditingCoordinator = () => {
             return;
         }
         dirty = true;
-        setAutosaveStatus("A guardar neste dispositivo…", "saving");
+        setAutosaveStatus(
+            isPrivateSource ? "A guardar na sua área privada…" : "A guardar neste dispositivo…",
+            "saving",
+        );
         schedulePersistence();
     };
 
@@ -524,8 +533,12 @@ const startEditingCoordinator = () => {
                     deleteRecovery().catch(() => {});
                 }
                 setAutosaveStatus(
-                    readOnly || !leaseToken ? "Alterações recuperadas — modo de consulta" : "Alterações recuperadas — sincronizadas",
-                    readOnly || !leaseToken ? "offline" : "saved",
+                    isPrivateSource
+                        ? "Rascunho privado recuperado — só este técnico o vê"
+                        : (readOnly || !leaseToken
+                            ? "Alterações recuperadas — modo de consulta"
+                            : "Alterações recuperadas — sincronizadas"),
+                    isPrivateSource ? "saved" : (readOnly || !leaseToken ? "offline" : "saved"),
                 );
                 showToast("Alterações recuperadas automaticamente.", "success");
                 return;
@@ -538,7 +551,10 @@ const startEditingCoordinator = () => {
                 showToast("Alterações recuperadas automaticamente.", "success");
                 return;
             }
-            setAutosaveStatus("Alterações repostas — a sincronizar…", "saving");
+            setAutosaveStatus(
+                isPrivateSource ? "Rascunho privado reposto — a guardar…" : "Alterações repostas — a sincronizar…",
+                "saving",
+            );
             showToast("Alterações deste dispositivo repostas.", "success");
             await runAutosave();
         } finally {
@@ -702,7 +718,10 @@ const startEditingCoordinator = () => {
             clearLeaseRetry();
             setFormReadOnly(false);
             setCommitActionsEnabled(true);
-            setAutosaveStatus("Edição disponível", "saved");
+            setAutosaveStatus(
+                isPrivateSource ? "Área privada — só este técnico vê as alterações" : "Edição disponível",
+                "saved",
+            );
             startHeartbeat();
             if (dirty) {
                 window.setTimeout(() => runAutosave(), 0);
@@ -917,15 +936,16 @@ const startEditingCoordinator = () => {
             return editMetadata(operationKeys.get(kind));
         },
         async markCommitted(result, kind) {
+            const committedRecoveryKey = recoveryKey();
             editing = { ...editing, ...result };
             operationKeys.delete(kind);
             dirty = false;
             pendingAutosave = null;
             window.clearTimeout(localSaveTimer);
             window.clearTimeout(serverSaveTimer);
-            await deleteRecovery();
+            await deleteRecovery(committedRecoveryKey);
             setAutosaveStatus("Alterações consolidadas", "saved");
-            if (["send", "cancel"].includes(kind)) {
+            if (["send", "cancel"].includes(kind) || result.created_copy) {
                 leaseToken = "";
             }
         },

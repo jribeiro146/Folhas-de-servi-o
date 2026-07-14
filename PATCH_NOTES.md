@@ -4,6 +4,42 @@ Registo das principais alteracoes por versao da aplicacao Folhas de Servico.
 
 As versoes sem tag formal usam o commit Git como referencia. A versao marcada para servidor continua a ser `v1.0.0-servidor`, salvo indicacao posterior.
 
+## v1.1.2 - Rascunhos privados por tecnico
+
+Data: 2026-07-14
+Commit: incluido nesta versao
+
+### Adicionado
+
+- Area de trabalho privada por tecnico e separador enquanto a folha original continua no estado "Pronta".
+- Identidade propria para cada rascunho criado, separando definitivamente autosave, revisao e reserva.
+- Indicacao visual "Novo rascunho privado" e estados de gravacao que explicam que so o tecnico atual ve as alteracoes.
+
+### Alterado
+
+- A folha original deixou de ter uma reserva exclusiva partilhada; varios tecnicos podem agora iniciar trabalho sobre a mesma obra em simultaneo.
+- "Guardar rascunho" cria uma copia individual e unica; colisoes simultaneas recebem sufixos como "_JF" e "_JF_1".
+- "Guardar e enviar" e "Cancelar folha" ficam indisponiveis na folha original e so podem ser usados depois de criar o rascunho individual.
+- Os autosaves partilhados do fluxo antigo deixam de ser herdados por novas areas privadas, garantindo um arranque limpo a partir do Excel original.
+- A reserva exclusiva continua ativa dentro de cada rascunho ja criado, protegendo a sua edicao contra sobrescritas.
+
+### Corrigido
+
+- Dois tecnicos na mesma obra deixam de escrever sobre o mesmo autosave antes de criarem as respetivas folhas.
+- Uma atualizacao recupera logo a area privada correta, sem mostrar primeiro uma folha em branco nem exigir uma segunda atualizacao.
+- A criacao concorrente de rascunhos passou a reservar a pasta de destino de forma atomica.
+- A resposta da criacao passa imediatamente para a identidade do novo rascunho, evitando misturar revisoes da folha original e da copia.
+- A folha original deixa de poder ser finalizada ou cancelada por engano.
+
+### Validacao
+
+- Suite integral: 57 testes aprovados em Python 3.13.
+- JavaScript validado sintaticamente com node --check.
+- Teste real no browser com dois separadores sobre "2026_4769 Casa Saurimo": os textos A e B ficaram isolados e foram recuperados com uma unica atualizacao.
+- Os dois tecnicos criaram "2026_4769 Casa Saurimo_2026-07-14_JF" e "2026_4769 Casa Saurimo_2026-07-14_JF_1"; ambos abriram logo com o conteudo correto.
+- Os quatro Excel originais mantiveram os hashes SHA-256 anteriores; a folha base QA permaneceu byte a byte igual ao original.
+- O servidor QA curto terminou sem Traceback, ERROR ou Exception.
+
 ## v1.1.1 - Sincronizacao e recuperacao
 
 Data: 2026-07-14

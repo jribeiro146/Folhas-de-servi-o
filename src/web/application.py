@@ -173,11 +173,20 @@ def create_app(
             raise EditingStateError("Revisão base inválida.") from exc
         return metadata
 
+    def resolve_editing_document_id(path: Path, client_id: str) -> str:
+        if file_service.is_draft_file(path):
+            return editing_state_service.resolve_document_id(path)
+        return editing_state_service.resolve_private_workspace_id(
+            path,
+            current_editor_identity(),
+            client_id,
+        )
+
     def validate_document_identity(path: Path, metadata: dict[str, object]) -> str:
         document_id = str(metadata["document_id"])
-        expected_id = editing_state_service.resolve_document_id(path)
+        expected_id = resolve_editing_document_id(path, str(metadata["client_id"]))
         if document_id != expected_id:
-            raise RevisionConflictError(editing_state_service.snapshot(path, expected_id))
+            raise RevisionConflictError(editing_state_service.snapshot_document(expected_id))
         return document_id
 
     def wants_json_response() -> bool:
@@ -431,6 +440,7 @@ def create_app(
         selected_signatures = {}
         selected_file_error = storage_error
         selected_editing_state = None
+        selected_file_is_draft = None
         editor_identity = current_editor_identity()
 
         if selected_file_name:
@@ -440,7 +450,15 @@ def create_app(
             else:
                 try:
                     selected_file_data, selected_document_data, selected_signatures = load_editor_state(path)
+                    selected_file_is_draft = file_service.is_draft_file(path)
                     selected_editing_state = editing_state_service.snapshot(path)
+                    if not selected_file_is_draft:
+                        selected_editing_state = {
+                            **selected_editing_state,
+                            "lease": None,
+                            "server_document": None,
+                            "autosaved_at": None,
+                        }
                 except ExcelValidationError as exc:
                     selected_file_error = str(exc)
                 except Exception as exc:
@@ -458,6 +476,7 @@ def create_app(
             selected_signatures=selected_signatures,
             selected_file_error=selected_file_error,
             selected_editing_state=selected_editing_state,
+            selected_file_is_draft=selected_file_is_draft,
             service_type_options=SERVICE_TYPE_OPTIONS,
             equipment_options=EQUIPMENT_OPTIONS,
             technician_options=TECHNICIAN_OPTIONS,
@@ -540,6 +559,13 @@ def create_app(
         try:
             form_data, document_data, signatures = load_editor_state(path)
             editing = editing_state_service.snapshot(path)
+            if not file_service.is_draft_file(path):
+                editing = {
+                    **editing,
+                    "lease": None,
+                    "server_document": None,
+                    "autosaved_at": None,
+                }
             return jsonify({
                 "success": True,
                 "file": name,
@@ -562,11 +588,15 @@ def create_app(
         data = request.get_json(silent=True) or {}
         client_id = str(data.get("client_id") or "").strip()
         try:
-            editing = editing_state_service.acquire_lease(
-                path,
-                current_editor_identity(),
-                client_id,
-            )
+            identity = current_editor_identity()
+            if file_service.is_draft_file(path):
+                editing = editing_state_service.acquire_lease(path, identity, client_id)
+            else:
+                editing = editing_state_service.acquire_private_workspace(
+                    path,
+                    identity,
+                    client_id,
+                )
             return jsonify({"success": True, "editable": True, "editing": editing})
         except EditingStateError as exc:
             return editing_error_response(exc)
@@ -579,8 +609,11 @@ def create_app(
         data = request.get_json(silent=True) or {}
         try:
             document_id = str(data.get("document_id") or "")
-            if document_id != editing_state_service.resolve_document_id(path):
-                raise RevisionConflictError(editing_state_service.snapshot(path))
+            expected_id = resolve_editing_document_id(
+                path, str(data.get("client_id") or "")
+            )
+            if document_id != expected_id:
+                raise RevisionConflictError(editing_state_service.snapshot_document(expected_id))
             editing = editing_state_service.renew_lease(
                 document_id,
                 current_editor_identity(),
@@ -756,11 +789,6 @@ def create_app(
                 )
                 created_copy = draft_path != path
                 created_this_attempt = created_copy
-                editing_state_service.associate_path(
-                    draft_path,
-                    document_id,
-                    original_name=path.stem,
-                )
                 editing_state_service.update_operation_context(
                     document_id,
                     idempotency_key,
@@ -780,6 +808,17 @@ def create_app(
             )
             DocumentDataService(draft_path).write(strip_signature_payload(document_data))
             signature_service.save_from_form_data(data)
+
+            result_editing = None
+            if created_copy:
+                draft_document_id = editing_state_service.resolve_document_id(draft_path)
+                editing_state_service.associate_path(
+                    draft_path,
+                    draft_document_id,
+                    original_name=path.stem,
+                )
+                result_editing = editing_state_service.snapshot(draft_path, draft_document_id)
+
             graph_uploaded_files = []
             if graph_service is not None:
                 graph_uploaded_files = graph_service.upload_active_bundle(
@@ -790,7 +829,9 @@ def create_app(
             result = editing_state_service.commit_operation(
                 document_id=document_id,
                 idempotency_key=idempotency_key,
-                path=draft_path,
+                path=None if created_copy else draft_path,
+                release_lease=created_copy,
+                result_editing=result_editing,
                 response={
                     "success": True,
                     "message": "Rascunho guardado.",
@@ -847,6 +888,12 @@ def create_app(
                 archived_path = None
             if path is None and archived_path is None:
                 return json_error("Ficheiro não encontrado", 404)
+            if path is not None and not file_service.is_draft_file(path):
+                return jsonify({
+                    "success": False,
+                    "error": "Crie primeiro um rascunho individual antes de finalizar a folha.",
+                    "code": "draft_required",
+                }), 409
             if path is not None:
                 validate_document_identity(path, metadata)
 
@@ -991,6 +1038,12 @@ def create_app(
                 canceled_path = None
             if path is None and canceled_path is None:
                 return json_error("Ficheiro não encontrado", 404)
+            if path is not None and not file_service.is_draft_file(path):
+                return jsonify({
+                    "success": False,
+                    "error": "A folha original não pode ser cancelada; crie primeiro um rascunho individual.",
+                    "code": "draft_required",
+                }), 409
             if path is not None:
                 validate_document_identity(path, metadata)
 

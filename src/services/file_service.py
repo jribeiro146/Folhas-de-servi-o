@@ -159,13 +159,19 @@ class FileService:
             return file_path
 
         draft_name = self._build_draft_name(file_path.stem, technician_name)
-        draft_dir = self._resolve_conflict(self.directory / draft_name)
-        draft_dir.mkdir(parents=True, exist_ok=True)
+        draft_dir = self._reserve_draft_directory(self.directory / draft_name)
         draft_path = draft_dir / f"{draft_dir.name}{file_path.suffix}"
-        shutil.copy2(str(file_path), str(draft_path))
-        DocumentArtifactService(file_path).copy_to(draft_path)
-        DocumentDataService(file_path).copy_to(draft_path)
-        SignatureService(file_path).copy_to(draft_path)
+        try:
+            shutil.copy2(str(file_path), str(draft_path))
+            DocumentArtifactService(file_path).copy_to(draft_path)
+            DocumentDataService(file_path).copy_to(draft_path)
+            SignatureService(file_path).copy_to(draft_path)
+        except Exception:
+            root = self.directory.resolve()
+            reserved = draft_dir.resolve()
+            if reserved.is_relative_to(root):
+                shutil.rmtree(reserved, ignore_errors=True)
+            raise
         return draft_path
 
     def _build_draft_name(self, base_name: str, technician_name: str | None) -> str:
@@ -181,18 +187,21 @@ class FileService:
         return initials
 
     @staticmethod
-    def _resolve_conflict(path: Path) -> Path:
+    def _reserve_draft_directory(path: Path) -> Path:
+        """Atomically reserve a unique bundle directory for a new draft."""
         counter = 1
         candidate = path
 
-        while candidate.exists():
-            if path.suffix:
-                candidate = path.with_name(f"{path.stem}_{counter}{path.suffix}")
-            else:
-                candidate = path.with_name(f"{path.name}_{counter}")
-            counter += 1
-
-        return candidate
+        while True:
+            try:
+                candidate.mkdir(parents=True, exist_ok=False)
+                return candidate
+            except FileExistsError:
+                if path.suffix:
+                    candidate = path.with_name(f"{path.stem}_{counter}{path.suffix}")
+                else:
+                    candidate = path.with_name(f"{path.name}_{counter}")
+                counter += 1
 
     @staticmethod
     def _is_excel_file(path: Path) -> bool:

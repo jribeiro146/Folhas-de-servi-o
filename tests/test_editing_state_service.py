@@ -53,6 +53,67 @@ def test_lease_blocks_other_user_and_other_tab(tmp_path):
     assert first["lease"]["token"]
 
 
+def test_private_workspaces_isolate_same_source_and_recover_per_session(tmp_path):
+    path = make_active_file(tmp_path, "2026_5008")
+    service = EditingStateService(tmp_path / "editing")
+    first_identity = EditorIdentity("user-a", "Utilizador A")
+    second_identity = EditorIdentity("user-b", "Utilizador B")
+
+    first = service.acquire_private_workspace(path, first_identity, "tab-a")
+    second = service.acquire_private_workspace(path, second_identity, "tab-b")
+
+    assert first["document_id"] != second["document_id"]
+    assert first["lease"]["owner_id"] == "user-a"
+    assert second["lease"]["owner_id"] == "user-b"
+
+    first_saved = service.save_autosave(
+        document_id=first["document_id"],
+        identity=first_identity,
+        client_id="tab-a",
+        lease_token=first["lease"]["token"],
+        base_revision=first["revision"],
+        idempotency_key="private-save-a",
+        document={"intervention_report": "Rascunho A"},
+    )
+    second_saved = service.save_autosave(
+        document_id=second["document_id"],
+        identity=second_identity,
+        client_id="tab-b",
+        lease_token=second["lease"]["token"],
+        base_revision=second["revision"],
+        idempotency_key="private-save-b",
+        document={"intervention_report": "Rascunho B"},
+    )
+
+    assert first_saved["server_document"]["intervention_report"] == "Rascunho A"
+    assert second_saved["server_document"]["intervention_report"] == "Rascunho B"
+    assert service.snapshot(path)["server_document"] is None
+    assert (
+        service.acquire_private_workspace(path, first_identity, "tab-a")["server_document"]
+        ["intervention_report"]
+        == "Rascunho A"
+    )
+
+def test_private_workspace_does_not_inherit_old_shared_autosave(tmp_path):
+    path = make_active_file(tmp_path, "2026_5009")
+    service = EditingStateService(tmp_path / "editing")
+    identity = EditorIdentity("user-a", "Utilizador A")
+    shared = service.acquire_lease(path, identity, "old-shared-tab")
+    service.save_autosave(
+        document_id=shared["document_id"],
+        identity=identity,
+        client_id="old-shared-tab",
+        lease_token=shared["lease"]["token"],
+        base_revision=shared["revision"],
+        idempotency_key="old-shared-save",
+        document={"intervention_report": "Conteúdo antigo partilhado"},
+    )
+
+    private = service.acquire_private_workspace(path, identity, "new-private-tab")
+
+    assert private["server_document"] is None
+    assert private["document_id"] != shared["document_id"]
+
 def test_explicit_logout_release_clears_every_user_lease(tmp_path):
     first_path = make_active_file(tmp_path, "2026_5004")
     second_path = make_active_file(tmp_path, "2026_5005")
@@ -166,9 +227,61 @@ def test_close_session_releases_lease_even_if_revision_is_stale(tmp_path):
     assert closed["editing"]["server_document"]["intervention_report"] == "Servidor"
 
 
+def test_web_ready_sheet_gives_each_technician_an_isolated_workspace(tmp_path):
+    path = make_active_file(tmp_path, "2026_5100")
+    app = create_app(
+        file_service=FileService(path.parent),
+        archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(tmp_path / "editing"),
+    )
+    first_client = app.test_client()
+    second_client = app.test_client()
+
+    first_response = first_client.post(
+        "/api/file/2026_5100/lease", json={"client_id": "first-tab"}
+    )
+    second_response = second_client.post(
+        "/api/file/2026_5100/lease", json={"client_id": "second-tab"}
+    )
+    first = first_response.get_json()["editing"]
+    second = second_response.get_json()["editing"]
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first["document_id"] != second["document_id"]
+
+    for client, editing, client_id, report in (
+        (first_client, first, "first-tab", "Trabalho do técnico A"),
+        (second_client, second, "second-tab", "Trabalho do técnico B"),
+    ):
+        response = client.post(
+            "/api/file/2026_5100/autosave",
+            json={
+                "document": {"intervention_report": report},
+                "_edit": {
+                    "document_id": editing["document_id"],
+                    "client_id": client_id,
+                    "lease_token": editing["lease"]["token"],
+                    "base_revision": editing["revision"],
+                    "idempotency_key": f"autosave-{client_id}",
+                },
+            },
+        )
+        assert response.status_code == 200
+        assert response.get_json()["editing"]["server_document"]["intervention_report"] == report
+
+    first_recovered = first_client.post(
+        "/api/file/2026_5100/lease", json={"client_id": "first-tab"}
+    ).get_json()["editing"]
+    second_recovered = second_client.post(
+        "/api/file/2026_5100/lease", json={"client_id": "second-tab"}
+    ).get_json()["editing"]
+    assert first_recovered["server_document"]["intervention_report"] == "Trabalho do técnico A"
+    assert second_recovered["server_document"]["intervention_report"] == "Trabalho do técnico B"
+
 def test_web_leases_isolate_files_and_autosave_conflicts(tmp_path):
-    first_path = make_active_file(tmp_path, "2026_5101")
-    make_active_file(tmp_path, "2026_5102")
+    first_path = make_active_file(tmp_path, "2026_5101_2026-07-14_AA")
+    make_active_file(tmp_path, "2026_5102_2026-07-14_BB")
     app = create_app(
         file_service=FileService(first_path.parent),
         archive_service=ArchiveService(),
@@ -178,16 +291,16 @@ def test_web_leases_isolate_files_and_autosave_conflicts(tmp_path):
     second_client = app.test_client()
 
     first_lease_response = first_client.post(
-        "/api/file/2026_5101/lease",
+        "/api/file/2026_5101_2026-07-14_AA/lease",
         json={"client_id": "first-tab"},
     )
     first_lease = first_lease_response.get_json()["editing"]
     locked_response = second_client.post(
-        "/api/file/2026_5101/lease",
+        "/api/file/2026_5101_2026-07-14_AA/lease",
         json={"client_id": "second-tab"},
     )
     other_file_response = second_client.post(
-        "/api/file/2026_5102/lease",
+        "/api/file/2026_5102_2026-07-14_BB/lease",
         json={"client_id": "second-tab"},
     )
 
@@ -204,21 +317,21 @@ def test_web_leases_isolate_files_and_autosave_conflicts(tmp_path):
         "idempotency_key": "web-autosave-1",
     }
     autosave_response = first_client.post(
-        "/api/file/2026_5101/autosave",
+        "/api/file/2026_5101_2026-07-14_AA/autosave",
         json={
             "document": {"intervention_report": "Autosave web"},
             "_edit": edit,
         },
     )
     replay_response = first_client.post(
-        "/api/file/2026_5101/autosave",
+        "/api/file/2026_5101_2026-07-14_AA/autosave",
         json={
             "document": {"intervention_report": "Autosave web"},
             "_edit": edit,
         },
     )
     stale_response = first_client.post(
-        "/api/file/2026_5101/autosave",
+        "/api/file/2026_5101_2026-07-14_AA/autosave",
         json={
             "document": {"intervention_report": "Revisão obsoleta"},
             "_edit": {**edit, "idempotency_key": "web-autosave-2"},
@@ -234,7 +347,7 @@ def test_web_leases_isolate_files_and_autosave_conflicts(tmp_path):
 
 
 def test_web_close_endpoint_autosaves_and_releases_for_next_editor(tmp_path):
-    path = make_active_file(tmp_path, "2026_5103")
+    path = make_active_file(tmp_path, "2026_5103_2026-07-14_CC")
     app = create_app(
         file_service=FileService(path.parent),
         archive_service=ArchiveService(),
@@ -243,12 +356,12 @@ def test_web_close_endpoint_autosaves_and_releases_for_next_editor(tmp_path):
     first_client = app.test_client()
     second_client = app.test_client()
     lease = first_client.post(
-        "/api/file/2026_5103/lease",
+        "/api/file/2026_5103_2026-07-14_CC/lease",
         json={"client_id": "closing-tab"},
     ).get_json()["editing"]
 
     close_response = first_client.post(
-        "/api/file/2026_5103/editing/close",
+        "/api/file/2026_5103_2026-07-14_CC/editing/close",
         json={
             "document": {"intervention_report": "Fecho seguro"},
             "_edit": {
@@ -261,7 +374,7 @@ def test_web_close_endpoint_autosaves_and_releases_for_next_editor(tmp_path):
         },
     )
     replacement_response = second_client.post(
-        "/api/file/2026_5103/lease",
+        "/api/file/2026_5103_2026-07-14_CC/lease",
         json={"client_id": "next-tab"},
     )
 
@@ -369,4 +482,4 @@ def test_feature_five_assets_and_api_are_not_http_cached(tmp_path):
     assert "window.history.pushState" not in document_editor
     assert "const loadFileData" not in document_editor
     assert "window.location.reload()" in document_editor
-    assert 'BUILD_VERSION = "20260714-native-navigation"' in service_worker
+    assert 'BUILD_VERSION = "20260714-private-drafts"' in service_worker

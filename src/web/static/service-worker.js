@@ -1,4 +1,4 @@
-const BUILD_VERSION = "20260714-native-navigation";
+const BUILD_VERSION = "20260714-private-drafts";
 const CACHE_PREFIX = "sensorpoint-service-static-";
 const CACHE_NAME = `${CACHE_PREFIX}${BUILD_VERSION}`;
 const VERSION_QUERY = `?v=${encodeURIComponent(BUILD_VERSION)}`;

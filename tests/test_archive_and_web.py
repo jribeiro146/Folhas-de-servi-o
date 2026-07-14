@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 import shutil
 import tempfile
 import uuid
@@ -185,6 +186,7 @@ def test_web_api_flow_send_and_cancel(isolated_dirs):
     assert (63, 22) in draft_positions
     assert draft_row_height >= 42
 
+    draft_editing = acquire_editing(client, draft_result["file"], "draft-tab")
     send_idempotency_key = str(uuid.uuid4())
     send_body = {
         "customer_name": "Cliente Final",
@@ -197,11 +199,8 @@ def test_web_api_flow_send_and_cancel(isolated_dirs):
             }
         ],
         "_edit": edit_metadata(
-            {
-                **editing,
-                "document_id": draft_result["document_id"],
-                "revision": draft_result["revision"],
-            },
+            draft_editing,
+            client_id="draft-tab",
             idempotency_key=send_idempotency_key,
         ),
     }
@@ -241,21 +240,22 @@ def test_web_api_flow_send_and_cancel(isolated_dirs):
     assert (63, 22) in archived_positions
     assert archived_row_height >= 42
 
-    copy_sample(active_dir, "2026_9999.xlsx")
-    cancel_editing = acquire_editing(client, "2026_9999", "cancel-tab")
+    copy_sample(active_dir, "2026_9999_2026-07-14_TT.xlsx")
+    cancel_editing = acquire_editing(client, "2026_9999_2026-07-14_TT", "cancel-tab")
     cancel_response = client.post(
-        "/api/file/2026_9999/cancel",
+        "/api/file/2026_9999_2026-07-14_TT/cancel",
         json={"_edit": edit_metadata(cancel_editing, client_id="cancel-tab")},
     )
     cancel_payload = cancel_response.get_json()
     assert cancel_response.status_code == 200
     assert cancel_payload["success"] is True
-    assert (isolated_dirs["canceled"] / "2026_9999" / "2026_9999.xlsx").exists()
+    assert (isolated_dirs["canceled"] / "2026_9999_2026-07-14_TT" / "2026_9999_2026-07-14_TT.xlsx").exists()
 
 
 def test_web_api_rejects_missing_required_fields(isolated_dirs):
     active_dir = isolated_dirs["active"]
-    copy_sample(active_dir, "2026_4572.xlsx")
+    draft_name = "2026_4572_2026-07-14_JF"
+    copy_sample(active_dir, f"{draft_name}.xlsx")
 
     app = create_app(
         file_service=FileService(active_dir),
@@ -264,9 +264,9 @@ def test_web_api_rejects_missing_required_fields(isolated_dirs):
     )
     client = app.test_client()
 
-    editing = acquire_editing(client, "2026_4572")
+    editing = acquire_editing(client, draft_name)
     response = client.post(
-        "/api/file/2026_4572/send",
+        f"/api/file/{draft_name}/send",
         json={
             "intervention_report": "Sem cliente",
             "_edit": edit_metadata(editing),
@@ -279,6 +279,33 @@ def test_web_api_rejects_missing_required_fields(isolated_dirs):
     assert "Cliente / Customer" in payload["missing_fields"]
 
 
+def test_ready_source_must_become_an_individual_draft_before_send_or_cancel(isolated_dirs):
+    active_dir = isolated_dirs["active"]
+    source_name = "2026_4573"
+    copy_sample(active_dir, f"{source_name}.xlsx")
+    app = create_app(
+        file_service=FileService(active_dir),
+        archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
+    )
+    client = app.test_client()
+    editing = acquire_editing(client, source_name)
+    metadata = edit_metadata(editing)
+
+    send_response = client.post(
+        f"/api/file/{source_name}/send",
+        json={"customer_name": "Cliente", "_edit": metadata},
+    )
+    cancel_response = client.post(
+        f"/api/file/{source_name}/cancel",
+        json={"_edit": metadata},
+    )
+
+    assert send_response.status_code == 409
+    assert send_response.get_json()["code"] == "draft_required"
+    assert cancel_response.status_code == 409
+    assert cancel_response.get_json()["code"] == "draft_required"
+    assert (active_dir / f"{source_name}.xlsx").exists()
 
 def test_draft_does_not_require_all_fields(isolated_dirs):
     """O draft deve aceitar dados parciais sem validação de campos obrigatórios."""
@@ -310,6 +337,55 @@ def test_draft_does_not_require_all_fields(isolated_dirs):
     assert (isolated_dirs["active"] / payload["file"] / f"{payload['file']}.xlsx").exists()
     assert (isolated_dirs["active"] / payload["file"] / f"{payload['file']}__documento.json").exists()
 
+
+def test_two_technicians_create_distinct_drafts_from_the_same_source(isolated_dirs):
+    active_dir = isolated_dirs["active"]
+    source_name = "2026_4580"
+    source_path = copy_sample(active_dir, f"{source_name}.xlsx")
+    original_bytes = source_path.read_bytes()
+    app = create_app(
+        file_service=FileService(active_dir),
+        archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
+    )
+    first_client = app.test_client()
+    second_client = app.test_client()
+    first = acquire_editing(first_client, source_name, "tab-a")
+    second = acquire_editing(second_client, source_name, "tab-b")
+
+    assert first["document_id"] != second["document_id"]
+
+    def save_draft(client, editing, client_id, report):
+        return client.post(
+            f"/api/file/{source_name}/draft",
+            json={
+                "intervention_report": report,
+                "technician_records": [{"technician": "João Freire"}],
+                "_edit": edit_metadata(editing, client_id=client_id),
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(
+            save_draft, first_client, first, "tab-a", "Rascunho exclusivo A"
+        )
+        second_future = executor.submit(
+            save_draft, second_client, second, "tab-b", "Rascunho exclusivo B"
+        )
+        responses = [first_future.result(), second_future.result()]
+
+    payloads = [response.get_json() for response in responses]
+    assert [response.status_code for response in responses] == [200, 200]
+    assert payloads[0]["file"] != payloads[1]["file"]
+    assert payloads[0]["document_id"] != payloads[1]["document_id"]
+    assert source_path.read_bytes() == original_bytes
+
+    reports = set()
+    for payload in payloads:
+        bundle = active_dir / payload["file"]
+        document_path = bundle / f"{payload['file']}__documento.json"
+        reports.add(json.loads(document_path.read_text(encoding="utf-8"))["intervention_report"])
+    assert reports == {"Rascunho exclusivo A", "Rascunho exclusivo B"}
 
 def test_document_preview_returns_html(isolated_dirs):
     active_dir = isolated_dirs["active"]
@@ -394,7 +470,8 @@ def test_web_editor_exposes_features_one_to_four(isolated_dirs):
 
 def test_web_api_requires_signature_when_customer_is_present(isolated_dirs):
     active_dir = isolated_dirs["active"]
-    copy_sample(active_dir, "2026_4572.xlsx")
+    draft_name = "2026_4572_2026-07-14_JF"
+    copy_sample(active_dir, f"{draft_name}.xlsx")
     app = create_app(
         file_service=FileService(active_dir),
         archive_service=ArchiveService(),
@@ -402,9 +479,9 @@ def test_web_api_requires_signature_when_customer_is_present(isolated_dirs):
     )
 
     client = app.test_client()
-    editing = acquire_editing(client, "2026_4572")
+    editing = acquire_editing(client, draft_name)
     response = client.post(
-        "/api/file/2026_4572/send",
+        f"/api/file/{draft_name}/send",
         json={
             "customer_name": "Cliente presente",
             "_edit": edit_metadata(editing),
@@ -416,10 +493,10 @@ def test_web_api_requires_signature_when_customer_is_present(isolated_dirs):
     assert payload["success"] is False
     assert "Assinatura Cliente" in payload["missing_fields"]
 
-
 def test_web_api_allows_client_absence_without_signature_and_records_it(isolated_dirs):
     active_dir = isolated_dirs["active"]
-    copy_sample(active_dir, "2026_4572.xlsx")
+    draft_name = "2026_4572_2026-07-14_JF"
+    copy_sample(active_dir, f"{draft_name}.xlsx")
     app = create_app(
         file_service=FileService(active_dir),
         archive_service=ArchiveService(),
@@ -427,9 +504,9 @@ def test_web_api_allows_client_absence_without_signature_and_records_it(isolated
     )
 
     client = app.test_client()
-    editing = acquire_editing(client, "2026_4572")
+    editing = acquire_editing(client, draft_name)
     response = client.post(
-        "/api/file/2026_4572/send",
+        f"/api/file/{draft_name}/send",
         json={
             "customer_name": "Cliente ausente",
             "client_not_present": True,
@@ -441,21 +518,21 @@ def test_web_api_allows_client_absence_without_signature_and_records_it(isolated
 
     assert response.status_code == 200
     assert payload["success"] is True
-    archived_dir = isolated_dirs["archived"] / "2026_4572"
+    archived_dir = isolated_dirs["archived"] / draft_name
     document = json.loads(
-        (archived_dir / "2026_4572__documento.json").read_text(encoding="utf-8")
+        (archived_dir / f"{draft_name}__documento.json").read_text(encoding="utf-8")
     )
-    html = (archived_dir / "2026_4572__folha_final.html").read_text(encoding="utf-8")
+    html = (archived_dir / f"{draft_name}__folha_final.html").read_text(encoding="utf-8")
 
     assert document["client_not_present"] is True
     assert "Cliente não presente na obra" in html
     assert "Assinatura dispensada" in html
-    assert not (archived_dir / "2026_4572__assinatura_cliente.png").exists()
-
+    assert not (archived_dir / f"{draft_name}__assinatura_cliente.png").exists()
 
 def test_web_api_rejects_invalid_manual_total_on_send(isolated_dirs):
     active_dir = isolated_dirs["active"]
-    copy_sample(active_dir, "2026_4572.xlsx")
+    draft_name = "2026_4572_2026-07-14_JF"
+    copy_sample(active_dir, f"{draft_name}.xlsx")
     app = create_app(
         file_service=FileService(active_dir),
         archive_service=ArchiveService(),
@@ -463,9 +540,9 @@ def test_web_api_rejects_invalid_manual_total_on_send(isolated_dirs):
     )
 
     client = app.test_client()
-    editing = acquire_editing(client, "2026_4572")
+    editing = acquire_editing(client, draft_name)
     response = client.post(
-        "/api/file/2026_4572/send",
+        f"/api/file/{draft_name}/send",
         json={
             "customer_name": "Cliente",
             "client_not_present": True,

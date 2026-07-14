@@ -88,6 +88,22 @@ class EditingStateService:
             identity = f"local:{file_path.parent.parent.resolve()}:{logical_name.casefold()}"
         return str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
 
+    def resolve_private_workspace_id(
+        self,
+        path: str | Path,
+        identity: EditorIdentity,
+        client_id: str,
+    ) -> str:
+        """Return the isolated editing id for one editor session on a source file."""
+        normalized_client_id = str(client_id or "").strip()
+        if not normalized_client_id:
+            raise EditingStateError("Identificador da sessão de edição em falta.")
+        source_document_id = self.resolve_document_id(path)
+        workspace_identity = (
+            f"private-workspace:{source_document_id}:{identity.id}:{normalized_client_id}"
+        )
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, workspace_identity))
+
     def associate_path(
         self,
         path: str | Path,
@@ -129,11 +145,36 @@ class EditingStateService:
         identity: EditorIdentity,
         client_id: str,
     ) -> dict[str, Any]:
+        file_path = Path(path)
+        document_id = self.resolve_document_id(file_path)
+        return self._acquire_document_lease(file_path, document_id, identity, client_id)
+
+    def acquire_private_workspace(
+        self,
+        path: str | Path,
+        identity: EditorIdentity,
+        client_id: str,
+    ) -> dict[str, Any]:
+        """Acquire an isolated workspace without reserving the shared source file."""
+        file_path = Path(path)
+        workspace_id = self.resolve_private_workspace_id(file_path, identity, client_id)
+        return self._acquire_document_lease(
+            file_path,
+            workspace_id,
+            identity,
+            client_id,
+        )
+
+    def _acquire_document_lease(
+        self,
+        file_path: Path,
+        document_id: str,
+        identity: EditorIdentity,
+        client_id: str,
+    ) -> dict[str, Any]:
         if not client_id.strip():
             raise EditingStateError("Identificador da sessão de edição em falta.")
 
-        file_path = Path(path)
-        document_id = self.resolve_document_id(file_path)
         now = time.time()
         with self._state_transaction(document_id, path=file_path) as state:
             lease = self._active_lease(state, now)
@@ -377,6 +418,7 @@ class EditingStateService:
         path: str | Path | None,
         response: dict[str, Any],
         release_lease: bool = False,
+        result_editing: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self._state_transaction(document_id) as state:
             state["revision"] = int(state.get("revision") or 1) + 1
@@ -392,11 +434,18 @@ class EditingStateService:
                 state["lease"] = None
 
             result = dict(response)
-            result.update({
-                "document_id": document_id,
-                "revision": state["revision"],
-                "etag": state["etag"],
-            })
+            if result_editing is not None:
+                result.update({
+                    "document_id": result_editing["document_id"],
+                    "revision": int(result_editing.get("revision") or 1),
+                    "etag": result_editing.get("etag") or "",
+                })
+            else:
+                result.update({
+                    "document_id": document_id,
+                    "revision": state["revision"],
+                    "etag": state["etag"],
+                })
             operation = (state.setdefault("operations", {})).get(idempotency_key)
             if operation is None:
                 raise EditingStateError("Operação idempotente não encontrada.")
