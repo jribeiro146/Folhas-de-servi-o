@@ -18,7 +18,7 @@
     <style>{{ embedded_styles | safe }}</style>
 </head>
 <body>
-    {% set materials = document.materials if document.materials else [] %}
+    {% set materials = document.materials if document.materials_used else [] %}
     {% set technician_records = document.technician_records if document.technician_records else [] %}
     {% set technician_row_target = 4 %}
     {% set visible_materials = materials[:5] %}
@@ -216,8 +216,13 @@
 
             <article class="signature-panel signature-panel-customer">
                 <div class="panel-title">{{ "Customer signature" if doc_lang == "en" else "Assinatura do cliente" }}</div>
-                <div class="signature-image {{ 'has-signature' if signatures.get('Assinatura Cliente') else 'is-empty' }}">
-                    {% if signatures.get("Assinatura Cliente") %}
+                <div class="signature-image {% if document.client_not_present %}is-exempt{% elif signatures.get('Assinatura Cliente') %}has-signature{% else %}is-empty{% endif %}">
+                    {% if document.client_not_present %}
+                    <span class="signature-exemption">
+                        <strong>{{ "Customer not present on site" if doc_lang == "en" else "Cliente não presente na obra" }}</strong>
+                        <small>{{ "Signature waived." if doc_lang == "en" else "Assinatura dispensada." }}</small>
+                    </span>
+                    {% elif signatures.get("Assinatura Cliente") %}
                     <img src="{{ signatures.get('Assinatura Cliente') }}" alt="Assinatura do cliente">
                     {% else %}
                     <span>{{ "No signature captured." if doc_lang == "en" else "Sem assinatura recolhida." }}</span>

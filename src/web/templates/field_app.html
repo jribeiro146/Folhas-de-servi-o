@@ -11,12 +11,13 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <meta name="format-detection" content="telephone=no">
     <title>Folhas de Serviço</title>
-    <link rel="manifest" href="{{ url_for('manifest') }}">
+    <link rel="manifest" href="{{ url_for('manifest', v=asset_version) }}">
     <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='img/pwa/icon-192.png', v=asset_version) }}">
     <link rel="icon" type="image/png" sizes="512x512" href="{{ url_for('static', filename='img/pwa/icon-512.png', v=asset_version) }}">
     <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/pwa/icon-192.png', v=asset_version) }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/field-app.css', v=asset_version) }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/document-editor.css', v=asset_version) }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/editing-state.css', v=asset_version) }}">
 </head>
 {% set has_selected_data = selected_document_data is not none %}
 <body class="{% if has_selected_data %}has-active-file{% endif %}">
@@ -130,6 +131,13 @@
                             {{ selected_file_error }}
                         {% endif %}
                     </p>
+                    <div
+                        id="autosave-status"
+                        class="autosave-status"
+                        role="status"
+                        aria-live="polite"
+                        {% if not has_selected_data %}hidden{% endif %}
+                    >A preparar edição segura…</div>
                 </div>
                 <div class="topbar-side">
                     {% if current_user %}
@@ -138,7 +146,7 @@
                             Sessão:
                             <strong>{{ current_user.display_name if current_user else "Técnico" }}</strong>
                         </span>
-                        <form class="logout-form" method="post" action="{{ url_for('logout') }}">
+                        <form class="logout-form" data-logout-form method="post" action="{{ url_for('logout') }}">
                             <button class="btn btn-secondary btn-logout" type="submit">Sair</button>
                         </form>
                     </div>
@@ -186,6 +194,38 @@
                         <h3 id="busy-title">A guardar a folha</h3>
                         <p id="busy-message">Estamos a atualizar o LINK. Pode demorar alguns segundos.</p>
                     </div>
+                </div>
+            </section>
+
+            <section id="editing-lock-banner" class="editing-lock-banner" hidden aria-live="polite">
+                <div class="editing-lock-icon" aria-hidden="true">↗</div>
+                <div>
+                    <p class="eyebrow">Edição protegida</p>
+                    <h3 id="editing-lock-title">Folha em modo de consulta</h3>
+                    <p id="editing-lock-message">Outro utilizador está a editar esta folha.</p>
+                </div>
+                <button id="btn-retry-lease" class="btn btn-secondary" type="button">
+                    Tentar editar
+                </button>
+            </section>
+
+            <section id="recovery-panel" class="recovery-panel" hidden aria-live="assertive">
+                <div class="recovery-icon" aria-hidden="true">↺</div>
+                <div class="recovery-copy">
+                    <p class="eyebrow" id="recovery-eyebrow">Recuperação automática</p>
+                    <h3 id="recovery-title">Encontrámos alterações recuperáveis</h3>
+                    <p id="recovery-message">
+                        Existe uma cópia guardada neste dispositivo que ainda não foi consolidada.
+                    </p>
+                    <p id="recovery-timestamp" class="recovery-timestamp"></p>
+                </div>
+                <div class="recovery-actions">
+                    <button id="btn-ignore-recovery" class="btn btn-secondary" type="button">
+                        Ignorar
+                    </button>
+                    <button id="btn-restore-recovery" class="btn btn-primary" type="button">
+                        Restaurar
+                    </button>
                 </div>
             </section>
 
@@ -347,22 +387,40 @@
                         </div>
                     </section>
 
-                    <section class="group-card section-card">
-                        <div class="section-header section-header-split">
+                    <section class="group-card section-card materials-section" id="materials-section">
+                        <div class="section-header materials-section-header">
                             <div>
                                 <p class="eyebrow" data-i18n="materials_eyebrow">Materiais</p>
                                 <h3 data-i18n="materials_title">Materiais / artigos / peças</h3>
                             </div>
-                            <button id="btn-add-material" class="btn btn-secondary" type="button" data-i18n="add_line">Adicionar linha</button>
-                        </div>
-                        <div class="table-block">
-                            <div class="table-head table-materials">
-                                <span>Ref.</span>
-                                <span data-i18n="description">Descrição</span>
-                                <span>Qtd</span>
-                                <span></span>
+                            <div class="materials-choice">
+                                <span class="materials-question" id="materials-question" data-i18n="materials_question">Foram utilizados materiais?</span>
+                                <div class="segmented-control" role="radiogroup" aria-labelledby="materials-question">
+                                    <label class="segmented-option">
+                                        <input id="materials-used-no" type="radio" name="materials-used" value="no" checked>
+                                        <span data-i18n="no">Não</span>
+                                    </label>
+                                    <label class="segmented-option">
+                                        <input id="materials-used-yes" type="radio" name="materials-used" value="yes" aria-controls="materials-panel" aria-expanded="false">
+                                        <span data-i18n="yes">Sim</span>
+                                    </label>
+                                </div>
                             </div>
-                            <div id="materials-list" class="table-body"></div>
+                        </div>
+                        <div id="materials-panel" class="materials-panel" hidden>
+                            <div class="materials-panel-head">
+                                <p class="section-note" data-i18n="materials_help">Registe apenas os materiais aplicados nesta intervenção.</p>
+                                <button id="btn-add-material" class="btn btn-secondary" type="button" data-i18n="add_line">Adicionar linha</button>
+                            </div>
+                            <div class="table-block">
+                                <div class="table-head table-materials">
+                                    <span>Ref.</span>
+                                    <span data-i18n="description">Descrição</span>
+                                    <span>Qtd</span>
+                                    <span></span>
+                                </div>
+                                <div id="materials-list" class="table-body"></div>
+                            </div>
                         </div>
                     </section>
 
@@ -395,23 +453,37 @@
                             </div>
                         </div>
                         <div class="signature-grid">
-                            <section class="signature-card">
+                            <section class="signature-card" id="signature-client-card">
                                 <div class="signature-card-head">
                                     <div>
                                         <h3 data-i18n="customer">Cliente</h3>
                                     </div>
                                     <button class="btn btn-secondary signature-clear" type="button" data-signature-clear="Assinatura Cliente" data-i18n="clear">Limpar</button>
                                 </div>
+                                <label class="client-absence-toggle" for="client-not-present">
+                                    <input id="client-not-present" type="checkbox">
+                                    <span>
+                                        <strong data-i18n="client_not_present">Cliente não presente na obra</strong>
+                                        <small data-i18n="client_not_present_help">A assinatura deixa de ser obrigatória e a exceção fica registada.</small>
+                                    </span>
+                                </label>
+                                <div id="client-absence-notice" class="client-absence-notice" hidden>
+                                    <span class="absence-notice-icon" aria-hidden="true">✓</span>
+                                    <span data-i18n="signature_waived">Assinatura dispensada por ausência do cliente.</span>
+                                </div>
                                 <div class="form-field signature-date">
                                     <label for="customer-signature-date" data-i18n="customer_signature_date">Cliente - data</label>
                                     <input id="customer-signature-date" type="date" data-field="customer_signature_date">
                                 </div>
-                                <canvas
-                                    id="signature-client-canvas"
-                                    class="signature-canvas"
-                                    width="640"
-                                    height="140"
-                                ></canvas>
+                                <div id="signature-client-capture" class="signature-capture">
+                                    <canvas
+                                        id="signature-client-canvas"
+                                        class="signature-canvas"
+                                        width="640"
+                                        height="140"
+                                    ></canvas>
+                                    <p class="signature-help" data-i18n="signature_help">Assine no espaço acima com o dedo ou com uma caneta digital.</p>
+                                </div>
                                 <input
                                     id="signature-client-input"
                                     type="hidden"
@@ -456,7 +528,20 @@
             </select>
             <input type="time" data-repeat-field="start_time">
             <input type="time" data-repeat-field="end_time">
-            <input type="text" data-repeat-field="total_hours" placeholder="0 min" readonly>
+            <div class="duration-field">
+                <input
+                    type="text"
+                    inputmode="decimal"
+                    data-repeat-field="total_hours"
+                    placeholder="0 h"
+                    data-i18n-placeholder="duration_placeholder"
+                >
+                <div class="duration-meta" data-duration-meta hidden>
+                    <span class="duration-badge" data-i18n="adjusted">Ajustado</span>
+                    <span class="duration-calculated" data-duration-calculated></span>
+                    <button class="duration-reset" type="button" data-duration-reset data-i18n="use_calculation">Usar cálculo</button>
+                </div>
+            </div>
             <input type="date" data-repeat-field="date">
             <button class="btn btn-secondary btn-icon row-remove" type="button" data-row-remove>&times;</button>
         </div>
@@ -471,10 +556,14 @@
             selectedFileData: {{ selected_file_data | tojson }},
             selectedDocumentData: {{ selected_document_data | tojson }},
             selectedSignatures: {{ selected_signatures | tojson }},
-            selectedFileError: {{ selected_file_error | tojson }}
+            selectedFileError: {{ selected_file_error | tojson }},
+            selectedEditingState: {{ selected_editing_state | tojson }},
+            editorUser: {{ editor_user | tojson }},
+            recoveryMaxAgeDays: 30
         };
     </script>
     <script src="{{ url_for('static', filename='js/document-editor.js', v=asset_version) }}"></script>
+    <script src="{{ url_for('static', filename='js/editing-coordinator.js', v=asset_version) }}"></script>
     <script src="{{ url_for('static', filename='js/pwa.js', v=asset_version) }}"></script>
 </body>
 </html>

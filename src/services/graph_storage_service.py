@@ -6,6 +6,7 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import stat
 import time
@@ -35,6 +36,10 @@ ARCHIVED_BUNDLE_MARKER = ".fs_archived"
 
 class GraphStorageError(Exception):
     """Raised when Microsoft Graph cannot complete a storage operation."""
+
+
+class GraphConflictError(GraphStorageError):
+    """Raised when a conditional Graph update targets an obsolete eTag."""
 
 
 @dataclass(frozen=True)
@@ -142,7 +147,7 @@ class GraphStorageService:
             (
                 f"/drives/{self.config.drive_id}/root:/"
                 f"{self._quote_path(self.config.active_path)}:/children"
-                "?$select=id,name,size,lastModifiedDateTime,file,folder"
+                "?$select=id,name,size,lastModifiedDateTime,eTag,file,folder"
             ),
         )
         return list(response.get("value") or [])
@@ -150,7 +155,15 @@ class GraphStorageService:
     def download_item(self, item_id: str, destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         content = self._graph_bytes("GET", f"/drives/{self.config.drive_id}/items/{item_id}/content")
-        destination.write_bytes(content)
+        temp_path = destination.with_name(f".{destination.name}.{secrets.token_hex(6)}.tmp")
+        try:
+            temp_path.write_bytes(content)
+            os.replace(str(temp_path), str(destination))
+        finally:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
 
     def upload_archive_bundle(self, archived_excel_path: Path) -> list[str]:
         """Upload the archived Excel and sidecars to Graph archive folder."""
@@ -165,7 +178,8 @@ class GraphStorageService:
         uploaded: list[str] = []
         for local_file in self._iter_uploadable_files(archived_excel_path.parent):
             remote_path = self._join_graph_path(remote_folder, local_file.name)
-            self.upload_file(local_file, remote_path)
+            item = self.upload_file(local_file, remote_path, expected_etag=self._expected_etag(local_file))
+            self._write_item_meta(self._item_meta_path(local_file), item)
             uploaded.append(remote_path)
 
         return uploaded
@@ -188,13 +202,41 @@ class GraphStorageService:
         uploaded: list[str] = []
         for local_file in self._iter_uploadable_files(bundle_dir):
             remote_path = self._join_graph_path(remote_folder, local_file.name)
-            self.upload_file(local_file, remote_path)
+            item = self.upload_file(local_file, remote_path, expected_etag=self._expected_etag(local_file))
+            self._write_item_meta(self._item_meta_path(local_file), item)
             uploaded.append(remote_path)
 
-        self._write_bundle_meta(bundle_dir, {"name": bundle_dir.name, "remote_path": remote_folder})
+        folder_item = self._get_item_by_path(remote_folder) or {"name": bundle_dir.name}
+        folder_item["remote_path"] = remote_folder
+        self._write_bundle_meta(bundle_dir, folder_item)
         return uploaded
 
-    def remove_active_entry(self, local_source_path: Path) -> bool:
+    def assert_active_entry_current(self, local_source_path: Path) -> dict[str, Any]:
+        """Verify that the cached active item still has the Graph eTag that was read."""
+        self.validate_config()
+        source_name = (
+            local_source_path.parent.name
+            if self._is_local_bundle_file(local_source_path)
+            else local_source_path.name
+        )
+        remote_path = self._join_graph_path(self.config.active_path, source_name)
+        item = self._get_item_by_path(remote_path)
+        if not item:
+            raise GraphConflictError("A folha ativa já não existe no SharePoint.")
+        expected_etag = self._active_source_etag(local_source_path)
+        remote_etag = str(item.get("eTag") or "")
+        if expected_etag and remote_etag and expected_etag != remote_etag:
+            raise GraphConflictError(
+                "A folha foi alterada no SharePoint por outro utilizador."
+            )
+        return item
+
+    def remove_active_entry(
+        self,
+        local_source_path: Path,
+        *,
+        expected_etag: str | None = None,
+    ) -> bool:
         """Remove the finalized source from the Graph active folder."""
         self.validate_config()
         source_name = (
@@ -203,14 +245,21 @@ class GraphStorageService:
             else local_source_path.name
         )
         remote_path = self._join_graph_path(self.config.active_path, source_name)
-        if self.delete_path(remote_path):
+        item = self._get_item_by_path(remote_path)
+        if item:
+            remote_etag = str(item.get("eTag") or "")
+            if expected_etag and remote_etag and expected_etag != remote_etag:
+                raise GraphConflictError(
+                    "A folha foi alterada antes de concluir a finalização."
+                )
+            self._delete_item_by_id(str(item["id"]), expected_etag=expected_etag)
             return True
 
         # Fallback by direct child name. This is useful for folders with encoded
         # characters or for sources already cleaned from the local cache.
         for item in self.list_active_items():
             if item.get("name") == source_name:
-                self._delete_item_by_id(str(item["id"]))
+                self._delete_item_by_id(str(item["id"]), expected_etag=expected_etag)
                 return True
 
         return False
@@ -223,8 +272,26 @@ class GraphStorageService:
         self._delete_item_by_id(str(item["id"]))
         return True
 
-    def _delete_item_by_id(self, item_id: str) -> None:
-        self._graph_bytes("DELETE", f"/drives/{self.config.drive_id}/items/{item_id}")
+    def _delete_item_by_id(self, item_id: str, *, expected_etag: str | None = None) -> None:
+        self._graph_bytes(
+            "DELETE",
+            f"/drives/{self.config.drive_id}/items/{item_id}",
+            headers={"If-Match": expected_etag} if expected_etag else None,
+        )
+
+    @staticmethod
+    def _active_source_etag(local_source_path: Path) -> str | None:
+        meta_path = (
+            local_source_path.parent / ".graph_bundle.json"
+            if GraphStorageService._is_local_bundle_file(local_source_path)
+            else GraphStorageService._item_meta_path(local_source_path)
+        )
+        try:
+            payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        value = str(payload.get("eTag") or "").strip()
+        return value or None
 
     def ensure_folder_path(self, folder_path: str) -> None:
         current = ""
@@ -235,14 +302,25 @@ class GraphStorageService:
                 continue
             self._create_folder(parent, segment)
 
-    def upload_file(self, local_file: Path, remote_path: str) -> None:
+    def upload_file(
+        self,
+        local_file: Path,
+        remote_path: str,
+        *,
+        expected_etag: str | None = None,
+    ) -> dict[str, Any]:
         content_type = mimetypes.guess_type(local_file.name)[0] or "application/octet-stream"
-        self._graph_bytes(
+        content = self._graph_bytes(
             "PUT",
             f"/drives/{self.config.drive_id}/root:/{self._quote_path(remote_path)}:/content",
             data=local_file.read_bytes(),
             content_type=content_type,
+            headers={"If-Match": expected_etag} if expected_etag else None,
         )
+        try:
+            return json.loads(content.decode("utf-8")) if content else {"name": local_file.name}
+        except json.JSONDecodeError as exc:
+            raise GraphStorageError("Resposta inválida ao guardar ficheiro no Microsoft Graph.") from exc
 
     def _sync_active_workbook(self, item: dict[str, Any], local_active_dir: Path) -> Path:
         local_path = local_active_dir / self._safe_file_name(str(item.get("name") or ""))
@@ -289,7 +367,7 @@ class GraphStorageService:
         response = self._graph_json(
             "GET",
             f"/drives/{self.config.drive_id}/items/{item_id}/children"
-            "?$select=id,name,size,lastModifiedDateTime,file,folder",
+            "?$select=id,name,size,lastModifiedDateTime,eTag,file,folder",
         )
         return list(response.get("value") or [])
 
@@ -331,12 +409,13 @@ class GraphStorageService:
         path: str,
         data: bytes | None = None,
         content_type: str | None = None,
+        headers: dict[str, str] | None = None,
     ) -> bytes:
         url = f"{GRAPH_ROOT}{path}"
-        headers: dict[str, str] = {}
+        request_headers = dict(headers or {})
         if content_type:
-            headers["Content-Type"] = content_type
-        return self._request_bytes(url, method=method, data=data, headers=headers)
+            request_headers["Content-Type"] = content_type
+        return self._request_bytes(url, method=method, data=data, headers=request_headers)
 
     def _request_json(
         self,
@@ -375,6 +454,9 @@ class GraphStorageService:
                 return response.read()
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            if exc.code in {409, 412}:
+                raise GraphConflictError(
+                    "O ficheiro foi alterado no SharePoint por outro utilizador.") from exc
             raise GraphStorageError(f"Microsoft Graph HTTP {exc.code}: {detail}") from exc
         except error.URLError as exc:
             raise GraphStorageError(f"Microsoft Graph indisponível: {exc}") from exc
@@ -419,39 +501,67 @@ class GraphStorageService:
             meta.get("id") == item.get("id")
             and meta.get("lastModifiedDateTime") == item.get("lastModifiedDateTime")
             and int(meta.get("size") or 0) == int(item.get("size") or 0)
+            and (
+                not item.get("eTag")
+                or str(meta.get("eTag") or "") == str(item.get("eTag") or "")
+            )
         )
 
     @staticmethod
     def _write_item_meta(meta_path: Path, item: dict[str, Any]) -> None:
-        meta_path.write_text(
-            json.dumps(
-                {
-                    "id": item.get("id"),
-                    "name": item.get("name"),
-                    "size": int(item.get("size") or 0),
-                    "lastModifiedDateTime": str(item.get("lastModifiedDateTime") or ""),
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
+        GraphStorageService._atomic_write_json(
+            meta_path,
+            {
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "size": int(item.get("size") or 0),
+                "lastModifiedDateTime": str(item.get("lastModifiedDateTime") or ""),
+                "eTag": str(item.get("eTag") or ""),
+            },
         )
 
     @staticmethod
+    def _item_meta_path(local_file: Path) -> Path:
+        return local_file.with_name(f"{local_file.name}.graph.json")
+
+    @staticmethod
+    def _expected_etag(local_file: Path) -> str | None:
+        meta_path = GraphStorageService._item_meta_path(local_file)
+        try:
+            payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        value = str(payload.get("eTag") or "").strip()
+        return value or None
+
+    @staticmethod
     def _write_bundle_meta(bundle_dir: Path, item: dict[str, Any]) -> None:
-        (bundle_dir / ".graph_bundle.json").write_text(
-            json.dumps(
-                {
-                    "id": item.get("id"),
-                    "name": item.get("name"),
-                    "remote_path": item.get("remote_path"),
-                    "lastModifiedDateTime": str(item.get("lastModifiedDateTime") or ""),
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
+        GraphStorageService._atomic_write_json(
+            bundle_dir / ".graph_bundle.json",
+            {
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "remote_path": item.get("remote_path"),
+                "lastModifiedDateTime": str(item.get("lastModifiedDateTime") or ""),
+                "eTag": str(item.get("eTag") or ""),
+            },
         )
+
+    @staticmethod
+    def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+        try:
+            temp_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(str(temp_path), str(path))
+        finally:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
 
     def _remove_stale_active_cache(self, local_active_dir: Path, remote_names: set[str]) -> None:
         for item in list(local_active_dir.iterdir()):

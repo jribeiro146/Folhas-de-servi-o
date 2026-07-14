@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">Proposta da lista correta de sistemas intervencionados</title>
+  <desc id="desc">Dez opções em chips, na ordem indicada: SADI, VSS, SADCO, SADIR, SADEI, SCA, EAS, SADG, SCH e OTHER.</desc>
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fbfdff"/><stop offset="1" stop-color="#e7eff7"/></linearGradient><filter id="s"><feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#0b4a8b" flood-opacity=".11"/></filter></defs>
+  <rect width="1200" height="720" fill="url(#bg)"/>
+  <text x="64" y="58" font-family="Segoe UI, sans-serif" font-size="15" font-weight="700" letter-spacing="2" fill="#0b4a8b">FEATURE 3 · PROPOSTA VISUAL</text>
+  <text x="64" y="98" font-family="Segoe UI, sans-serif" font-size="30" font-weight="700" fill="#19344d">Sistemas intervencionados — nomenclatura correta</text>
+  <text x="64" y="128" font-family="Segoe UI, sans-serif" font-size="16" fill="#6b7f92">Ordem fixa e seleção múltipla, mantendo o padrão visual atual.</text>
+  <g transform="translate(104 176)" filter="url(#s)">
+    <rect width="992" height="420" rx="24" fill="#fff" stroke="#d6e1ec"/>
+    <text x="34" y="42" font-family="Segoe UI, sans-serif" font-size="12" font-weight="700" letter-spacing="1.5" fill="#0b4a8b">EQUIPAMENTOS</text>
+    <text x="34" y="78" font-family="Segoe UI, sans-serif" font-size="22" font-weight="700" fill="#19344d">Sistemas intervencionados</text>
+    <text x="34" y="105" font-family="Segoe UI, sans-serif" font-size="14" fill="#6b7f92">Selecione todos os sistemas aplicáveis.</text>
+    <g font-family="Segoe UI, sans-serif" font-size="18" font-weight="700">
+      <g transform="translate(34 138)"><rect width="168" height="66" rx="16" fill="#eef4fb" stroke="#0b4a8b" stroke-width="2"/><rect x="18" y="22" width="22" height="22" rx="5" fill="#0b4a8b"/><path d="M24 33l5 5 9-11" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><text x="56" y="41" fill="#0b4a8b">SADI</text></g>
+      <g transform="translate(220 138)"><rect width="168" height="66" rx="16" fill="#eef4fb" stroke="#0b4a8b" stroke-width="2"/><rect x="18" y="22" width="22" height="22" rx="5" fill="#0b4a8b"/><path d="M24 33l5 5 9-11" fill="none" stroke="#fff" stroke-width="3"/><text x="56" y="41" fill="#0b4a8b">VSS</text></g>
+      <g transform="translate(406 138)"><rect width="168" height="66" rx="16" fill="#f8fbff" stroke="#d6e1ec"/><rect x="18" y="22" width="22" height="22" rx="5" fill="#fff" stroke="#9eb0c1"/><text x="56" y="41" fill="#19344d">SADCO</text></g>
+      <g transform="translate(592 138)"><rect width="168" height="66" rx="16" fill="#f8fbff" stroke="#d6e1ec"/><rect x="18" y="22" width="22" height="22" rx="5" fill="#fff" stroke="#9eb0c1"/><text x="56" y="41" fill="#19344d">SADIR</text></g>
+      <g transform="translate(778 138)"><rect width="168" height="66" rx="16" fill="#f8fbff" stroke="#d6e1ec"/><rect x="18" y="22" width="22" height="22" rx="5" fill="#fff" stroke="#9eb0c1"/><text x="56" y="41" fill="#19344d">SADEI</text></g>
+      <g transform="translate(34 222)"><rect width="168" height="66" rx="16" fill="#eef4fb" stroke="#0b4a8b" stroke-width="2"/><rect x="18" y="22" width="22" height="22" rx="5" fill="#0b4a8b"/><path d="M24 33l5 5 9-11" fill="none" stroke="#fff" stroke-width="3"/><text x="56" y="41" fill="#0b4a8b">SCA</text></g>
+      <g transform="translate(220 222)"><rect width="168" height="66" rx="16" fill="#f8fbff" stroke="#d6e1ec"/><rect x="18" y="22" width="22" height="22" rx="5" fill="#fff" stroke="#9eb0c1"/><text x="56" y="41" fill="#19344d">EAS</text></g>
+      <g transform="translate(406 222)"><rect width="168" height="66" rx="16" fill="#f8fbff" stroke="#d6e1ec"/><rect x="18" y="22" width="22" height="22" rx="5" fill="#fff" stroke="#9eb0c1"/><text x="56" y="41" fill="#19344d">SADG</text></g>
+      <g transform="translate(592 222)"><rect width="168" height="66" rx="16" fill="#f8fbff" stroke="#d6e1ec"/><rect x="18" y="22" width="22" height="22" rx="5" fill="#fff" stroke="#9eb0c1"/><text x="56" y="41" fill="#19344d">SCH</text></g>
+      <g transform="translate(778 222)"><rect width="168" height="66" rx="16" fill="#f8fbff" stroke="#d6e1ec"/><rect x="18" y="22" width="22" height="22" rx="5" fill="#fff" stroke="#9eb0c1"/><text x="56" y="41" fill="#19344d">OTHER</text></g>
+    </g>
+    <rect x="34" y="322" width="912" height="60" rx="14" fill="#eff8f2" stroke="#b8dfc5"/>
+    <text x="58" y="348" font-family="Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#14532d">Compatibilidade de dados</text>
+    <text x="58" y="369" font-family="Segoe UI, sans-serif" font-size="13" fill="#3e6b4d">Registos antigos ADCO e THER serão tratados por migração controlada, sem apagar seleções históricas.</text>
+  </g>
+  <text x="64" y="688" font-family="Segoe UI, sans-serif" font-size="13" fill="#7d90a3">Mockup de aprovação · não implementado</text>
+</svg>

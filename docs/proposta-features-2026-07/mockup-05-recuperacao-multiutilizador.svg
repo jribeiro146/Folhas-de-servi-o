@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">Proposta de recuperação de dados e edição multiutilizador segura</title>
+  <desc id="desc">Interface com gravação automática local e no servidor, recuperação após atualização e controlo de revisão para dois utilizadores.</desc>
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fbfdff"/><stop offset="1" stop-color="#e6eef7"/></linearGradient><filter id="s"><feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#0b4a8b" flood-opacity=".11"/></filter><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0l9 4.5L0 9z" fill="#7f9bb5"/></marker></defs>
+  <rect width="1200" height="720" fill="url(#bg)"/>
+  <text x="54" y="52" font-family="Segoe UI, sans-serif" font-size="15" font-weight="700" letter-spacing="2" fill="#0b4a8b">FEATURE 5 · PROPOSTA VISUAL</text>
+  <text x="54" y="90" font-family="Segoe UI, sans-serif" font-size="29" font-weight="700" fill="#19344d">Recuperação automática + conflitos controlados</text>
+  <text x="54" y="118" font-family="Segoe UI, sans-serif" font-size="15" fill="#6b7f92">Atualizar a página deixa de significar perder trabalho; duas pessoas deixam de se sobrescrever.</text>
+
+  <g transform="translate(54 154)" filter="url(#s)">
+    <rect width="650" height="468" rx="22" fill="#fff" stroke="#d6e1ec"/>
+    <rect width="650" height="52" rx="22" fill="#f4f8fc"/><circle cx="26" cy="26" r="6" fill="#ff6b6b"/><circle cx="46" cy="26" r="6" fill="#f6bd60"/><circle cx="66" cy="26" r="6" fill="#57cc99"/><rect x="98" y="14" width="394" height="25" rx="12" fill="#fff" stroke="#d6e1ec"/><text x="112" y="31" font-family="Segoe UI, sans-serif" font-size="11" fill="#7d90a3">sensorpoint / folha 2026_4572</text>
+    <rect x="24" y="74" width="602" height="72" rx="15" fill="#fff8e8" stroke="#e9c77a"/>
+    <circle cx="54" cy="110" r="17" fill="#b45309"/><text x="54" y="116" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="#fff">↻</text>
+    <text x="82" y="102" font-family="Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#7a3d07">Encontrámos alterações recuperáveis</text>
+    <text x="82" y="124" font-family="Segoe UI, sans-serif" font-size="12" fill="#8a5b30">Guardadas neste dispositivo às 14:32</text>
+    <rect x="438" y="91" width="82" height="38" rx="19" fill="#0b4a8b"/><text x="479" y="115" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="12" font-weight="700" fill="#fff">Restaurar</text>
+    <rect x="530" y="91" width="76" height="38" rx="19" fill="#fff" stroke="#b9cee3"/><text x="568" y="115" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="12" font-weight="700" fill="#526b80">Ignorar</text>
+    <text x="24" y="180" font-family="Segoe UI, sans-serif" font-size="12" font-weight="700" letter-spacing="1.2" fill="#0b4a8b">RELATÓRIO TÉCNICO</text>
+    <rect x="24" y="194" width="602" height="130" rx="15" fill="#fff" stroke="#b9cee3"/><text x="42" y="224" font-family="Segoe UI, sans-serif" font-size="14" fill="#19344d">Substituição de bateria e testes funcionais...</text><line x1="42" y1="244" x2="570" y2="244" stroke="#e3ebf2"/><line x1="42" y1="270" x2="510" y2="270" stroke="#e3ebf2"/>
+    <g transform="translate(24 346)"><rect width="282" height="76" rx="15" fill="#eff8f2" stroke="#b8dfc5"/><circle cx="30" cy="38" r="15" fill="#15803d"/><path d="M23 38l5 5 10-12" fill="none" stroke="#fff" stroke-width="3"/><text x="54" y="33" font-family="Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#14532d">Guardado automaticamente</text><text x="54" y="54" font-family="Segoe UI, sans-serif" font-size="12" fill="#3e6b4d">local + servidor · revisão 18</text></g>
+    <g transform="translate(324 346)"><rect width="302" height="76" rx="15" fill="#edf4fb" stroke="#b9cee3"/><circle cx="30" cy="38" r="15" fill="#0b4a8b"/><text x="30" y="43" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="12" font-weight="700" fill="#fff">JF</text><text x="54" y="33" font-family="Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#19344d">Edição reservada para si</text><text x="54" y="54" font-family="Segoe UI, sans-serif" font-size="12" fill="#6b7f92">renovação automática em 24 s</text></g>
+  </g>
+
+  <g transform="translate(754 154)" filter="url(#s)">
+    <rect width="392" height="468" rx="22" fill="#fff" stroke="#d6e1ec"/>
+    <text x="24" y="38" font-family="Segoe UI, sans-serif" font-size="12" font-weight="700" letter-spacing="1.4" fill="#6b7f92">MESMA FOLHA · DOIS UTILIZADORES</text>
+    <g transform="translate(24 70)"><circle cx="34" cy="34" r="34" fill="#0b4a8b"/><text x="34" y="42" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="20" font-weight="700" fill="#fff">JF</text><text x="82" y="28" font-family="Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#19344d">João · editor</text><text x="82" y="50" font-family="Segoe UI, sans-serif" font-size="12" fill="#15803d">lease ativo · revisão 18</text></g>
+    <g transform="translate(24 154)"><circle cx="34" cy="34" r="34" fill="#e7edf3"/><text x="34" y="42" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="20" font-weight="700" fill="#6b7f92">PG</text><text x="82" y="28" font-family="Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#19344d">Paulo · consulta</text><text x="82" y="50" font-family="Segoe UI, sans-serif" font-size="12" fill="#b45309">aviso: folha em edição</text></g>
+    <path d="M194 245v42" stroke="#7f9bb5" stroke-width="2" marker-end="url(#arrow)"/>
+    <g transform="translate(52 296)"><rect width="288" height="72" rx="17" fill="#0b4a8b"/><text x="144" y="31" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" font-weight="700" fill="#fff">Servidor autoritativo</text><text x="144" y="52" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="12" fill="#cfe1f2">owner · lease · revisão · eTag</text></g>
+    <rect x="24" y="390" width="344" height="50" rx="14" fill="#fff3f1" stroke="#e9b7b1"/>
+    <text x="196" y="411" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="12" font-weight="700" fill="#9f251d">Revisão antiga → 409 Conflito</text>
+    <text x="196" y="429" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="11" fill="#8a514c">nunca “last write wins” silencioso</text>
+  </g>
+  <text x="54" y="674" font-family="Segoe UI, sans-serif" font-size="13" fill="#7d90a3">Mockup de aprovação · não implementado</text>
+</svg>

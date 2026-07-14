@@ -4,6 +4,49 @@ Registo das principais alteracoes por versao da aplicacao Folhas de Servico.
 
 As versoes sem tag formal usam o commit Git como referencia. A versao marcada para servidor continua a ser `v1.0.0-servidor`, salvo indicacao posterior.
 
+## v1.1.0 - Integridade de dados e multiutilizador
+
+Data: 2026-07-14
+Commit: incluido nesta versao
+
+### Adicionado
+
+- Seletor compacto `Nao | Sim` para revelar a area de materiais apenas quando necessaria.
+- Total efetivo de horas editavel pelo tecnico, mantendo o calculo automatico como valor inicial.
+- Excecao `Cliente nao presente na obra`, permitindo finalizar sem assinatura e registando a ausencia no documento.
+- Recuperacao local em IndexedDB por utilizador e folha, incluindo campos, linhas e assinatura.
+- Autosave leve do JSON com estados `A guardar`, `Guardado` e `Sem ligacao`.
+- Reservas de edicao por utilizador e aba, com heartbeat, expiracao e modo de consulta concorrente.
+- Revisoes de documento, conflitos HTTP `409` e operacoes idempotentes para rascunho, envio e cancelamento.
+- Fallback offline da PWA e pagina dedicada quando a navegacao nao esta disponivel.
+
+### Alterado
+
+- Lista de sistemas intervencionados corrigida para `SADI`, `VSS`, `SADCO`, `SADIR`, `SADEI`, `SCA`, `EAS`, `SADG`, `SCH` e `OTHER`.
+- Escritas de Excel, JSON, assinaturas, HTML e observacoes passaram a ser atomicas.
+- Atualizacoes no Microsoft Graph passaram a usar eTag e `If-Match` para evitar sobrescritas silenciosas.
+- Cache da PWA limitado a recursos estaticos versionados; respostas `/api/` e dados das folhas deixaram de ser armazenados.
+- Adicionada a configuracao `FS_EDIT_LEASE_SECONDS` para controlar a duracao das reservas.
+
+### Corrigido
+
+- Perda de alteracoes ao atualizar, recarregar, mudar de folha ou perder temporariamente a ligacao.
+- Painel de materiais deixou de ocupar espaco quando nao existem materiais.
+- Paineis de recuperacao e bloqueio marcados como ocultos deixaram de aparecer por sobreposicao de CSS.
+- Acoes finais ficam desativadas enquanto a ligacao esta indisponivel e regressam depois da sincronizacao.
+
+### Validacao
+
+- Suite integral: `48 passed`.
+- Validacao local em browser de autosave, refresh/restauro, duas abas, modo de consulta, falha de rede e retoma da sincronizacao.
+- Sem erros de consola nem overflow horizontal no viewport de validacao.
+- Os ficheiros Excel reais do utilizador nao foram alterados durante o QA.
+
+### Nota de deploy
+
+- A verificacao live, apenas de leitura, devolveu `404 itemNotFound` para o caminho Graph configurado `Aplicacao/Activas`.
+- Confirmar `GRAPH_DRIVE_ID`, `GRAPH_ACTIVE_PATH` e permissoes do SharePoint antes de ativar o backend multiutilizador em producao.
+
 ## v1.0.4 - Local da loja e assinatura do cliente
 
 Data: 2026-06-19  

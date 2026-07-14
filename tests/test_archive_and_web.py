@@ -9,6 +9,7 @@ import openpyxl
 import pytest
 
 from src.services.archive_service import ArchiveService
+from src.services.editing_state_service import EditingStateService
 from src.services.file_service import FileService
 from src.web.application import create_app
 
@@ -52,9 +53,38 @@ class DummyService:
     pass
 
 
+def acquire_editing(client, file_name: str, client_id: str = "test-tab") -> dict:
+    response = client.post(
+        f"/api/file/{file_name}/lease",
+        json={"client_id": client_id},
+    )
+    assert response.status_code == 200, response.get_json()
+    return response.get_json()["editing"]
+
+
+def edit_metadata(
+    editing: dict,
+    *,
+    client_id: str = "test-tab",
+    idempotency_key: str | None = None,
+) -> dict:
+    return {
+        "document_id": editing["document_id"],
+        "client_id": client_id,
+        "lease_token": editing["lease"]["token"],
+        "base_revision": editing["revision"],
+        "idempotency_key": idempotency_key or str(uuid.uuid4()),
+    }
+
+
 @pytest.fixture
 def isolated_dirs(monkeypatch):
     base_dir = Path(tempfile.mkdtemp(prefix=f"folhas-servico-{uuid.uuid4()}-"))
+    import src.web.application as application_module
+
+    monkeypatch.setattr(application_module, "ACTIVE_AUTH_PROVIDER", "none")
+    monkeypatch.setattr(application_module, "AUTH_ENABLED", False)
+    monkeypatch.setattr(application_module, "STORAGE_BACKEND", "local")
     active_dir = base_dir / "Excel" / "Activas"
     archived_dir = base_dir / "Excel" / "Arquivadas"
     canceled_dir = base_dir / "Excel" / "Canceladas"
@@ -68,6 +98,7 @@ def isolated_dirs(monkeypatch):
             "active": active_dir,
             "archived": archived_dir,
             "canceled": canceled_dir,
+            "editing": base_dir / "editing-state",
         }
     finally:
         shutil.rmtree(base_dir, ignore_errors=True)
@@ -91,6 +122,7 @@ def test_web_api_flow_send_and_cancel(isolated_dirs):
     app = create_app(
         file_service=FileService(active_dir),
         archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
     )
     client = app.test_client()
 
@@ -112,6 +144,7 @@ def test_web_api_flow_send_and_cancel(isolated_dirs):
     assert get_payload["success"] is True
     assert get_payload["data"]["Cliente nome"]
 
+    editing = acquire_editing(client, "2026_4572")
     draft_payload = {
         "customer_name": "Cliente Teste",
         "requested_by": "Pedido Teste",
@@ -132,6 +165,7 @@ def test_web_api_flow_send_and_cancel(isolated_dirs):
             }
         ],
         "Assinatura Cliente": SIGNATURE_DATA_URL,
+        "_edit": edit_metadata(editing),
     }
     draft_response = client.post("/api/file/2026_4572/draft", json=draft_payload)
     draft_result = draft_response.get_json()
@@ -151,23 +185,39 @@ def test_web_api_flow_send_and_cancel(isolated_dirs):
     assert (63, 22) in draft_positions
     assert draft_row_height >= 42
 
+    send_idempotency_key = str(uuid.uuid4())
+    send_body = {
+        "customer_name": "Cliente Final",
+        "intervention_report": "Fecho",
+        "_internal_observations": "Nota interna para consulta da equipa.",
+        "technician_records": [
+            {
+                "technician": "João Freire",
+                "date": "2026-04-17",
+            }
+        ],
+        "_edit": edit_metadata(
+            {
+                **editing,
+                "document_id": draft_result["document_id"],
+                "revision": draft_result["revision"],
+            },
+            idempotency_key=send_idempotency_key,
+        ),
+    }
     send_response = client.post(
         f"/api/file/{draft_result['file']}/send",
-        json={
-            "customer_name": "Cliente Final",
-            "intervention_report": "Fecho",
-            "_internal_observations": "Nota interna para consulta da equipa.",
-            "technician_records": [
-                {
-                    "technician": "João Freire",
-                    "date": "2026-04-17",
-                }
-            ],
-        },
+        json=send_body,
     )
     send_payload = send_response.get_json()
     assert send_response.status_code == 200
     assert send_payload["success"] is True
+    replay_response = client.post(
+        f"/api/file/{draft_result['file']}/send",
+        json=send_body,
+    )
+    assert replay_response.status_code == 200
+    assert replay_response.get_json()["archived_excel"] == send_payload["archived_excel"]
     assert (isolated_dirs["active"] / "2026_4572.xlsx").exists()
     archived_dir = isolated_dirs["archived"] / draft_result["file"]
     assert (archived_dir / f"{draft_result['file']}.xlsx").exists()
@@ -192,7 +242,11 @@ def test_web_api_flow_send_and_cancel(isolated_dirs):
     assert archived_row_height >= 42
 
     copy_sample(active_dir, "2026_9999.xlsx")
-    cancel_response = client.post("/api/file/2026_9999/cancel", json={})
+    cancel_editing = acquire_editing(client, "2026_9999", "cancel-tab")
+    cancel_response = client.post(
+        "/api/file/2026_9999/cancel",
+        json={"_edit": edit_metadata(cancel_editing, client_id="cancel-tab")},
+    )
     cancel_payload = cancel_response.get_json()
     assert cancel_response.status_code == 200
     assert cancel_payload["success"] is True
@@ -206,10 +260,18 @@ def test_web_api_rejects_missing_required_fields(isolated_dirs):
     app = create_app(
         file_service=FileService(active_dir),
         archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
     )
     client = app.test_client()
 
-    response = client.post("/api/file/2026_4572/send", json={"intervention_report": "Sem cliente"})
+    editing = acquire_editing(client, "2026_4572")
+    response = client.post(
+        "/api/file/2026_4572/send",
+        json={
+            "intervention_report": "Sem cliente",
+            "_edit": edit_metadata(editing),
+        },
+    )
     payload = response.get_json()
 
     assert response.status_code == 400
@@ -226,12 +288,17 @@ def test_draft_does_not_require_all_fields(isolated_dirs):
     app = create_app(
         file_service=FileService(active_dir),
         archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
     )
     client = app.test_client()
 
+    editing = acquire_editing(client, "2026_4572")
     response = client.post(
         "/api/file/2026_4572/draft",
-        json={"intervention_report": "Apenas rascunho parcial"},
+        json={
+            "intervention_report": "Apenas rascunho parcial",
+            "_edit": edit_metadata(editing),
+        },
     )
     payload = response.get_json()
 
@@ -251,6 +318,7 @@ def test_document_preview_returns_html(isolated_dirs):
     app = create_app(
         file_service=FileService(active_dir),
         archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
     )
     client = app.test_client()
 
@@ -289,6 +357,7 @@ def test_file_not_found_returns_404(isolated_dirs):
     app = create_app(
         file_service=FileService(active_dir),
         archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
     )
     client = app.test_client()
 
@@ -297,3 +366,117 @@ def test_file_not_found_returns_404(isolated_dirs):
 
     assert response.status_code == 404
     assert payload["success"] is False
+
+
+def test_web_editor_exposes_features_one_to_four(isolated_dirs):
+    active_dir = isolated_dirs["active"]
+    copy_sample(active_dir, "2026_4572.xlsx")
+    app = create_app(
+        file_service=FileService(active_dir),
+        archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
+    )
+
+    html = app.test_client().get("/?file=2026_4572").get_data(as_text=True)
+
+    assert 'id="materials-panel"' in html
+    assert 'id="materials-used-yes"' in html
+    assert 'id="client-not-present"' in html
+    total_marker = html.index('data-repeat-field="total_hours"')
+    assert "readonly" not in html[total_marker - 160:total_marker + 220]
+
+    positions = [
+        html.index(f">{label}</span>")
+        for label in ("SADI", "VSS", "SADCO", "SADIR", "SADEI", "SCA", "EAS", "SADG", "SCH", "OTHER")
+    ]
+    assert positions == sorted(positions)
+
+
+def test_web_api_requires_signature_when_customer_is_present(isolated_dirs):
+    active_dir = isolated_dirs["active"]
+    copy_sample(active_dir, "2026_4572.xlsx")
+    app = create_app(
+        file_service=FileService(active_dir),
+        archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
+    )
+
+    client = app.test_client()
+    editing = acquire_editing(client, "2026_4572")
+    response = client.post(
+        "/api/file/2026_4572/send",
+        json={
+            "customer_name": "Cliente presente",
+            "_edit": edit_metadata(editing),
+        },
+    )
+    payload = response.get_json()
+
+    assert response.status_code == 400
+    assert payload["success"] is False
+    assert "Assinatura Cliente" in payload["missing_fields"]
+
+
+def test_web_api_allows_client_absence_without_signature_and_records_it(isolated_dirs):
+    active_dir = isolated_dirs["active"]
+    copy_sample(active_dir, "2026_4572.xlsx")
+    app = create_app(
+        file_service=FileService(active_dir),
+        archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
+    )
+
+    client = app.test_client()
+    editing = acquire_editing(client, "2026_4572")
+    response = client.post(
+        "/api/file/2026_4572/send",
+        json={
+            "customer_name": "Cliente ausente",
+            "client_not_present": True,
+            "customer_signature_date": "2026-07-10",
+            "_edit": edit_metadata(editing),
+        },
+    )
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    archived_dir = isolated_dirs["archived"] / "2026_4572"
+    document = json.loads(
+        (archived_dir / "2026_4572__documento.json").read_text(encoding="utf-8")
+    )
+    html = (archived_dir / "2026_4572__folha_final.html").read_text(encoding="utf-8")
+
+    assert document["client_not_present"] is True
+    assert "Cliente não presente na obra" in html
+    assert "Assinatura dispensada" in html
+    assert not (archived_dir / "2026_4572__assinatura_cliente.png").exists()
+
+
+def test_web_api_rejects_invalid_manual_total_on_send(isolated_dirs):
+    active_dir = isolated_dirs["active"]
+    copy_sample(active_dir, "2026_4572.xlsx")
+    app = create_app(
+        file_service=FileService(active_dir),
+        archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
+    )
+
+    client = app.test_client()
+    editing = acquire_editing(client, "2026_4572")
+    response = client.post(
+        "/api/file/2026_4572/send",
+        json={
+            "customer_name": "Cliente",
+            "client_not_present": True,
+            "technician_records": [
+                {"technician": "João Freire", "total_hours": "oito horas"}
+            ],
+            "_edit": edit_metadata(editing),
+        },
+    )
+    payload = response.get_json()
+
+    assert response.status_code == 400
+    assert payload["success"] is False
+    assert payload["invalid_fields"] == ["Total de horas do técnico 1"]

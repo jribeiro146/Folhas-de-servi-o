@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 import time
 from pathlib import Path
@@ -24,7 +25,15 @@ class DocumentArtifactService:
     def write_html(self, html: str) -> Path:
         path = self._build_html_path(self.file_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(html, encoding="utf-8")
+        temp_path = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+        try:
+            temp_path.write_text(html, encoding="utf-8")
+            os.replace(str(temp_path), str(path))
+        finally:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
         return path
 
     def copy_to(self, destination_file: str | Path) -> None:

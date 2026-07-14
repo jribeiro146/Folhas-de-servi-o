@@ -1,15 +1,22 @@
-const CACHE_NAME = "sensorpoint-service-pwa-v1";
+const BUILD_VERSION = "20260714-feature5";
+const CACHE_PREFIX = "sensorpoint-service-static-";
+const CACHE_NAME = `${CACHE_PREFIX}${BUILD_VERSION}`;
+const VERSION_QUERY = `?v=${encodeURIComponent(BUILD_VERSION)}`;
+const OFFLINE_URL = `/static/offline.html${VERSION_QUERY}`;
 const APP_SHELL = [
-    "/manifest.webmanifest",
-    "/static/css/field-app.css",
-    "/static/css/document-editor.css",
-    "/static/css/auth.css",
-    "/static/js/document-editor.js",
-    "/static/js/pwa.js",
-    "/static/img/sensorpoint-logo.png",
-    "/static/img/pwa/icon-192.png",
-    "/static/img/pwa/icon-512.png",
-    "/static/img/pwa/icon-maskable-512.png"
+    `/manifest.webmanifest${VERSION_QUERY}`,
+    `/static/css/field-app.css${VERSION_QUERY}`,
+    `/static/css/document-editor.css${VERSION_QUERY}`,
+    `/static/css/editing-state.css${VERSION_QUERY}`,
+    `/static/css/auth.css${VERSION_QUERY}`,
+    `/static/js/document-editor.js${VERSION_QUERY}`,
+    `/static/js/editing-coordinator.js${VERSION_QUERY}`,
+    `/static/js/pwa.js${VERSION_QUERY}`,
+    `/static/img/sensorpoint-logo.png${VERSION_QUERY}`,
+    `/static/img/pwa/icon-192.png${VERSION_QUERY}`,
+    `/static/img/pwa/icon-512.png${VERSION_QUERY}`,
+    `/static/img/pwa/icon-maskable-512.png${VERSION_QUERY}`,
+    OFFLINE_URL,
 ];
 
 self.addEventListener("install", (event) => {
@@ -17,17 +24,32 @@ self.addEventListener("install", (event) => {
         caches.open(CACHE_NAME)
             .then((cache) => cache.addAll(APP_SHELL))
             .then(() => self.skipWaiting())
-            .catch(() => null)
     );
 });
 
 self.addEventListener("activate", (event) => {
     event.waitUntil(
         caches.keys()
-            .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
+            .then((keys) => Promise.all(
+                keys
+                    .filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
+                    .map((key) => caches.delete(key))
+            ))
             .then(() => self.clients.claim())
     );
 });
+
+const cachedVersion = async (request) => {
+    const exact = await caches.match(request);
+    if (exact) {
+        return exact;
+    }
+    const requestUrl = new URL(request.url);
+    const cache = await caches.open(CACHE_NAME);
+    const keys = await cache.keys();
+    const candidate = keys.find((key) => new URL(key.url).pathname === requestUrl.pathname);
+    return candidate ? cache.match(candidate) : undefined;
+};
 
 self.addEventListener("fetch", (event) => {
     if (event.request.method !== "GET") {
@@ -35,45 +57,44 @@ self.addEventListener("fetch", (event) => {
     }
 
     const requestUrl = new URL(event.request.url);
-    const isNavigationRequest = event.request.mode === "navigate";
-    const isSameOrigin = requestUrl.origin === self.location.origin;
-    const isApiRequest = isSameOrigin && requestUrl.pathname.startsWith("/api/");
-    const isCacheableAsset = isSameOrigin && (
-        requestUrl.pathname.startsWith("/static/") ||
-        requestUrl.pathname === "/manifest.webmanifest" ||
-        requestUrl.pathname === "/service-worker.js"
-    );
-
-    if (isNavigationRequest && isSameOrigin) {
-        event.respondWith(
-            fetch(event.request)
-                .then((response) => response)
-                .catch(() => caches.match("/"))
-        );
+    const sameOrigin = requestUrl.origin === self.location.origin;
+    if (!sameOrigin) {
         return;
     }
+
+    const isApiRequest = requestUrl.pathname.startsWith("/api/");
+    const isAuthenticatedPage = ["/", "/login", "/logout"].includes(requestUrl.pathname);
+    const isNavigation = event.request.mode === "navigate";
+    const isVersionedAsset = requestUrl.searchParams.has("v") && (
+        requestUrl.pathname.startsWith("/static/")
+        || requestUrl.pathname === "/manifest.webmanifest"
+    );
 
     if (isApiRequest) {
         event.respondWith(fetch(event.request));
         return;
     }
 
-    if (isCacheableAsset) {
+    if (isNavigation || isAuthenticatedPage) {
         event.respondWith(
-            caches.open(CACHE_NAME).then((cache) => (
-                cache.match(event.request).then((cached) => {
-                    const networkFetch = fetch(event.request)
-                        .then((response) => {
-                            if (response.ok) {
-                                cache.put(event.request, response.clone());
-                            }
-                            return response;
-                        })
-                        .catch(() => cached);
-
-                    return cached || networkFetch;
-                })
-            ))
+            fetch(event.request).catch(() => caches.match(OFFLINE_URL))
         );
+        return;
     }
+
+    if (!isVersionedAsset) {
+        return;
+    }
+
+    event.respondWith(
+        fetch(event.request)
+            .then((response) => {
+                if (response.ok && response.type === "basic") {
+                    const copy = response.clone();
+                    caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+                }
+                return response;
+            })
+            .catch(() => cachedVersion(event.request))
+    );
 });

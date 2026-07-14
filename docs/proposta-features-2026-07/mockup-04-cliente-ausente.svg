@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">Proposta para dispensar assinatura quando o cliente não está presente</title>
+  <desc id="desc">Checkbox selecionada desativa a captura da assinatura e mostra uma justificação visível no documento.</desc>
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fbfdff"/><stop offset="1" stop-color="#e7eff7"/></linearGradient><filter id="s"><feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#0b4a8b" flood-opacity=".11"/></filter></defs>
+  <rect width="1200" height="720" fill="url(#bg)"/>
+  <text x="64" y="58" font-family="Segoe UI, sans-serif" font-size="15" font-weight="700" letter-spacing="2" fill="#0b4a8b">FEATURE 4 · PROPOSTA VISUAL</text>
+  <text x="64" y="98" font-family="Segoe UI, sans-serif" font-size="30" font-weight="700" fill="#19344d">Assinatura dispensada quando o cliente está ausente</text>
+  <text x="64" y="128" font-family="Segoe UI, sans-serif" font-size="16" fill="#6b7f92">A exceção fica explícita na aplicação e no documento final.</text>
+  <g transform="translate(64 174)" filter="url(#s)">
+    <rect width="680" height="430" rx="24" fill="#fff" stroke="#d6e1ec"/>
+    <text x="30" y="40" font-family="Segoe UI, sans-serif" font-size="12" font-weight="700" letter-spacing="1.5" fill="#0b4a8b">FECHO</text>
+    <text x="30" y="76" font-family="Segoe UI, sans-serif" font-size="22" font-weight="700" fill="#19344d">Assinatura do cliente</text>
+    <rect x="30" y="104" width="620" height="70" rx="16" fill="#eef4fb" stroke="#b9cee3"/>
+    <rect x="50" y="126" width="26" height="26" rx="6" fill="#0b4a8b"/>
+    <path d="M57 139l6 6 11-14" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="92" y="144" font-family="Segoe UI, sans-serif" font-size="17" font-weight="700" fill="#19344d">Cliente não presente na obra</text>
+    <rect x="30" y="194" width="620" height="166" rx="18" fill="#f7f9fb" stroke="#c8d3de" stroke-dasharray="7 6"/>
+    <circle cx="92" cy="260" r="28" fill="#e8edf2"/><path d="M80 260h24m-12-12v24" stroke="#8a9cac" stroke-width="3" stroke-linecap="round" transform="rotate(45 92 260)"/>
+    <text x="134" y="252" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="#526b80">Captura de assinatura desativada</text>
+    <text x="134" y="278" font-family="Segoe UI, sans-serif" font-size="14" fill="#7d90a3">Não será exigida ao guardar e enviar.</text>
+    <rect x="30" y="380" width="620" height="30" rx="15" fill="#eff8f2"/>
+    <text x="340" y="400" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#15803d">✓ Exceção registada e validada pelo servidor</text>
+  </g>
+  <g transform="translate(780 218)" filter="url(#s)">
+    <rect width="356" height="294" rx="20" fill="#fff" stroke="#d6e1ec"/>
+    <text x="24" y="38" font-family="Segoe UI, sans-serif" font-size="12" font-weight="700" letter-spacing="1.4" fill="#6b7f92">DOCUMENTO FINAL</text>
+    <rect x="24" y="62" width="308" height="172" rx="14" fill="#f8fbff" stroke="#d6e1ec"/>
+    <text x="44" y="94" font-family="Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#19344d">Assinatura do cliente</text>
+    <line x1="44" y1="108" x2="312" y2="108" stroke="#d6e1ec"/>
+    <circle cx="70" cy="152" r="18" fill="#fff3dd"/><text x="70" y="158" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="18" font-weight="700" fill="#b45309">!</text>
+    <text x="100" y="145" font-family="Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#19344d">Cliente não presente</text>
+    <text x="100" y="168" font-family="Segoe UI, sans-serif" font-size="13" fill="#6b7f92">Assinatura dispensada</text>
+    <text x="44" y="210" font-family="Segoe UI, sans-serif" font-size="12" fill="#7d90a3">Registado em 10/07/2026</text>
+    <text x="24" y="266" font-family="Segoe UI, sans-serif" font-size="13" fill="#6b7f92">Sem espaço de assinatura vazio</text>
+  </g>
+  <text x="64" y="688" font-family="Segoe UI, sans-serif" font-size="13" fill="#7d90a3">Mockup de aprovação · não implementado</text>
+</svg>

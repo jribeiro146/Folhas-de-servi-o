@@ -51,6 +51,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const techniciansList = document.getElementById("technicians-list");
     const materialTemplate = document.getElementById("material-row-template");
     const technicianTemplate = document.getElementById("technician-row-template");
+    const materialsSection = document.getElementById("materials-section");
+    const materialsPanel = document.getElementById("materials-panel");
+    const materialsUsedYes = document.getElementById("materials-used-yes");
+    const materialsUsedNo = document.getElementById("materials-used-no");
+    const clientNotPresentInput = document.getElementById("client-not-present");
+    const clientAbsenceNotice = document.getElementById("client-absence-notice");
+    const signatureClientCapture = document.getElementById("signature-client-capture");
+    const signatureClientCard = document.getElementById("signature-client-card");
 
     const simpleFields = Array.from(form.querySelectorAll("[data-field]"));
     const serviceTypeInputs = Array.from(form.querySelectorAll('[data-group="service_types"]'));
@@ -95,6 +103,10 @@ document.addEventListener("DOMContentLoaded", () => {
             intervention_report: "Relatório técnico",
             materials_eyebrow: "Materiais",
             materials_title: "Materiais / artigos / peças",
+            materials_question: "Foram utilizados materiais?",
+            materials_help: "Registe apenas os materiais aplicados nesta intervenção.",
+            yes: "Sim",
+            no: "Não",
             add_line: "Adicionar linha",
             description: "Descrição",
             technicians_eyebrow: "Técnicos",
@@ -103,10 +115,20 @@ document.addEventListener("DOMContentLoaded", () => {
             technician: "Técnico",
             start_time: "Hora Início",
             end_time: "Hora Fim",
-            total_hours: "Total Horas",
+            total_hours: "Total efetivo",
+            duration_placeholder: "0 h",
+            adjusted: "Ajustado",
+            calculated: "Calculado",
+            manual_value: "Valor manual",
+            use_calculation: "Usar cálculo",
+            invalid_duration: "Indique uma duração válida: 8, 8:00, 8 h ou 7 h 30 min.",
             closing_eyebrow: "Fecho",
             customer_signature_title: "Assinatura do cliente",
             clear: "Limpar",
+            client_not_present: "Cliente não presente na obra",
+            client_not_present_help: "A assinatura deixa de ser obrigatória e a exceção fica registada.",
+            signature_waived: "Assinatura dispensada por ausência do cliente.",
+            signature_help: "Assine no espaço acima com o dedo ou com uma caneta digital.",
             customer_signature_date: "Cliente - data",
             save_send: "Guardar e enviar",
             cancel_sheet: "Cancelar folha",
@@ -114,7 +136,15 @@ document.addEventListener("DOMContentLoaded", () => {
             select_technician: "Selecionar técnico",
             ready_title: "Selecione uma folha ativa",
             editing_title: "A editar",
-            preparing_document: "A preparar documento..."
+            preparing_document: "A preparar documento...",
+            remove_materials_eyebrow: "Materiais",
+            remove_materials_title: "Remover materiais registados?",
+            remove_materials_message: "As linhas preenchidas serão apagadas desta folha.",
+            remove_materials_confirm: "Remover materiais",
+            discard_signature_eyebrow: "Assinatura",
+            discard_signature_title: "Dispensar a assinatura?",
+            discard_signature_message: "A assinatura já recolhida será apagada e a ausência do cliente ficará registada.",
+            discard_signature_confirm: "Dispensar assinatura"
         },
         en: {
             sheets_nav: "Sheets",
@@ -152,6 +182,10 @@ document.addEventListener("DOMContentLoaded", () => {
             intervention_report: "Technical report",
             materials_eyebrow: "Materials",
             materials_title: "Materials / items / parts",
+            materials_question: "Were materials used?",
+            materials_help: "Record only the materials used in this intervention.",
+            yes: "Yes",
+            no: "No",
             add_line: "Add line",
             description: "Description",
             technicians_eyebrow: "Technicians",
@@ -160,10 +194,20 @@ document.addEventListener("DOMContentLoaded", () => {
             technician: "Technician",
             start_time: "Start time",
             end_time: "End time",
-            total_hours: "Total time",
+            total_hours: "Effective total",
+            duration_placeholder: "0 h",
+            adjusted: "Adjusted",
+            calculated: "Calculated",
+            manual_value: "Manual value",
+            use_calculation: "Use calculation",
+            invalid_duration: "Enter a valid duration: 8, 8:00, 8 h or 7 h 30 min.",
             closing_eyebrow: "Close",
             customer_signature_title: "Customer signature",
             clear: "Clear",
+            client_not_present: "Customer not present on site",
+            client_not_present_help: "The signature is no longer required and the exception is recorded.",
+            signature_waived: "Signature waived because the customer was absent.",
+            signature_help: "Sign in the area above using a finger or digital pen.",
             customer_signature_date: "Customer - date",
             save_send: "Save and send",
             cancel_sheet: "Cancel sheet",
@@ -171,7 +215,15 @@ document.addEventListener("DOMContentLoaded", () => {
             select_technician: "Select technician",
             ready_title: "Select an active sheet",
             editing_title: "Editing",
-            preparing_document: "Preparing document..."
+            preparing_document: "Preparing document...",
+            remove_materials_eyebrow: "Materials",
+            remove_materials_title: "Remove recorded materials?",
+            remove_materials_message: "The completed material rows will be deleted from this sheet.",
+            remove_materials_confirm: "Remove materials",
+            discard_signature_eyebrow: "Signature",
+            discard_signature_title: "Waive the signature?",
+            discard_signature_message: "The captured signature will be deleted and the customer absence will be recorded.",
+            discard_signature_confirm: "Waive signature"
         }
     };
 
@@ -227,6 +279,12 @@ document.addEventListener("DOMContentLoaded", () => {
             element.textContent = serviceLabels[currentLanguage]?.[key] || serviceLabels.pt[key] || element.textContent;
         });
 
+        const durationRows = [
+            ...(root.matches?.('[data-repeat="technician_records"]') ? [root] : []),
+            ...root.querySelectorAll('[data-repeat="technician_records"]')
+        ];
+        durationRows.forEach((row) => updateTechnicianDurationMeta(row));
+
         if (activeFileName) {
             titleHeader.textContent = `${t("editing_title")}: ${activeFileName}.xlsx`;
         } else {
@@ -263,10 +321,19 @@ document.addEventListener("DOMContentLoaded", () => {
         equipments: {},
         requested_tasks: "",
         intervention_report: "",
+        materials_used: false,
         materials: [{ ref: "", description: "", qty: "" }],
-        technician_records: [{ technician: "", start_time: "", end_time: "", total_hours: "", date: "" }],
+        technician_records: [{
+            technician: "",
+            start_time: "",
+            end_time: "",
+            total_hours: "",
+            total_hours_overridden: false,
+            date: ""
+        }],
         document_language: "pt",
-        customer_signature_date: ""
+        customer_signature_date: "",
+        client_not_present: false
     });
 
     const showToast = (message, variant = "info") => {
@@ -590,24 +657,69 @@ document.addEventListener("DOMContentLoaded", () => {
         return element;
     };
 
+    const materialRowsHaveValues = () => (
+        Array.from(materialsList.querySelectorAll(".repeat-row")).some((row) => (
+            Array.from(row.querySelectorAll("[data-repeat-field]")).some((field) => field.value.trim())
+        ))
+    );
+
+    const setMaterialsUsed = (used, { clearRows = false, focusFirst = false } = {}) => {
+        const shouldShow = Boolean(used);
+        materialsUsedYes.checked = shouldShow;
+        materialsUsedNo.checked = !shouldShow;
+        materialsUsedYes.setAttribute("aria-expanded", String(shouldShow));
+        materialsPanel.hidden = !shouldShow;
+        materialsSection.classList.toggle("is-expanded", shouldShow);
+
+        if (!shouldShow && clearRows) {
+            renderMaterials();
+        }
+        if (shouldShow && focusFirst) {
+            window.requestAnimationFrame(() => {
+                materialsList.querySelector('[data-repeat-field="ref"]')?.focus();
+            });
+        }
+    };
+
     const formatDurationMinutes = (totalMinutes) => {
         if (!Number.isFinite(totalMinutes)) {
             return "";
         }
-
         const normalizedMinutes = Math.max(Math.round(totalMinutes), 0);
         const hours = Math.floor(normalizedMinutes / 60);
         const minutes = normalizedMinutes % 60;
-
         if (hours && minutes) {
-            return `${hours} h ${String(minutes).padStart(2, "0")} min`;
+            return hours + " h " + String(minutes).padStart(2, "0") + " min";
         }
-
         if (hours) {
-            return `${hours} h`;
+            return hours + " h";
         }
+        return minutes + " min";
+    };
 
-        return `${minutes} min`;
+    const parseDurationMinutes = (value) => {
+        const raw = String(value ?? "").trim().toLowerCase().replace(",", ".");
+        if (!raw) {
+            return null;
+        }
+        const clockMatch = raw.match(/^(\d{1,3}):([0-5]\d)$/);
+        if (clockMatch) {
+            return (Number(clockMatch[1]) * 60) + Number(clockMatch[2]);
+        }
+        if (/^\d+(?:\.\d+)?$/.test(raw)) {
+            return Math.round(Number(raw) * 60);
+        }
+        const hourMatch = raw.match(/(\d+(?:\.\d+)?)\s*h/);
+        const minuteMatch = raw.match(/(\d+)\s*(?:min|m)/);
+        const remainder = raw
+            .replace(/\d+(?:\.\d+)?\s*h/, "")
+            .replace(/\d+\s*(?:min|m)/, "")
+            .trim();
+        const explicitMinutes = Number(minuteMatch?.[1] || 0);
+        if ((!hourMatch && !minuteMatch) || remainder || (hourMatch && explicitMinutes >= 60)) {
+            return null;
+        }
+        return Math.round((Number(hourMatch?.[1] || 0) * 60) + explicitMinutes);
     };
 
     const normalizeTotalHoursValue = (value) => {
@@ -615,51 +727,90 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!raw) {
             return "";
         }
-
-        if (raw.includes("h") || raw.toLowerCase().includes("min") || raw.includes(":")) {
-            return raw;
-        }
-
-        const decimalHours = Number(raw.replace(",", "."));
-        if (!Number.isFinite(decimalHours)) {
-            return raw;
-        }
-
-        return formatDurationMinutes(decimalHours * 60);
+        const totalMinutes = parseDurationMinutes(raw);
+        return totalMinutes === null ? raw : formatDurationMinutes(totalMinutes);
     };
 
     const calculateTotalHours = (startValue, endValue) => {
         if (!startValue || !endValue) {
             return "";
         }
-
         const [startHour, startMinute] = startValue.split(":").map(Number);
         const [endHour, endMinute] = endValue.split(":").map(Number);
-        if (Number.isNaN(startHour) || Number.isNaN(startMinute) || Number.isNaN(endHour) || Number.isNaN(endMinute)) {
+        if ([startHour, startMinute, endHour, endMinute].some(Number.isNaN)) {
             return "";
         }
-
-        let startTotal = (startHour * 60) + startMinute;
+        const startTotal = (startHour * 60) + startMinute;
         let endTotal = (endHour * 60) + endMinute;
         if (endTotal < startTotal) {
             endTotal += 24 * 60;
         }
-
         return formatDurationMinutes(endTotal - startTotal);
+    };
+
+    const validateDurationInput = (input) => {
+        const raw = input.value.trim();
+        const valid = !raw || parseDurationMinutes(raw) !== null;
+        input.setCustomValidity(valid ? "" : t("invalid_duration"));
+        input.setAttribute("aria-invalid", String(!valid));
+        return valid;
+    };
+
+    const updateTechnicianDurationMeta = (element) => {
+        const durationField = element.querySelector(".duration-field");
+        const meta = element.querySelector("[data-duration-meta]");
+        const calculatedCopy = element.querySelector("[data-duration-calculated]");
+        const resetButton = element.querySelector("[data-duration-reset]");
+        if (!durationField || !meta || !calculatedCopy || !resetButton) {
+            return;
+        }
+        const overridden = element.dataset.totalHoursOverridden === "true";
+        const calculated = calculateTotalHours(
+            element.querySelector('[data-repeat-field="start_time"]').value,
+            element.querySelector('[data-repeat-field="end_time"]').value
+        );
+        durationField.classList.toggle("is-overridden", overridden);
+        meta.hidden = !overridden;
+        calculatedCopy.textContent = calculated ? t("calculated") + ": " + calculated : t("manual_value");
+        resetButton.hidden = !calculated;
     };
 
     const bindTechnicianRow = (element) => {
         const startInput = element.querySelector('[data-repeat-field="start_time"]');
         const endInput = element.querySelector('[data-repeat-field="end_time"]');
         const totalInput = element.querySelector('[data-repeat-field="total_hours"]');
+        const resetButton = element.querySelector("[data-duration-reset]");
 
         const syncTotal = () => {
-            const total = calculateTotalHours(startInput.value, endInput.value);
-            totalInput.value = total;
+            if (element.dataset.totalHoursOverridden !== "true") {
+                totalInput.value = calculateTotalHours(startInput.value, endInput.value);
+            }
+            validateDurationInput(totalInput);
+            updateTechnicianDurationMeta(element);
         };
 
         startInput.addEventListener("change", syncTotal);
         endInput.addEventListener("change", syncTotal);
+        totalInput.addEventListener("input", () => {
+            element.dataset.totalHoursOverridden = totalInput.value.trim() ? "true" : "false";
+            if (!totalInput.value.trim()) {
+                syncTotal();
+                return;
+            }
+            validateDurationInput(totalInput);
+            updateTechnicianDurationMeta(element);
+        });
+        totalInput.addEventListener("blur", () => {
+            if (validateDurationInput(totalInput)) {
+                totalInput.value = normalizeTotalHoursValue(totalInput.value);
+            }
+            updateTechnicianDurationMeta(element);
+        });
+        resetButton.addEventListener("click", () => {
+            element.dataset.totalHoursOverridden = "false";
+            syncTotal();
+            totalInput.focus();
+        });
 
         element.querySelector("[data-row-remove]").addEventListener("click", () => {
             if (techniciansList.children.length === 1) {
@@ -671,6 +822,9 @@ document.addEventListener("DOMContentLoaded", () => {
             element.remove();
             updateTechnicianControls();
         });
+
+        validateDurationInput(totalInput);
+        updateTechnicianDurationMeta(element);
     };
 
     const createTechnicianRow = (row = {}) => {
@@ -690,6 +844,7 @@ document.addEventListener("DOMContentLoaded", () => {
         element.querySelector('[data-repeat-field="end_time"]').value = row.end_time || "";
         element.querySelector('[data-repeat-field="total_hours"]').value = normalizeTotalHoursValue(row.total_hours);
         element.querySelector('[data-repeat-field="date"]').value = row.date || "";
+        element.dataset.totalHoursOverridden = row.total_hours_overridden === true ? "true" : "false";
         bindTechnicianRow(element);
         return element;
     };
@@ -710,7 +865,14 @@ document.addEventListener("DOMContentLoaded", () => {
         techniciansList.innerHTML = "";
         const safeRows = Array.isArray(rows) && rows.length > 0
             ? rows.slice(0, MAX_TECHNICIANS)
-            : [{ technician: "", start_time: "", end_time: "", total_hours: "", date: "" }];
+            : [{
+                technician: "",
+                start_time: "",
+                end_time: "",
+                total_hours: "",
+                total_hours_overridden: false,
+                date: ""
+            }];
 
         safeRows.forEach((row) => techniciansList.appendChild(createTechnicianRow(row)));
         updateTechnicianControls();
@@ -720,6 +882,21 @@ document.addEventListener("DOMContentLoaded", () => {
         inputs.forEach((input) => {
             input.checked = values[input.dataset.option] === true;
         });
+    };
+
+    const setClientNotPresent = (notPresent, { clearSignature = false } = {}) => {
+        const shouldWaive = Boolean(notPresent);
+        const clientPad = signaturePads[0];
+        if (shouldWaive && clearSignature) {
+            clearSignaturePad(clientPad);
+        }
+        clientNotPresentInput.checked = shouldWaive;
+        clientAbsenceNotice.hidden = !shouldWaive;
+        signatureClientCapture.hidden = shouldWaive;
+        signatureClientCard.classList.toggle("is-client-absent", shouldWaive);
+        clientPad.clearButton.hidden = shouldWaive;
+        clientPad.clearButton.disabled = shouldWaive;
+        clientPad.canvas.setAttribute("aria-disabled", String(shouldWaive));
     };
 
     const populateForm = (fileName, documentData, signatures = {}) => {
@@ -735,8 +912,14 @@ document.addEventListener("DOMContentLoaded", () => {
         applyOptionGroup(serviceTypeInputs, safeDocument.service_types || {});
         applyOptionGroup(equipmentInputs, safeDocument.equipments || {});
         renderMaterials(safeDocument.materials);
+        const hasSavedMaterials = Array.isArray(safeDocument.materials)
+            && safeDocument.materials.some((row) => Object.values(row || {}).some((value) => String(value || "").trim()));
+        setMaterialsUsed(Boolean(safeDocument.materials_used || hasSavedMaterials));
         renderTechnicians(safeDocument.technician_records);
         applySignatures(signatures);
+        setClientNotPresent(Boolean(safeDocument.client_not_present), {
+            clearSignature: Boolean(safeDocument.client_not_present)
+        });
         applyLanguage(safeDocument.document_language || "pt");
 
         setActiveCard(fileName);
@@ -752,8 +935,10 @@ document.addEventListener("DOMContentLoaded", () => {
         activeFileName = null;
         form.reset();
         renderMaterials();
+        setMaterialsUsed(false);
         renderTechnicians();
         applySignatures({});
+        setClientNotPresent(false);
         applyLanguage("pt");
         updateWorkspaceVisibility(false);
         setStatusMessage("");
@@ -779,6 +964,20 @@ document.addEventListener("DOMContentLoaded", () => {
         }).filter((record) => Object.values(record).some((value) => value !== ""));
     };
 
+    const collectTechnicianRows = () => (
+        Array.from(techniciansList.querySelectorAll(".repeat-row")).map((row) => {
+            const record = {};
+            ["technician", "start_time", "end_time", "total_hours", "date"].forEach((field) => {
+                const element = row.querySelector('[data-repeat-field="' + field + '"]');
+                record[field] = element ? element.value.trim() : "";
+            });
+            record.total_hours_overridden = row.dataset.totalHoursOverridden === "true";
+            return record;
+        }).filter((record) => (
+            ["technician", "start_time", "end_time", "total_hours", "date"].some((field) => record[field] !== "")
+        ))
+    );
+
     const collectFormData = () => {
         const payload = createEmptyDocument();
 
@@ -792,24 +991,34 @@ document.addEventListener("DOMContentLoaded", () => {
 
         payload.service_types = collectOptionGroup(serviceTypeInputs);
         payload.equipments = collectOptionGroup(equipmentInputs);
-        payload.materials = collectRepeatRows(materialsList, ["ref", "description", "qty"]);
-        payload.technician_records = collectRepeatRows(
-            techniciansList,
-            ["technician", "start_time", "end_time", "total_hours", "date"]
-        );
+        payload.materials_used = materialsUsedYes.checked;
+        payload.materials = payload.materials_used
+            ? collectRepeatRows(materialsList, ["ref", "description", "qty"])
+            : [];
+        payload.technician_records = collectTechnicianRows();
+        payload.client_not_present = clientNotPresentInput.checked;
 
         signaturePads.forEach((pad) => {
-            payload[pad.label] = pad.input?.value || "";
+            payload[pad.label] = payload.client_not_present ? "" : (pad.input?.value || "");
         });
 
         return payload;
     };
 
     const getMissingRequiredFields = (payload) => {
-        return requiredFields
+        const missing = requiredFields
             .filter((field) => !String(payload[field.key] || "").trim())
             .map((field) => field.label);
+        if (!payload.client_not_present && !String(payload["Assinatura Cliente"] || "").trim()) {
+            missing.push(t("customer_signature_title"));
+        }
+        return missing;
     };
+
+    const getInvalidDurationInputs = () => (
+        Array.from(techniciansList.querySelectorAll('[data-repeat-field="total_hours"]'))
+            .filter((input) => !validateDurationInput(input))
+    );
 
     const initializeSignaturePads = () => {
         signaturePads.forEach((pad) => {
@@ -828,7 +1037,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }
 
             pad.canvas.addEventListener("pointerdown", (event) => {
-                if (formWrapper.hidden) {
+                if (formWrapper.hidden || clientNotPresentInput.checked) {
                     return;
                 }
 
@@ -931,6 +1140,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         try {
             const payload = collectFormData();
+            payload._edit = window.__EDITING_COORDINATOR__?.operationMetadata("draft") || {};
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/draft`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -939,9 +1149,11 @@ document.addEventListener("DOMContentLoaded", () => {
             const result = await response.json();
 
             if (!response.ok || !result.success) {
+                window.__EDITING_COORDINATOR__?.handleConflict(result);
                 throw new Error(result.error || "Falha ao guardar rascunho.");
             }
 
+            await window.__EDITING_COORDINATOR__?.markCommitted(result, "draft");
             const nextFileName = result.file || activeFileName;
             const successMessage = result.created_copy
                 ? "Rascunho guardado e nova folha em execução criada."
@@ -963,6 +1175,7 @@ document.addEventListener("DOMContentLoaded", () => {
         setBusy(true, "A arquivar a folha", "Estamos a mover a folha para Arquivadas.");
 
         try {
+            payload._edit = window.__EDITING_COORDINATOR__?.operationMetadata("send") || {};
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/send`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -971,10 +1184,16 @@ document.addEventListener("DOMContentLoaded", () => {
             const result = await response.json();
 
             if (!response.ok || !result.success) {
-                const suffix = result.missing_fields ? ` (${result.missing_fields.join(", ")})` : "";
+                window.__EDITING_COORDINATOR__?.handleConflict(result);
+                const fields = [
+                    ...(result.missing_fields || []),
+                    ...(result.invalid_fields || [])
+                ];
+                const suffix = fields.length ? " (" + fields.join(", ") + ")" : "";
                 throw new Error((result.error || "Falha ao fechar a folha.") + suffix);
             }
 
+            await window.__EDITING_COORDINATOR__?.markCommitted(result, "send");
             showToast("Folha concluída e arquivada com sucesso.", "success");
             window.setTimeout(() => {
                 window.location.href = "/";
@@ -993,14 +1212,19 @@ document.addEventListener("DOMContentLoaded", () => {
         try {
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/cancel`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" }
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    _edit: window.__EDITING_COORDINATOR__?.operationMetadata("cancel") || {}
+                })
             });
             const result = await response.json();
 
             if (!response.ok || !result.success) {
+                window.__EDITING_COORDINATOR__?.handleConflict(result);
                 throw new Error(result.error || "Falha ao cancelar a folha.");
             }
 
+            await window.__EDITING_COORDINATOR__?.markCommitted(result, "cancel");
             showToast("Folha cancelada com sucesso.", "success");
             window.setTimeout(() => {
                 window.location.href = "/";
@@ -1147,6 +1371,58 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
 
+    materialsUsedYes?.addEventListener("change", () => {
+        if (materialsUsedYes.checked) {
+            setMaterialsUsed(true, { focusFirst: true });
+        }
+    });
+
+    materialsUsedNo?.addEventListener("change", () => {
+        if (!materialsUsedNo.checked) {
+            return;
+        }
+        if (!materialRowsHaveValues()) {
+            setMaterialsUsed(false, { clearRows: true });
+            return;
+        }
+        setMaterialsUsed(true);
+        showConfirm({
+            eyebrow: t("remove_materials_eyebrow"),
+            title: t("remove_materials_title"),
+            message: t("remove_materials_message"),
+            confirmLabel: t("remove_materials_confirm"),
+            confirmVariant: "danger",
+            onAccept: async () => {
+                hideConfirm();
+                setMaterialsUsed(false, { clearRows: true });
+            }
+        });
+    });
+
+    clientNotPresentInput?.addEventListener("change", () => {
+        if (!clientNotPresentInput.checked) {
+            setClientNotPresent(false);
+            return;
+        }
+        const hasSignature = Boolean(signaturePads[0].input?.value);
+        if (!hasSignature) {
+            setClientNotPresent(true);
+            return;
+        }
+        setClientNotPresent(false);
+        showConfirm({
+            eyebrow: t("discard_signature_eyebrow"),
+            title: t("discard_signature_title"),
+            message: t("discard_signature_message"),
+            confirmLabel: t("discard_signature_confirm"),
+            confirmVariant: "danger",
+            onAccept: async () => {
+                hideConfirm();
+                setClientNotPresent(true, { clearSignature: true });
+            }
+        });
+    });
+
     btnAddMaterial?.addEventListener("click", () => {
         const row = createMaterialRow();
         materialsList.appendChild(row);
@@ -1192,6 +1468,13 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         const payload = collectFormData();
+        const invalidDurationInputs = getInvalidDurationInputs();
+        if (invalidDurationInputs.length > 0) {
+            showToast(t("invalid_duration"), "error");
+            invalidDurationInputs[0].focus();
+            return;
+        }
+
         const missingFields = getMissingRequiredFields(payload);
         if (missingFields.length > 0) {
             showToast(`Campos obrigatórios em falta: ${missingFields.join(", ")}`, "error");
@@ -1228,6 +1511,13 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         });
     });
+
+    window.__FILES_EDITOR__ = {
+        collectFormData,
+        populateForm,
+        showToast,
+        getActiveFileName: () => activeFileName
+    };
 
     initializeSignaturePads();
     resetActiveState();

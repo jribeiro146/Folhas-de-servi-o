@@ -27,15 +27,15 @@ SERVICE_TYPE_OPTIONS: list[dict[str, str | None]] = [
 
 EQUIPMENT_OPTIONS: list[dict[str, str | None]] = [
     {"key": "sadi", "label": "SADI", "excel_label": "SADI"},
+    {"key": "vss", "label": "VSS", "excel_label": "CCTV"},
+    {"key": "sadco", "label": "SADCO", "excel_label": None},
     {"key": "sadir", "label": "SADIR", "excel_label": None},
     {"key": "sadei", "label": "SADEI", "excel_label": None},
     {"key": "sca", "label": "SCA", "excel_label": "SCA"},
     {"key": "eas", "label": "EAS", "excel_label": "EAS"},
-    {"key": "vss", "label": "VSS", "excel_label": "CCTV"},
-    {"key": "adco", "label": "ADCO", "excel_label": None},
     {"key": "sadg", "label": "SADG", "excel_label": "SADG"},
     {"key": "sch", "label": "SCH", "excel_label": "SCH"},
-    {"key": "ther", "label": "THER", "excel_label": None},
+    {"key": "other", "label": "OTHER", "excel_label": None},
 ]
 
 TECHNICIAN_OPTIONS = [
@@ -90,12 +90,13 @@ def create_empty_material() -> dict[str, str]:
     }
 
 
-def create_empty_technician_record() -> dict[str, str]:
+def create_empty_technician_record() -> dict[str, Any]:
     return {
         "technician": "",
         "start_time": "",
         "end_time": "",
         "total_hours": "",
+        "total_hours_overridden": False,
         "date": "",
     }
 
@@ -122,9 +123,11 @@ def create_empty_document() -> dict[str, Any]:
         "equipments": {option["key"]: False for option in EQUIPMENT_OPTIONS},
         "requested_tasks": "",
         "intervention_report": "",
+        "materials_used": False,
         "materials": [create_empty_material()],
         "technician_records": [create_empty_technician_record()],
         "customer_signature_date": "",
+        "client_not_present": False,
     }
 
 
@@ -155,11 +158,24 @@ def normalize_document_payload(payload: dict[str, Any] | None) -> dict[str, Any]
         for option in EQUIPMENT_OPTIONS:
             document["equipments"][option["key"]] = _coerce_bool(equipments.get(option["key"]))
 
+        # Compatibilidade com rascunhos criados antes da correção da nomenclatura.
+        if "sadco" not in equipments and "adco" in equipments:
+            document["equipments"]["sadco"] = _coerce_bool(equipments.get("adco"))
+        if "other" not in equipments and "ther" in equipments:
+            document["equipments"]["other"] = _coerce_bool(equipments.get("ther"))
+
     materials = _normalize_material_rows(source.get("materials"))
-    document["materials"] = materials if materials else [create_empty_material()]
+    materials_used = (
+        _coerce_bool(source.get("materials_used"))
+        if "materials_used" in source
+        else bool(materials)
+    )
+    document["materials_used"] = materials_used
+    document["materials"] = materials if materials_used and materials else [create_empty_material()]
 
     technician_records = _normalize_technician_rows(source.get("technician_records"))
     document["technician_records"] = technician_records if technician_records else [create_empty_technician_record()]
+    document["client_not_present"] = _coerce_bool(source.get("client_not_present"))
 
     return document
 
@@ -211,6 +227,7 @@ def document_from_excel_and_extra(
             "start_time": "",
             "end_time": _stringify(excel.get("Fim")),
             "total_hours": _derive_total_hours_from_excel(excel),
+            "total_hours_overridden": False,
             "date": _format_date_value(excel.get("Data serviço")),
         }
         if any(derived_record.values()):
@@ -230,7 +247,10 @@ def document_to_excel_form(document_payload: dict[str, Any]) -> dict[str, Any]:
     technician_records = [
         record
         for record in document["technician_records"]
-        if any(_stringify(record.get(key)) for key in record)
+        if any(
+            _stringify(record.get(key))
+            for key in ("technician", "start_time", "end_time", "total_hours", "date")
+        )
     ]
     materials = [
         row
@@ -311,6 +331,18 @@ def document_missing_required_fields(document_payload: dict[str, Any]) -> list[s
     return missing
 
 
+def document_invalid_fields(document_payload: dict[str, Any]) -> list[str]:
+    document = normalize_document_payload(document_payload)
+    invalid: list[str] = []
+
+    for index, record in enumerate(document["technician_records"], start=1):
+        total_hours = _stringify(record.get("total_hours"))
+        if total_hours and _decimal_hours(total_hours) is None:
+            invalid.append(f"Total de horas do técnico {index}")
+
+    return invalid
+
+
 def strip_signature_payload(document_payload: dict[str, Any]) -> dict[str, Any]:
     stripped = deepcopy(document_payload if isinstance(document_payload, dict) else {})
     stripped.pop(CLIENT_SIGNATURE_LABEL, None)
@@ -367,32 +399,44 @@ def _normalize_material_rows(value: Any) -> list[dict[str, str]]:
     return rows
 
 
-def _normalize_technician_rows(value: Any) -> list[dict[str, str]]:
+def _normalize_technician_rows(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
 
-    rows: list[dict[str, str]] = []
+    rows: list[dict[str, Any]] = []
     for row in value[:DOCUMENT_MAX_TECHNICIANS]:
         if not isinstance(row, dict):
             continue
 
-        total_hours = _stringify(row.get("total_hours"))
-        if not total_hours:
-            total_hours = _calculate_total_hours(
-                _stringify(row.get("start_time")),
-                _stringify(row.get("end_time")),
-            )
+        start_time = _normalize_time_value(row.get("start_time"))
+        end_time = _normalize_time_value(row.get("end_time"))
+        calculated_total = _calculate_total_hours(start_time, end_time)
+        raw_total_hours = _stringify(row.get("total_hours"))
+        total_hours = (
+            _normalize_total_hours_value(raw_total_hours)
+            if raw_total_hours
+            else calculated_total
+        )
+        if "total_hours_overridden" in row:
+            total_hours_overridden = _coerce_bool(row.get("total_hours_overridden"))
         else:
-            total_hours = _normalize_total_hours_value(total_hours)
+            total_hours_overridden = bool(
+                raw_total_hours
+                and (not calculated_total or total_hours != calculated_total)
+            )
 
         normalized = {
             "technician": _stringify(row.get("technician")),
-            "start_time": _normalize_time_value(row.get("start_time")),
-            "end_time": _normalize_time_value(row.get("end_time")),
+            "start_time": start_time,
+            "end_time": end_time,
             "total_hours": total_hours,
+            "total_hours_overridden": total_hours_overridden,
             "date": _normalize_date_value(row.get("date")),
         }
-        if any(normalized.values()):
+        if any(
+            _stringify(normalized.get(key))
+            for key in ("technician", "start_time", "end_time", "total_hours", "date")
+        ):
             rows.append(normalized)
 
     return rows
@@ -409,6 +453,9 @@ def _build_observations(
 
     if extra_equipment_labels:
         sections.append("Equipamentos extra: " + ", ".join(extra_equipment_labels))
+
+    if document.get("client_not_present"):
+        sections.append("Cliente não presente na obra — assinatura dispensada.")
 
     if materials:
         material_lines = [
@@ -468,9 +515,10 @@ def _decimal_hours(value: Any) -> Decimal | None:
         return None
 
     try:
-        return Decimal(raw)
+        decimal_hours = Decimal(raw)
     except InvalidOperation:
         return None
+    return decimal_hours if decimal_hours >= 0 else None
 
 
 def _format_decimal_hours(value: Decimal | None) -> str:
@@ -502,15 +550,21 @@ def _duration_minutes(value: Any) -> int | None:
     if ":" in raw:
         hours_text, minutes_text, *_ = raw.split(":") + [""]
         try:
-            return (int(hours_text or "0") * 60) + int(minutes_text or "0")
+            hours = int(hours_text or "0")
+            minutes = int(minutes_text or "0")
         except ValueError:
             return None
+        if hours < 0 or minutes < 0 or minutes >= 60:
+            return None
+        return (hours * 60) + minutes
 
     hour_match = re.search(r"(\d+(?:\.\d+)?)\s*h", raw)
     minute_match = re.search(r"(\d+)\s*(?:m|min)", raw)
     if hour_match or minute_match:
         hours = Decimal(hour_match.group(1)) if hour_match else Decimal("0")
         minutes = int(minute_match.group(1)) if minute_match else 0
+        if hour_match and minutes >= 60:
+            return None
         return int((hours * Decimal("60")).to_integral_value()) + minutes
 
     return None
@@ -674,7 +728,11 @@ def _has_meaningful_rows(value: Any) -> bool:
         return False
 
     for row in value:
-        if isinstance(row, dict) and any(_stringify(cell) for cell in row.values()):
+        if isinstance(row, dict) and any(
+            _stringify(cell)
+            for key, cell in row.items()
+            if key != "total_hours_overridden"
+        ):
             return True
     return False
 

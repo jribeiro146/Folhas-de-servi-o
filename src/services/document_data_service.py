@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shutil
 import time
 from pathlib import Path
@@ -36,10 +37,18 @@ class DocumentDataService:
     def write(self, payload: dict[str, Any]) -> None:
         path = self._build_document_path(self.file_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        temp_path = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+        try:
+            temp_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(str(temp_path), str(path))
+        finally:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
 
     def copy_to(self, destination_file: str | Path) -> None:
         source = self._build_document_path(self.file_path)

@@ -488,6 +488,28 @@ body {
     box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.06);
 }
 
+.signature-image.is-exempt {
+    border-color: rgba(180, 83, 9, 0.34);
+    background: #fff8e8;
+}
+
+.signature-image .signature-exemption {
+    display: grid;
+    gap: 4px;
+    text-align: center;
+    font-style: normal;
+}
+
+.signature-exemption strong {
+    color: #7a3d07;
+    font-size: 0.76rem;
+}
+
+.signature-exemption small {
+    color: #8a5b30;
+    font-size: 0.68rem;
+}
+
 .signature-panel-customer .signature-meta strong {
     font-size: 11px;
 }

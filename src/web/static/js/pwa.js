@@ -85,7 +85,10 @@
     }
 
     window.addEventListener("load", () => {
-        navigator.serviceWorker.register("/service-worker.js", { scope: "/" }).catch(() => {});
+        navigator.serviceWorker.register("/service-worker.js", {
+            scope: "/",
+            updateViaCache: "none"
+        }).then((registration) => registration.update()).catch(() => {});
         showIOSInstallControls();
         showInstallControls();
     });

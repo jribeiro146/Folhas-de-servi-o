@@ -9,6 +9,8 @@ Usa o field_map como contrato estavel para acesso aos campos.
 from __future__ import annotations
 
 import datetime as dt
+import os
+import secrets
 import time
 import gc
 import re
@@ -193,6 +195,9 @@ class ExcelService:
         signatures: dict[str, str | None] | None = None,
     ) -> None:
         wb = self._load_workbook()
+        temp_path = self.file_path.with_name(
+            f".{self.file_path.stem}.{secrets.token_hex(6)}.tmp{self.file_path.suffix}"
+        )
         try:
             self._validate_sheet_names(wb.sheetnames)
             ws = wb[SHEET_LINK]
@@ -212,13 +217,22 @@ class ExcelService:
             if signatures is not None:
                 self._write_fs_signatures(wb[SHEET_TEMPLATE], signatures)
 
-            try:
-                wb.save(str(self.file_path))
-            except PermissionError as exc:
-                raise ExcelFileLockedError(self._locked_message()) from exc
+            wb.save(str(temp_path))
+        except PermissionError as exc:
+            raise ExcelFileLockedError(self._locked_message()) from exc
         finally:
             wb.close()
             gc.collect()
+
+        try:
+            os.replace(str(temp_path), str(self.file_path))
+        except PermissionError as exc:
+            raise ExcelFileLockedError(self._locked_message()) from exc
+        finally:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
 
     @staticmethod
     def _validate_sheet_names(sheet_names: list[str]) -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import os
+import secrets
 import shutil
 import time
 from pathlib import Path
@@ -110,7 +111,15 @@ class SignatureService:
         raw_bytes = self.decode_data_url(normalized)
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(raw_bytes)
+        temp_path = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+        try:
+            temp_path.write_bytes(raw_bytes)
+            os.replace(str(temp_path), str(path))
+        finally:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
 
     @staticmethod
     def normalize_value(value: object) -> str | None:
