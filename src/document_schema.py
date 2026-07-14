@@ -28,14 +28,14 @@ SERVICE_TYPE_OPTIONS: list[dict[str, str | None]] = [
 EQUIPMENT_OPTIONS: list[dict[str, str | None]] = [
     {"key": "sadi", "label": "SADI", "excel_label": "SADI"},
     {"key": "vss", "label": "VSS", "excel_label": "CCTV"},
-    {"key": "sadco", "label": "SADCO", "excel_label": None},
-    {"key": "sadir", "label": "SADIR", "excel_label": None},
-    {"key": "sadei", "label": "SADEI", "excel_label": None},
+    {"key": "sadco", "label": "SADCO", "excel_label": "PA/VA"},
+    {"key": "sadir", "label": "SADIR", "excel_label": "SAI"},
+    {"key": "sadei", "label": "SADEI", "excel_label": "EXT"},
     {"key": "sca", "label": "SCA", "excel_label": "SCA"},
     {"key": "eas", "label": "EAS", "excel_label": "EAS"},
     {"key": "sadg", "label": "SADG", "excel_label": "SADG"},
     {"key": "sch", "label": "SCH", "excel_label": "SCH"},
-    {"key": "other", "label": "OTHER", "excel_label": None},
+    {"key": "other", "label": "OTHER", "excel_label": "OTHER"},
 ]
 
 TECHNICIAN_OPTIONS = [

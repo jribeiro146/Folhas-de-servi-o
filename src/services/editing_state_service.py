@@ -70,7 +70,7 @@ class EditingStateService:
     ):
         self.root = Path(root or (APP_DATA_DIR / "editing-state"))
         self.root.mkdir(parents=True, exist_ok=True)
-        configured_lease = int(os.environ.get("FS_EDIT_LEASE_SECONDS", "120"))
+        configured_lease = int(os.environ.get("FS_EDIT_LEASE_SECONDS", "10"))
         self.lease_seconds = max(int(lease_seconds or configured_lease), 1)
         self.operation_timeout_seconds = max(int(operation_timeout_seconds), 1)
 
@@ -233,6 +233,55 @@ class EditingStateService:
             }
             state["etag"] = self._etag(state)
             return self._public_snapshot(state, now=now, include_token=True)
+
+    def close_editing_session(
+        self,
+        *,
+        document_id: str,
+        identity: EditorIdentity,
+        client_id: str,
+        lease_token: str,
+        base_revision: int,
+        idempotency_key: str,
+        document: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Best-effort autosave followed by an immediate lease release.
+
+        This operation is used when a browser tab is being closed or reloaded.
+        A stale document is never written, but the lease is still released so
+        another technician does not have to wait for the expiry timeout.
+        """
+        now = time.time()
+        with self._state_transaction(document_id) as state:
+            self._assert_lease(state, identity, client_id, lease_token, now)
+            autosaved = False
+            revision_conflict = False
+
+            if document is not None:
+                existing = state.get("autosave") or {}
+                if existing.get("idempotency_key") == idempotency_key:
+                    autosaved = True
+                elif int(state.get("revision") or 1) != int(base_revision):
+                    revision_conflict = True
+                else:
+                    state["revision"] = int(state.get("revision") or 1) + 1
+                    state["autosave"] = {
+                        "document": document,
+                        "updated_at": now,
+                        "owner_id": identity.id,
+                        "owner_name": identity.display_name,
+                        "idempotency_key": idempotency_key,
+                    }
+                    state["etag"] = self._etag(state)
+                    autosaved = True
+
+            state["lease"] = None
+            return {
+                "autosaved": autosaved,
+                "revision_conflict": revision_conflict,
+                "released": True,
+                "editing": self._public_snapshot(state, now=now),
+            }
 
     def discard_autosave(
         self,

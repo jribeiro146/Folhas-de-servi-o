@@ -1110,25 +1110,6 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     };
 
-    const loadFileData = async (fileName) => {
-        hideConfirm();
-
-        try {
-            const response = await fetch(`/api/file/${encodeURIComponent(fileName)}`);
-            const result = await response.json();
-
-            if (!response.ok || !result.success) {
-                throw new Error(result.error || "Falha ao carregar a folha.");
-            }
-
-            populateForm(fileName, result.document || {}, result.signatures || {});
-            setSidebarOpen(false);
-            return true;
-        } catch (error) {
-            showToast(error.message, "error");
-            return false;
-        }
-    };
 
     const saveDraft = async () => {
         if (!activeFileName) {
@@ -1291,46 +1272,6 @@ document.addEventListener("DOMContentLoaded", () => {
         fileCounter.textContent = `${visibleCount} folha(s)`;
     });
 
-    fileCards.forEach((link) => {
-        link.addEventListener("click", async (event) => {
-            if (
-                event.defaultPrevented
-                || event.button !== 0
-                || event.metaKey
-                || event.ctrlKey
-                || event.shiftKey
-                || event.altKey
-            ) {
-                return;
-            }
-
-            event.preventDefault();
-            const fileName = link.dataset.name;
-            if (!fileName || fileName === activeFileName) {
-                setSidebarOpen(false);
-                return;
-            }
-
-            const loaded = await loadFileData(fileName);
-            if (!loaded) {
-                return;
-            }
-
-            const nextUrl = new URL(window.location.href);
-            nextUrl.searchParams.set("file", fileName);
-            window.history.pushState({ file: fileName }, "", nextUrl);
-        });
-    });
-
-    window.addEventListener("popstate", async () => {
-        const fileName = new URLSearchParams(window.location.search).get("file");
-        if (fileName) {
-            await loadFileData(fileName);
-            return;
-        }
-
-        resetActiveState();
-    });
 
     refreshBtn?.addEventListener("click", () => window.location.reload());
     toggleSidebarBtn?.addEventListener("click", () => {
@@ -1449,13 +1390,11 @@ document.addEventListener("DOMContentLoaded", () => {
         await openDocumentPreview(true);
     });
 
-    btnCancelEdit?.addEventListener("click", async () => {
+    btnCancelEdit?.addEventListener("click", () => {
         if (!activeFileName) {
             return;
         }
-
-        await loadFileData(activeFileName);
-        showToast("A folha foi recarregada.", "info");
+        window.location.reload();
     });
 
     btnSaveDraft?.addEventListener("click", async () => {
@@ -1528,4 +1467,7 @@ document.addEventListener("DOMContentLoaded", () => {
         setStatusMessage(selectedFileError);
         showToast(selectedFileError, "error");
     }
+
+    window.__FILES_EDITOR_READY__ = true;
+    document.dispatchEvent(new CustomEvent("files-editor-ready"));
 });

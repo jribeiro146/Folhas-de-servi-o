@@ -63,6 +63,10 @@
     padding: 1rem 1.1rem;
 }
 
+.autosave-status[hidden] {
+    display: none !important;
+}
+
 .editing-lock-banner[hidden],
 .recovery-panel[hidden] {
     display: none !important;

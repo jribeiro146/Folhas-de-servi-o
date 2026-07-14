@@ -102,6 +102,38 @@ def test_legacy_equipment_keys_are_migrated_without_losing_selection():
     assert "ther" not in document["equipments"]
 
 
+def test_legacy_excel_system_columns_map_to_approved_names_bidirectionally():
+    legacy_columns = {
+        "SADI": True,
+        "CCTV": True,
+        "PA/VA": True,
+        "SAI": True,
+        "EXT": True,
+        "SCA": True,
+        "EAS": True,
+        "SADG": True,
+        "SCH": True,
+        "OTHER": True,
+    }
+
+    document = document_from_excel_and_extra(legacy_columns, {})
+    excel_form = document_to_excel_form(document)
+
+    assert document["equipments"] == {
+        "sadi": True,
+        "vss": True,
+        "sadco": True,
+        "sadir": True,
+        "sadei": True,
+        "sca": True,
+        "eas": True,
+        "sadg": True,
+        "sch": True,
+        "other": True,
+    }
+    assert {column: excel_form[column] for column in legacy_columns} == legacy_columns
+
+
 def test_materials_used_is_derived_for_old_documents_and_explicit_false_clears_rows():
     legacy = normalize_document_payload(
         {"materials": [{"ref": "MAT-1", "description": "Bateria", "qty": "1"}]}

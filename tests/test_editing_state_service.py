@@ -117,6 +117,55 @@ def test_autosave_is_idempotent_and_rejects_stale_revision(tmp_path):
     assert conflict.value.snapshot["server_document"]["intervention_report"] == "Versão A"
 
 
+def test_close_session_autosaves_and_immediately_releases_lease(tmp_path):
+    path = make_active_file(tmp_path, "2026_5006")
+    service = EditingStateService(tmp_path / "editing", lease_seconds=120)
+    first_user = EditorIdentity("user-a", "Utilizador A")
+    lease = service.acquire_lease(path, first_user, "tab-a")
+
+    closed = service.close_editing_session(
+        document_id=lease["document_id"],
+        identity=first_user,
+        client_id="tab-a",
+        lease_token=lease["lease"]["token"],
+        base_revision=lease["revision"],
+        idempotency_key="close-1",
+        document={"intervention_report": "Guardado ao fechar"},
+    )
+    replacement = service.acquire_lease(
+        path,
+        EditorIdentity("user-b", "Utilizador B"),
+        "tab-b",
+    )
+
+    assert closed["autosaved"] is True
+    assert closed["released"] is True
+    assert closed["editing"]["lease"] is None
+    assert closed["editing"]["server_document"]["intervention_report"] == "Guardado ao fechar"
+    assert replacement["lease"]["owner_id"] == "user-b"
+
+
+def test_close_session_releases_lease_even_if_revision_is_stale(tmp_path):
+    path = make_active_file(tmp_path, "2026_5007")
+    service = EditingStateService(tmp_path / "editing")
+    identity = EditorIdentity("user-a", "Utilizador A")
+    lease = service.acquire_lease(path, identity, "tab-a")
+    service.save_autosave(
+        document_id=lease["document_id"], identity=identity, client_id="tab-a",
+        lease_token=lease["lease"]["token"], base_revision=lease["revision"],
+        idempotency_key="save-before-close", document={"intervention_report": "Servidor"},
+    )
+    closed = service.close_editing_session(
+        document_id=lease["document_id"], identity=identity, client_id="tab-a",
+        lease_token=lease["lease"]["token"], base_revision=lease["revision"],
+        idempotency_key="stale-close", document={"intervention_report": "Local"},
+    )
+
+    assert closed["revision_conflict"] is True
+    assert closed["editing"]["lease"] is None
+    assert closed["editing"]["server_document"]["intervention_report"] == "Servidor"
+
+
 def test_web_leases_isolate_files_and_autosave_conflicts(tmp_path):
     first_path = make_active_file(tmp_path, "2026_5101")
     make_active_file(tmp_path, "2026_5102")
@@ -184,6 +233,49 @@ def test_web_leases_isolate_files_and_autosave_conflicts(tmp_path):
     assert stale_response.get_json()["editing"]["server_document"]["intervention_report"] == "Autosave web"
 
 
+def test_web_close_endpoint_autosaves_and_releases_for_next_editor(tmp_path):
+    path = make_active_file(tmp_path, "2026_5103")
+    app = create_app(
+        file_service=FileService(path.parent),
+        archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(tmp_path / "editing"),
+    )
+    first_client = app.test_client()
+    second_client = app.test_client()
+    lease = first_client.post(
+        "/api/file/2026_5103/lease",
+        json={"client_id": "closing-tab"},
+    ).get_json()["editing"]
+
+    close_response = first_client.post(
+        "/api/file/2026_5103/editing/close",
+        json={
+            "document": {"intervention_report": "Fecho seguro"},
+            "_edit": {
+                "document_id": lease["document_id"],
+                "client_id": "closing-tab",
+                "lease_token": lease["lease"]["token"],
+                "base_revision": lease["revision"],
+                "idempotency_key": "web-close-1",
+            },
+        },
+    )
+    replacement_response = second_client.post(
+        "/api/file/2026_5103/lease",
+        json={"client_id": "next-tab"},
+    )
+
+    assert close_response.status_code == 200
+    assert close_response.get_json()["autosaved"] is True
+    assert close_response.get_json()["released"] is True
+    assert close_response.get_json()["editing"]["lease"] is None
+    assert (
+        close_response.get_json()["editing"]["server_document"]["intervention_report"]
+        == "Fecho seguro"
+    )
+    assert replacement_response.status_code == 200
+
+
 def test_graph_upload_uses_if_match_and_persists_new_etag(tmp_path, monkeypatch):
     local_file = tmp_path / "draft.json"
     local_file.write_text("{}", encoding="utf-8")
@@ -247,6 +339,7 @@ def test_feature_five_assets_and_api_are_not_http_cached(tmp_path):
     service_worker = Path("src/web/static/service-worker.js").read_text(encoding="utf-8")
 
     assert 'id="recovery-panel"' in html
+    document_editor = Path("src/web/static/js/document-editor.js").read_text(encoding="utf-8")
     assert 'id="autosave-status"' in html
     assert "editing-coordinator.js" in html
     assert "no-store" in api_response.headers["Cache-Control"]
@@ -255,6 +348,25 @@ def test_feature_five_assets_and_api_are_not_http_cached(tmp_path):
     assert "editing-state.css" in service_worker
     coordinator = Path("src/web/static/js/editing-coordinator.js").read_text(encoding="utf-8")
     editing_css = Path("src/web/static/css/editing-state.css").read_text(encoding="utf-8")
+    assert ".autosave-status[hidden]" in editing_css
     assert "edição guardada neste dispositivo" in coordinator
     assert "setCommitActionsEnabled(false)" in coordinator
     assert ".editing-lock-banner[hidden]" in editing_css
+    assert "const SERVER_SAVE_DELAY = 900" in coordinator
+    assert "const HEARTBEAT_DELAY = 3000" in coordinator
+    assert "const LEASE_RETRY_DELAY = 1000" in coordinator
+    assert "comparableRecovery" in coordinator
+    assert 'window.addEventListener("pagehide"' in coordinator
+    assert 'window.addEventListener("beforeunload"' in coordinator
+    assert 'document.addEventListener("freeze"' in coordinator
+    assert 'document.addEventListener("visibilitychange", async () =>' in coordinator
+    assert "Ligação restabelecida" in coordinator
+    assert "recuperadas — modo de consulta" in coordinator
+    assert "/editing/close" in coordinator
+    assert "retoma automática" in coordinator
+    assert "await applyRecovery(action.record, action.source)" in coordinator
+    assert "Sincronizado às" in coordinator
+    assert "window.history.pushState" not in document_editor
+    assert "const loadFileData" not in document_editor
+    assert "window.location.reload()" in document_editor
+    assert 'BUILD_VERSION = "20260714-native-navigation"' in service_worker

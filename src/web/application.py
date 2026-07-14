@@ -608,6 +608,38 @@ def create_app(
         except EditingStateError as exc:
             return editing_error_response(exc)
 
+    @app.route("/api/file/<name>/editing/close", methods=["POST"])
+    def close_file_editing(name: str):
+        path = file_service.get_file_by_name(name)
+        if not path:
+            return json_error("Ficheiro não encontrado", 404)
+        data = request.get_json(silent=True) or {}
+        document_payload = data.get("document")
+        if document_payload is not None and not isinstance(document_payload, dict):
+            return json_error("Documento de autosave inválido.", 400)
+        try:
+            metadata = extract_edit_metadata(data)
+            document_id = validate_document_identity(path, metadata)
+            document = (
+                strip_signature_payload(normalize_document_payload(document_payload))
+                if isinstance(document_payload, dict)
+                else None
+            )
+            result = editing_state_service.close_editing_session(
+                document_id=document_id,
+                identity=current_editor_identity(),
+                client_id=str(metadata["client_id"]),
+                lease_token=str(metadata["lease_token"]),
+                base_revision=int(metadata["base_revision"]),
+                idempotency_key=str(
+                    metadata.get("idempotency_key") or secrets.token_urlsafe(18)
+                ),
+                document=document,
+            )
+            return jsonify({"success": True, **result})
+        except EditingStateError as exc:
+            return editing_error_response(exc)
+
     @app.route("/api/file/<name>/autosave", methods=["POST"])
     def autosave_file(name: str):
         path = file_service.get_file_by_name(name)

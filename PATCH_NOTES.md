@@ -4,6 +4,47 @@ Registo das principais alteracoes por versao da aplicacao Folhas de Servico.
 
 As versoes sem tag formal usam o commit Git como referencia. A versao marcada para servidor continua a ser `v1.0.0-servidor`, salvo indicacao posterior.
 
+## v1.1.1 - Sincronizacao e recuperacao
+
+Data: 2026-07-14
+Commit: incluido nesta versao
+
+### Alterado
+
+- A copia local e agora guardada apos 250 ms e a sincronizacao com o servidor inicia apos 900 ms.
+- O indicador distingue `guardado neste dispositivo`, `a sincronizar` e `sincronizado no servidor`.
+- O arranque da edicao deixou de depender da limpeza previa do IndexedDB.
+- Copias recuperaveis inequivocas sao repostas automaticamente; so um conflito real de revisoes exige escolha.
+- A reserva e libertada num unico pedido de fecho, juntamente com o ultimo autosave quando necessario.
+- A selecao de uma folha e a acao `Recarregar` passam a usar uma navegacao completa e unica, iniciando sempre o mesmo ciclo de reserva, recuperacao e sincronizacao.
+- O modo de consulta tenta retomar a edicao automaticamente a cada segundo.
+- A reserva de emergencia expira em 10 segundos e e renovada a cada 3 segundos enquanto a folha esta ativa.
+- Ao mudar de separador ou minimizar o browser, a folha e guardada e libertada; ao regressar, a edicao e retomada automaticamente se continuar livre.
+
+### Corrigido
+
+- A recuperacao deixa de escolher sempre a copia local, mesmo quando esta era antiga ou vazia.
+- Copias locais identicas ao autosave do servidor sao deduplicadas no arranque.
+- As colunas historicas do Excel `CCTV`, `PA/VA`, `SAI`, `EXT` e `OTHER` passam a representar corretamente `VSS`, `SADCO`, `SADIR`, `SADEI` e `OTHER`, preservando as selecoes existentes na leitura e na escrita.
+- A primeira abertura deixa de ficar presa em `A preparar edicao segura` por espera do armazenamento local.
+- Fechar, recarregar ou mudar de folha deixa de manter a reserva ativa ate ao timeout.
+- A primeira folha aberta a partir da lista deixa de ficar presa em `A preparar edicao segura`; o coordenador inicia logo na primeira abertura, sem exigir uma atualizacao manual.
+- O fecho da sessao e agora detetado por `pagehide`, `beforeunload` e pelo evento de congelamento do browser; se nenhum evento for entregue, o fallback liberta a folha em ate 10 segundos.
+- Assinaturas recuperaveis continuam guardadas localmente mesmo depois de os restantes campos sincronizarem.
+- A folha deixa de permanecer marcada como pendente depois de o mesmo conteudo ser confirmado pelo servidor.
+- Alteracoes feitas enquanto um autosave esta em curso sao enviadas em seguida, sem respostas concorrentes fora de ordem.
+- O indicador deixa de permanecer em `Sem ligacao` depois de o heartbeat confirmar que o servidor voltou a responder.
+- Uma copia recuperada deixa de aparecer temporariamente como `sincronizada` quando a folha continua reservada por outra sessao.
+
+### Validacao
+
+- Suite integral: `52 passed` em Python 3.13.
+- JavaScript validado sintaticamente com `node --check`.
+- Os quatro Excel reais fornecidos foram importados e renderizados em copias isoladas; as formulas nao apresentam erros e os hashes SHA-256 dos originais permaneceram inalterados.
+- Nos quatro ficheiros, o autosave concluiu entre 69 e 105 ms e a passagem para outro utilizador entre 117 e 155 ms, com libertacao imediata da reserva.
+- No Chrome, a primeira abertura recuperou os dados em cerca de 1,6 s sem refresh manual; uma unica acao `Recarregar` preservou imediatamente o relatorio recuperado.
+- No browser foram confirmados o mapeamento `SADI`/`SADIR`, a edicao manual para `8 h`, a dispensa de assinatura por ausencia do cliente e o indicador final `Sincronizado`.
+
 ## v1.1.0 - Integridade de dados e multiutilizador
 
 Data: 2026-07-14

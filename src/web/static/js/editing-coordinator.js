@@ -1,4 +1,7 @@
-document.addEventListener("DOMContentLoaded", () => {
+const startEditingCoordinator = () => {
+    if (window.__EDITING_COORDINATOR_STARTED__) {
+        return true;
+    }
     const filesApp = window.__FILES_APP__ || {};
     const editor = window.__FILES_EDITOR__;
     const activeFileName = filesApp.selectedFileName || null;
@@ -17,19 +20,28 @@ document.addEventListener("DOMContentLoaded", () => {
     const restoreRecoveryButton = document.getElementById("btn-restore-recovery");
     const logoutForm = document.querySelector("[data-logout-form]");
 
-    if (!form || !editor || !activeFileName) {
+    if (!form || !activeFileName) {
         if (autosaveStatus) {
             autosaveStatus.hidden = true;
         }
-        return;
+        return true;
     }
+    if (!editor) {
+        if (autosaveStatus) {
+            autosaveStatus.textContent = "A carregar o formulário…";
+        }
+        return false;
+    }
+    window.__EDITING_COORDINATOR_STARTED__ = true;
 
     const DB_NAME = "sensorpoint-service-recovery-v1";
     const DB_VERSION = 1;
     const STORE_NAME = "recoveries";
-    const LOCAL_SAVE_DELAY = 350;
-    const SERVER_SAVE_DELAY = 1600;
-    const HEARTBEAT_DELAY = 40000;
+    const LOCAL_SAVE_DELAY = 250;
+    const SERVER_SAVE_DELAY = 900;
+    const HEARTBEAT_DELAY = 3000;
+    const LEASE_RETRY_DELAY = 1000;
+    const RECOVERY_READ_TIMEOUT = 1200;
     const recoveryMaxAgeMs = Math.max(Number(filesApp.recoveryMaxAgeDays || 30), 1) * 86400000;
     const editorUser = filesApp.editorUser || { id: "local", display_name: "Técnico local" };
 
@@ -40,10 +52,15 @@ document.addEventListener("DOMContentLoaded", () => {
         return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     };
 
-    let clientId = sessionStorage.getItem("sensorpoint-editor-client-id");
-    if (!clientId) {
+    let clientId = "";
+    try {
+        clientId = sessionStorage.getItem("sensorpoint-editor-client-id") || "";
+        if (!clientId) {
+            clientId = makeId();
+            sessionStorage.setItem("sensorpoint-editor-client-id", clientId);
+        }
+    } catch (error) {
         clientId = makeId();
-        sessionStorage.setItem("sensorpoint-editor-client-id", clientId);
     }
 
     let editing = { ...(filesApp.selectedEditingState || {}) };
@@ -55,8 +72,12 @@ document.addEventListener("DOMContentLoaded", () => {
     let localSaveTimer = null;
     let serverSaveTimer = null;
     let heartbeatTimer = null;
+    let leaseRetryTimer = null;
     let pendingPanelAction = null;
     let pendingAutosave = null;
+    let autosaveInFlight = false;
+    let autosaveQueued = false;
+    let leaseAcquireInFlight = false;
     const operationKeys = new Map();
 
     const showToast = (message, variant = "info") => {
@@ -187,13 +208,18 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     };
 
-    const persistLocalRecovery = async () => {
-        if (!dirty || !editing.document_id) {
-            return;
+    const payloadHasSignatures = (payload) => Boolean(
+        payload?.["Assinatura Cliente"] || payload?.["Assinatura Técnico"]
+    );
+
+    const persistLocalRecovery = async ({ announce = false, force = false } = {}) => {
+        if ((!dirty && !force) || !editing.document_id) {
+            return null;
         }
         try {
             const payload = editor.collectFormData();
-            await withStore("readwrite", (store) => store.put({
+            const serialized = JSON.stringify(payload);
+            const record = {
                 key: recoveryKey(),
                 userId: editorUser.id,
                 documentId: editing.document_id,
@@ -202,9 +228,20 @@ document.addEventListener("DOMContentLoaded", () => {
                 payload,
                 updatedAt: Date.now(),
                 expiresAt: Date.now() + recoveryMaxAgeMs,
-            }));
+            };
+            await withStore("readwrite", (store) => store.put(record));
+            if (
+                announce
+                && dirty
+                && !autosaveInFlight
+                && JSON.stringify(editor.collectFormData()) === serialized
+            ) {
+                setAutosaveStatus("Guardado neste dispositivo — a sincronizar…", "saving");
+            }
+            return record;
         } catch (error) {
             setAutosaveStatus("Não foi possível guardar neste dispositivo", "conflict");
+            return null;
         }
     };
 
@@ -226,7 +263,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 lockTitle.textContent = "Folha em modo de consulta";
             }
             if (lockMessage) {
-                lockMessage.textContent = `Em edição por ${owner}. A reserva pode ser retomada quando expirar.`;
+                lockMessage.textContent = `Em edição por ${owner}. A edição será retomada automaticamente assim que ficar livre.`;
             }
         }
     };
@@ -273,6 +310,10 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     const runAutosave = async ({ keepalive = false } = {}) => {
+        if (autosaveInFlight) {
+            autosaveQueued = true;
+            return;
+        }
         if (!dirty || readOnly || !leaseToken || !editing.document_id) {
             return;
         }
@@ -281,6 +322,8 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
+        autosaveInFlight = true;
+        autosaveQueued = false;
         const payload = editor.collectFormData();
         const serialized = JSON.stringify(payload);
         if (!pendingAutosave || pendingAutosave.serialized !== serialized) {
@@ -290,7 +333,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 baseRevision: Number(editing.revision || 1),
             };
         }
-        setAutosaveStatus("A guardar…", "saving");
+        const requestState = { ...pendingAutosave };
+        setAutosaveStatus("A sincronizar com o servidor…", "saving");
         try {
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/autosave`, {
                 method: "POST",
@@ -298,8 +342,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 body: JSON.stringify({
                     document: payload,
                     _edit: {
-                        ...editMetadata(pendingAutosave.key),
-                        base_revision: pendingAutosave.baseRevision,
+                        ...editMetadata(requestState.key),
+                        base_revision: requestState.baseRevision,
                     },
                 }),
                 keepalive,
@@ -316,28 +360,55 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             editing = { ...editing, ...(result.editing || {}) };
             leaseToken = result.editing?.lease?.token || leaseToken;
-            pendingAutosave = null;
+            if (pendingAutosave?.key === requestState.key) {
+                pendingAutosave = null;
+            }
             setCommitActionsEnabled(true);
-            const savedTime = new Date().toLocaleTimeString("pt-PT", {
-                hour: "2-digit",
-                minute: "2-digit",
-            });
-            setAutosaveStatus(`Guardado às ${savedTime}`, "saved");
-            await persistLocalRecovery();
+            const currentPayload = editor.collectFormData();
+            const currentSerialized = JSON.stringify(currentPayload);
+            if (currentSerialized === requestState.serialized) {
+                dirty = false;
+                window.clearTimeout(localSaveTimer);
+                window.clearTimeout(serverSaveTimer);
+                if (payloadHasSignatures(currentPayload)) {
+                    persistLocalRecovery({ force: true });
+                } else {
+                    deleteRecovery().catch(() => {});
+                }
+                const savedTime = new Date().toLocaleTimeString("pt-PT", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                });
+                setAutosaveStatus(`Sincronizado às ${savedTime}`, "saved");
+            } else {
+                dirty = true;
+                await persistLocalRecovery();
+                autosaveQueued = true;
+                setAutosaveStatus("Novas alterações por sincronizar…", "saving");
+            }
         } catch (error) {
             if (!navigator.onLine || error instanceof TypeError) {
                 setCommitActionsEnabled(false);
-                setAutosaveStatus("Sem ligação — guardado neste dispositivo", "offline");
+                setAutosaveStatus("Sem ligação — alterações guardadas neste dispositivo", "offline");
                 return;
             }
             setAutosaveStatus("Não foi possível sincronizar — cópia local mantida", "conflict");
+        } finally {
+            autosaveInFlight = false;
+            if (autosaveQueued && dirty && navigator.onLine && !readOnly) {
+                autosaveQueued = false;
+                window.clearTimeout(serverSaveTimer);
+                serverSaveTimer = window.setTimeout(() => runAutosave(), 150);
+            }
         }
     };
 
     const schedulePersistence = () => {
         window.clearTimeout(localSaveTimer);
         window.clearTimeout(serverSaveTimer);
-        localSaveTimer = window.setTimeout(() => persistLocalRecovery(), LOCAL_SAVE_DELAY);
+        localSaveTimer = window.setTimeout(
+            () => persistLocalRecovery({ announce: true }), LOCAL_SAVE_DELAY
+        );
         serverSaveTimer = window.setTimeout(() => runAutosave(), SERVER_SAVE_DELAY);
     };
 
@@ -346,7 +417,7 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
         dirty = true;
-        setAutosaveStatus("Alterações por guardar…", "saving");
+        setAutosaveStatus("A guardar neste dispositivo…", "saving");
         schedulePersistence();
     };
 
@@ -360,14 +431,34 @@ document.addEventListener("DOMContentLoaded", () => {
         recoveryEyebrow.textContent = "Recuperação automática";
         recoveryTitle.textContent = "Encontrámos alterações recuperáveis";
         recoveryMessage.textContent = source === "server"
-            ? "Existe um autosave no servidor que ainda não foi consolidado no Excel."
-            : "Existe uma cópia neste dispositivo que ainda não foi consolidada.";
+            ? "A versão sincronizada no servidor é mais recente do que a folha consolidada no Excel."
+            : "Existem alterações neste dispositivo que ainda não chegaram ao servidor.";
         const timestamp = Number(record.updatedAt || 0);
         recoveryTimestamp.textContent = timestamp
             ? `Última alteração: ${new Date(timestamp).toLocaleString("pt-PT")}`
             : "";
         ignoreRecoveryButton.textContent = "Ignorar";
         restoreRecoveryButton.textContent = "Restaurar";
+    };
+
+    const showStartupRecoveryConflict = (localRecord, serverRecord) => {
+        pendingPanelAction = {
+            kind: "startup-conflict",
+            localRecord,
+            serverRecord,
+        };
+        recoveryPanel.classList.add("is-conflict");
+        recoveryPanel.hidden = false;
+        recoveryEyebrow.textContent = "Duas versões recuperáveis";
+        recoveryTitle.textContent = "Escolha a versão que pretende repor";
+        recoveryMessage.textContent = "A cópia deste dispositivo é diferente da versão sincronizada no servidor.";
+        const localTime = Number(localRecord.updatedAt || 0);
+        const serverTime = Number(serverRecord.updatedAt || 0);
+        const localLabel = localTime ? new Date(localTime).toLocaleString("pt-PT") : "hora desconhecida";
+        const serverLabel = serverTime ? new Date(serverTime).toLocaleString("pt-PT") : "hora desconhecida";
+        recoveryTimestamp.textContent = `Dispositivo: ${localLabel} · Servidor: ${serverLabel}`;
+        ignoreRecoveryButton.textContent = "Usar servidor";
+        restoreRecoveryButton.textContent = "Usar este dispositivo";
     };
 
     const showNavigationGuard = (kind, callback) => {
@@ -394,10 +485,121 @@ document.addEventListener("DOMContentLoaded", () => {
         recoveryPanel.classList.remove("is-conflict");
     };
 
-    const releaseLease = async () => {
+    const setRecoveryActionsDisabled = (disabled) => {
+        if (ignoreRecoveryButton) {
+            ignoreRecoveryButton.disabled = disabled;
+        }
+        if (restoreRecoveryButton) {
+            restoreRecoveryButton.disabled = disabled;
+        }
+    };
+
+    const signaturesFromPayload = (payload) => ({
+        "Assinatura Cliente": payload?.["Assinatura Cliente"] || "",
+        "Assinatura Técnico": payload?.["Assinatura Técnico"] || "",
+    });
+
+    const applyRecovery = async (record, source) => {
+        if (!record?.payload) {
+            return;
+        }
+        setRecoveryActionsDisabled(true);
+        setAutosaveStatus("A repor alterações…", "saving");
+        try {
+            hydrating = true;
+            editor.populateForm(
+                activeFileName,
+                record.payload,
+                signaturesFromPayload(record.payload),
+            );
+            await new Promise((resolve) => window.requestAnimationFrame(resolve));
+            hydrating = false;
+            hideRecoveryPanel();
+
+            if (["server", "synced-device"].includes(source)) {
+                dirty = false;
+                window.clearTimeout(localSaveTimer);
+                window.clearTimeout(serverSaveTimer);
+                if (source === "server") {
+                    deleteRecovery().catch(() => {});
+                }
+                setAutosaveStatus(
+                    readOnly || !leaseToken ? "Alterações recuperadas — modo de consulta" : "Alterações recuperadas — sincronizadas",
+                    readOnly || !leaseToken ? "offline" : "saved",
+                );
+                showToast("Alterações recuperadas automaticamente.", "success");
+                return;
+            }
+
+            dirty = true;
+            await persistLocalRecovery();
+            if (readOnly || !leaseToken) {
+                setAutosaveStatus("Alterações recuperadas — aguardam edição", "offline");
+                showToast("Alterações recuperadas automaticamente.", "success");
+                return;
+            }
+            setAutosaveStatus("Alterações repostas — a sincronizar…", "saving");
+            showToast("Alterações deste dispositivo repostas.", "success");
+            await runAutosave();
+        } finally {
+            hydrating = false;
+            setRecoveryActionsDisabled(false);
+        }
+    };
+
+    const clearLeaseRetry = () => {
+        window.clearTimeout(leaseRetryTimer);
+        leaseRetryTimer = null;
+    };
+
+    const releaseLease = async ({ background = false } = {}) => {
         if (!leaseToken || !editing.document_id) {
             return;
         }
+        const tokenToRelease = leaseToken;
+        leaseToken = "";
+        window.clearInterval(heartbeatTimer);
+        clearLeaseRetry();
+
+        if (background) {
+            const closeDocument = dirty ? {
+                ...editor.collectFormData(),
+                "Assinatura Cliente": "",
+                "Assinatura Técnico": "",
+            } : null;
+            const closePayload = JSON.stringify({
+                document: closeDocument,
+                _edit: {
+                    document_id: editing.document_id,
+                    client_id: clientId,
+                    lease_token: tokenToRelease,
+                    base_revision: Number(editing.revision || 1),
+                    idempotency_key: makeId(),
+                },
+            });
+            const closeUrl = `/api/file/${encodeURIComponent(activeFileName)}/editing/close`;
+            if (navigator.sendBeacon) {
+                const queued = navigator.sendBeacon(
+                    closeUrl,
+                    new Blob([closePayload], { type: "application/json" }),
+                );
+                if (queued) {
+                    return;
+                }
+            }
+            try {
+                await fetch(closeUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: closePayload,
+                    keepalive: true,
+                });
+            } catch (error) {
+                // A reserva curta continua a garantir a libertação de emergência.
+            }
+            return;
+        }
+
         try {
             await fetch(`/api/file/${encodeURIComponent(activeFileName)}/lease/release`, {
                 method: "POST",
@@ -405,14 +607,24 @@ document.addEventListener("DOMContentLoaded", () => {
                 body: JSON.stringify({
                     document_id: editing.document_id,
                     client_id: clientId,
-                    lease_token: leaseToken,
+                    lease_token: tokenToRelease,
                 }),
                 keepalive: true,
             });
         } catch (error) {
-            // A lease expira automaticamente se a libertação não chegar ao servidor.
+            // A reserva curta continua a garantir a libertação de emergência.
         }
-        leaseToken = "";
+    };
+
+    const scheduleLeaseRetry = () => {
+        if (leaseToken || !navigator.onLine) {
+            return;
+        }
+        clearLeaseRetry();
+        leaseRetryTimer = window.setTimeout(
+            () => acquireLease({ quiet: true }),
+            LEASE_RETRY_DELAY,
+        );
     };
 
     const startHeartbeat = () => {
@@ -421,6 +633,7 @@ document.addEventListener("DOMContentLoaded", () => {
             if (!leaseToken || document.hidden) {
                 return;
             }
+            const heartbeatToken = leaseToken;
             try {
                 const response = await fetch(
                     `/api/file/${encodeURIComponent(activeFileName)}/lease/heartbeat`,
@@ -430,18 +643,29 @@ document.addEventListener("DOMContentLoaded", () => {
                         body: JSON.stringify({
                             document_id: editing.document_id,
                             client_id: clientId,
-                            lease_token: leaseToken,
+                            lease_token: heartbeatToken,
                         }),
                     },
                 );
                 const result = await response.json();
                 if (!response.ok || !result.success) {
+                    leaseToken = "";
+                    editing = { ...editing, ...(result.editing || {}) };
                     setFormReadOnly(true, result.editing?.lease?.owner_name);
+                    setAutosaveStatus("Em consulta — retoma automática", "offline");
+                    scheduleLeaseRetry();
                     return;
                 }
                 editing = { ...editing, ...(result.editing || {}) };
-                leaseToken = result.editing?.lease?.token || leaseToken;
+                leaseToken = result.editing?.lease?.token || heartbeatToken;
                 setCommitActionsEnabled(true);
+                if (autosaveStatus?.dataset.state === "offline") {
+                    if (dirty) {
+                        runAutosave();
+                    } else {
+                        setAutosaveStatus("Ligação restabelecida — edição disponível", "saved");
+                    }
+                }
             } catch (error) {
                 setCommitActionsEnabled(false);
                 setAutosaveStatus("Sem ligação — guardado neste dispositivo", "offline");
@@ -449,9 +673,15 @@ document.addEventListener("DOMContentLoaded", () => {
         }, HEARTBEAT_DELAY);
     };
 
-    const acquireLease = async () => {
+    const acquireLease = async ({ quiet = false } = {}) => {
+        if (leaseAcquireInFlight) {
+            return false;
+        }
+        leaseAcquireInFlight = true;
         setFormReadOnly(true);
-        setAutosaveStatus("A obter reserva de edição…", "saving");
+        if (!quiet) {
+            setAutosaveStatus("A preparar edição…", "saving");
+        }
         try {
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/lease`, {
                 method: "POST",
@@ -461,16 +691,22 @@ document.addEventListener("DOMContentLoaded", () => {
             const result = await response.json();
             if (!response.ok || !result.success) {
                 editing = { ...editing, ...(result.editing || {}) };
+                leaseToken = "";
                 setFormReadOnly(true, result.editing?.lease?.owner_name);
-                setAutosaveStatus("Modo de consulta — folha reservada", "offline");
+                setAutosaveStatus("Em consulta — retoma automática", "offline");
+                scheduleLeaseRetry();
                 return false;
             }
             editing = { ...editing, ...(result.editing || {}) };
             leaseToken = result.editing?.lease?.token || "";
+            clearLeaseRetry();
             setFormReadOnly(false);
             setCommitActionsEnabled(true);
-            setAutosaveStatus("Edição protegida", "saved");
+            setAutosaveStatus("Edição disponível", "saved");
             startHeartbeat();
+            if (dirty) {
+                window.setTimeout(() => runAutosave(), 0);
+            }
             return true;
         } catch (error) {
             leaseToken = "";
@@ -478,6 +714,8 @@ document.addEventListener("DOMContentLoaded", () => {
             setCommitActionsEnabled(false);
             setAutosaveStatus("Sem ligação — edição guardada neste dispositivo", "offline");
             return false;
+        } finally {
+            leaseAcquireInFlight = false;
         }
     };
 
@@ -487,16 +725,22 @@ document.addEventListener("DOMContentLoaded", () => {
             hideRecoveryPanel();
             return;
         }
+        if (action.kind === "startup-conflict") {
+            await applyRecovery(action.serverRecord, "server");
+            return;
+        }
         if (action.kind === "recovery") {
-            await deleteRecovery();
+            setRecoveryActionsDisabled(true);
             try {
+                await deleteRecovery();
                 await discardServerAutosave();
+                hideRecoveryPanel();
+                setAutosaveStatus("Autosave ignorado", "saved");
             } catch (error) {
                 showToast(error.message, "error");
-                return;
+            } finally {
+                setRecoveryActionsDisabled(false);
             }
-            hideRecoveryPanel();
-            setAutosaveStatus("Autosave ignorado", "saved");
             return;
         }
         if (action.kind === "conflict") {
@@ -524,17 +768,12 @@ document.addEventListener("DOMContentLoaded", () => {
             hideRecoveryPanel();
             return;
         }
+        if (action.kind === "startup-conflict") {
+            await applyRecovery(action.localRecord, "device");
+            return;
+        }
         if (action.kind === "recovery") {
-            const payload = action.record.payload;
-            hydrating = true;
-            editor.populateForm(activeFileName, payload, {
-                "Assinatura Cliente": payload["Assinatura Cliente"] || "",
-            });
-            hydrating = false;
-            dirty = true;
-            hideRecoveryPanel();
-            schedulePersistence();
-            showToast("Alterações recuperadas neste dispositivo.", "success");
+            await applyRecovery(action.record, action.source);
             return;
         }
         if (action.kind === "conflict") {
@@ -559,7 +798,10 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
 
-    retryLeaseButton?.addEventListener("click", () => acquireLease());
+    retryLeaseButton?.addEventListener("click", () => {
+        clearLeaseRetry();
+        acquireLease({ quiet: false });
+    });
 
     form.addEventListener("input", markDirty, true);
     form.addEventListener("change", markDirty, true);
@@ -574,6 +816,16 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }, true);
 
+    const leavePage = async (callback) => {
+        if (dirty) {
+            await persistLocalRecovery();
+            await runAutosave({ keepalive: true });
+        }
+        await releaseLease();
+        suppressBeforeUnload = true;
+        callback?.();
+    };
+
     document.addEventListener("click", (event) => {
         const link = event.target.closest?.(".file-card-link[data-name]");
         if (link && link.dataset.name !== activeFileName) {
@@ -582,14 +834,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const navigate = () => {
                 window.location.href = link.href;
             };
-            if (dirty) {
-                showNavigationGuard("navigate", navigate);
-            } else {
-                releaseLease().finally(() => {
-                    suppressBeforeUnload = true;
-                    navigate();
-                });
-            }
+            leavePage(navigate);
             return;
         }
 
@@ -600,12 +845,7 @@ document.addEventListener("DOMContentLoaded", () => {
         event.preventDefault();
         event.stopImmediatePropagation();
         const reload = () => window.location.reload();
-        if (dirty) {
-            showNavigationGuard("reload", reload);
-        } else {
-            suppressBeforeUnload = true;
-            reload();
-        }
+        leavePage(reload);
     }, true);
 
     logoutForm?.addEventListener("submit", (event) => {
@@ -626,18 +866,33 @@ document.addEventListener("DOMContentLoaded", () => {
             });
     });
 
-    window.addEventListener("beforeunload", (event) => {
-        if (!dirty || suppressBeforeUnload) {
+    const releaseOnPageExit = () => {
+        window.clearTimeout(localSaveTimer);
+        window.clearTimeout(serverSaveTimer);
+        window.clearInterval(heartbeatTimer);
+        clearLeaseRetry();
+        if (dirty) {
+            persistLocalRecovery();
+        }
+        releaseLease({ background: true });
+    };
+
+    window.addEventListener("pagehide", releaseOnPageExit);
+    window.addEventListener("beforeunload", releaseOnPageExit);
+    document.addEventListener("freeze", releaseOnPageExit);
+
+    document.addEventListener("visibilitychange", async () => {
+        if (document.hidden) {
+            if (dirty) {
+                persistLocalRecovery();
+            }
+            setFormReadOnly(true);
+            releaseLease({ background: true });
             return;
         }
-        event.preventDefault();
-        event.returnValue = "";
-    });
-
-    document.addEventListener("visibilitychange", () => {
-        if (document.hidden && dirty) {
-            persistLocalRecovery();
-            runAutosave({ keepalive: true });
+        const acquired = await acquireLease({ quiet: false });
+        if (acquired && dirty) {
+            runAutosave();
         }
     });
 
@@ -648,7 +903,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
     window.addEventListener("online", async () => {
-        const acquired = await acquireLease();
+        const acquired = await acquireLease({ quiet: false });
         if (acquired && dirty) {
             runAutosave();
         }
@@ -679,21 +934,116 @@ document.addEventListener("DOMContentLoaded", () => {
         isDirty: () => dirty,
     };
 
-    const initialize = async () => {
-        await pruneExpiredRecoveries();
-        await acquireLease();
-        const localRecovery = await readRecovery();
-        if (localRecovery?.payload) {
-            showRecovery(localRecovery, "device");
-            return;
-        }
-        if (editing.server_document) {
-            showRecovery({
-                payload: editing.server_document,
-                updatedAt: Number(editing.autosaved_at || 0) * 1000,
-            }, "server");
+    const comparableRecovery = (payload) => {
+        const withoutSignatures = { ...(payload || {}) };
+        delete withoutSignatures["Assinatura Cliente"];
+        delete withoutSignatures["Assinatura Técnico"];
+        const sortValue = (value) => {
+            if (Array.isArray(value)) {
+                return value.map(sortValue);
+            }
+            if (value && typeof value === "object") {
+                return Object.keys(value).sort().reduce((sorted, key) => {
+                    sorted[key] = sortValue(value[key]);
+                    return sorted;
+                }, {});
+            }
+            return value;
+        };
+        return JSON.stringify(sortValue(withoutSignatures));
+    };
+
+    const readRecoveryWithoutBlocking = async () => {
+        try {
+            return await Promise.race([
+                readRecovery(),
+                new Promise((resolve) => window.setTimeout(
+                    () => resolve(null), RECOVERY_READ_TIMEOUT
+                )),
+            ]);
+        } catch (error) {
+            return null;
         }
     };
 
-    initialize();
-});
+    const initialize = async () => {
+        await acquireLease();
+        const localRecovery = await readRecoveryWithoutBlocking();
+        pruneExpiredRecoveries().catch(() => {});
+        const serverRecovery = editing.server_document ? {
+            payload: editing.server_document,
+            updatedAt: Number(editing.autosaved_at || 0) * 1000,
+            baseRevision: Number(editing.revision || 1),
+        } : null;
+
+        if (localRecovery?.payload && serverRecovery?.payload) {
+            const localComparable = comparableRecovery(localRecovery.payload);
+            const serverComparable = comparableRecovery(serverRecovery.payload);
+            if (localComparable === serverComparable) {
+                const source = payloadHasSignatures(localRecovery.payload)
+                    ? "synced-device"
+                    : "server";
+                const record = source === "synced-device" ? localRecovery : serverRecovery;
+                await applyRecovery(record, source);
+                return;
+            }
+            if (Number(localRecovery.baseRevision || 1) < Number(serverRecovery.baseRevision || 1)) {
+                showStartupRecoveryConflict(localRecovery, serverRecovery);
+                return;
+            }
+            const localIsNewer = Number(localRecovery.updatedAt || 0) >= Number(serverRecovery.updatedAt || 0);
+            await applyRecovery(
+                localIsNewer ? localRecovery : serverRecovery,
+                localIsNewer ? "device" : "server",
+            );
+            return;
+        }
+        if (localRecovery?.payload) {
+            await applyRecovery(localRecovery, "device");
+            return;
+        }
+        if (serverRecovery?.payload) {
+            await applyRecovery(serverRecovery, "server");
+        }
+    };
+
+    initialize().catch(() => {
+        setFormReadOnly(false);
+        setCommitActionsEnabled(false);
+        setAutosaveStatus("Edição local disponível — sincronização pendente", "offline");
+    });
+    return true;
+};
+
+const bootEditingCoordinator = () => {
+    if (startEditingCoordinator()) {
+        return;
+    }
+    const status = document.getElementById("autosave-status");
+    let attempts = 0;
+    let retryTimer = null;
+    const retry = () => {
+        attempts += 1;
+        if (startEditingCoordinator()) {
+            window.clearInterval(retryTimer);
+            document.removeEventListener("files-editor-ready", retry);
+            return;
+        }
+        if (attempts >= 40) {
+            window.clearInterval(retryTimer);
+            if (status) {
+                status.hidden = false;
+                status.textContent = "Não foi possível iniciar a edição";
+                status.dataset.state = "conflict";
+            }
+        }
+    };
+    document.addEventListener("files-editor-ready", retry);
+    retryTimer = window.setInterval(retry, 100);
+};
+
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bootEditingCoordinator, { once: true });
+} else {
+    bootEditingCoordinator();
+}
