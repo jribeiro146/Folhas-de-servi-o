@@ -37,7 +37,7 @@ def make_active_file(root: Path, name: str) -> Path:
     return destination
 
 
-def test_lease_blocks_other_user_and_other_tab(tmp_path):
+def test_draft_owner_blocks_other_user_but_same_owner_can_resume(tmp_path):
     path = make_active_file(tmp_path, "2026_5001")
     service = EditingStateService(tmp_path / "editing", lease_seconds=120)
     first_user = EditorIdentity("user-a", "Utilizador A")
@@ -46,8 +46,9 @@ def test_lease_blocks_other_user_and_other_tab(tmp_path):
 
     with pytest.raises(LeaseConflictError):
         service.acquire_lease(path, EditorIdentity("user-b", "Utilizador B"), "tab-b")
-    with pytest.raises(LeaseConflictError):
-        service.acquire_lease(path, first_user, "second-tab")
+    second_session = service.acquire_lease(path, first_user, "second-tab")
+    assert second_session["lease"]["owner_id"] == "user-a"
+    assert second_session["lease"]["token"] != first["lease"]["token"]
 
     assert first["lease"]["owner_name"] == "Utilizador A"
     assert first["lease"]["token"]
@@ -114,7 +115,7 @@ def test_private_workspace_does_not_inherit_old_shared_autosave(tmp_path):
     assert private["server_document"] is None
     assert private["document_id"] != shared["document_id"]
 
-def test_explicit_logout_release_clears_every_user_lease(tmp_path):
+def test_explicit_logout_closes_sessions_but_retains_draft_owner(tmp_path):
     first_path = make_active_file(tmp_path, "2026_5004")
     second_path = make_active_file(tmp_path, "2026_5005")
     service = EditingStateService(tmp_path / "editing")
@@ -124,15 +125,17 @@ def test_explicit_logout_release_clears_every_user_lease(tmp_path):
     service.acquire_lease(second_path, first_user, "tab-b")
 
     assert service.release_user_leases(first_user.id) == 2
-    replacement = service.acquire_lease(
-        first_path,
-        EditorIdentity("user-b", "Utilizador B"),
-        "tab-c",
-    )
-    assert replacement["lease"]["owner_id"] == "user-b"
+    with pytest.raises(LeaseConflictError):
+        service.acquire_lease(
+            first_path,
+            EditorIdentity("user-b", "Utilizador B"),
+            "tab-c",
+        )
+    resumed = service.acquire_lease(first_path, first_user, "tab-d")
+    assert resumed["lease"]["owner_id"] == "user-a"
 
 
-def test_abandoned_lease_expires_and_can_be_reacquired(tmp_path, monkeypatch):
+def test_expired_session_does_not_transfer_draft_ownership(tmp_path, monkeypatch):
     import src.services.editing_state_service as editing_module
 
     path = make_active_file(tmp_path, "2026_5002")
@@ -141,10 +144,11 @@ def test_abandoned_lease_expires_and_can_be_reacquired(tmp_path, monkeypatch):
     monkeypatch.setattr(editing_module.time, "time", lambda: now["value"])
 
     service.acquire_lease(path, EditorIdentity("user-a", "Utilizador A"), "tab-a")
-    now["value"] = 1011.0
-    second = service.acquire_lease(path, EditorIdentity("user-b", "Utilizador B"), "tab-b")
-
-    assert second["lease"]["owner_id"] == "user-b"
+    now["value"] = 1061.0
+    with pytest.raises(LeaseConflictError):
+        service.acquire_lease(path, EditorIdentity("user-b", "Utilizador B"), "tab-b")
+    resumed = service.acquire_lease(path, EditorIdentity("user-a", "Utilizador A"), "tab-c")
+    assert resumed["lease"]["owner_id"] == "user-a"
 
 
 def test_autosave_is_idempotent_and_rejects_stale_revision(tmp_path):
@@ -178,7 +182,7 @@ def test_autosave_is_idempotent_and_rejects_stale_revision(tmp_path):
     assert conflict.value.snapshot["server_document"]["intervention_report"] == "Versão A"
 
 
-def test_close_session_autosaves_and_immediately_releases_lease(tmp_path):
+def test_close_session_autosaves_and_releases_only_browser_session(tmp_path):
     path = make_active_file(tmp_path, "2026_5006")
     service = EditingStateService(tmp_path / "editing", lease_seconds=120)
     first_user = EditorIdentity("user-a", "Utilizador A")
@@ -195,15 +199,16 @@ def test_close_session_autosaves_and_immediately_releases_lease(tmp_path):
     )
     replacement = service.acquire_lease(
         path,
-        EditorIdentity("user-b", "Utilizador B"),
+        first_user,
         "tab-b",
     )
 
     assert closed["autosaved"] is True
     assert closed["released"] is True
-    assert closed["editing"]["lease"] is None
+    assert closed["editing"]["lease"]["owner_id"] == "user-a"
+    assert closed["editing"]["lease"]["client_id"] is None
     assert closed["editing"]["server_document"]["intervention_report"] == "Guardado ao fechar"
-    assert replacement["lease"]["owner_id"] == "user-b"
+    assert replacement["lease"]["owner_id"] == "user-a"
 
 
 def test_close_session_releases_lease_even_if_revision_is_stale(tmp_path):
@@ -223,7 +228,8 @@ def test_close_session_releases_lease_even_if_revision_is_stale(tmp_path):
     )
 
     assert closed["revision_conflict"] is True
-    assert closed["editing"]["lease"] is None
+    assert closed["editing"]["lease"]["owner_id"] == "user-a"
+    assert closed["editing"]["lease"]["client_id"] is None
     assert closed["editing"]["server_document"]["intervention_report"] == "Servidor"
 
 
@@ -346,7 +352,7 @@ def test_web_leases_isolate_files_and_autosave_conflicts(tmp_path):
     assert stale_response.get_json()["editing"]["server_document"]["intervention_report"] == "Autosave web"
 
 
-def test_web_close_endpoint_autosaves_and_releases_for_next_editor(tmp_path):
+def test_web_close_endpoint_autosaves_but_keeps_draft_owner(tmp_path):
     path = make_active_file(tmp_path, "2026_5103_2026-07-14_CC")
     app = create_app(
         file_service=FileService(path.parent),
@@ -381,12 +387,14 @@ def test_web_close_endpoint_autosaves_and_releases_for_next_editor(tmp_path):
     assert close_response.status_code == 200
     assert close_response.get_json()["autosaved"] is True
     assert close_response.get_json()["released"] is True
-    assert close_response.get_json()["editing"]["lease"] is None
+    assert close_response.get_json()["editing"]["lease"]["owner_id"]
+    assert close_response.get_json()["editing"]["lease"]["client_id"] is None
     assert (
         close_response.get_json()["editing"]["server_document"]["intervention_report"]
         == "Fecho seguro"
     )
-    assert replacement_response.status_code == 200
+    assert replacement_response.status_code == 423
+    assert replacement_response.get_json()["code"] == "lease_conflict"
 
 
 def test_graph_upload_uses_if_match_and_persists_new_etag(tmp_path, monkeypatch):
@@ -462,24 +470,23 @@ def test_feature_five_assets_and_api_are_not_http_cached(tmp_path):
     coordinator = Path("src/web/static/js/editing-coordinator.js").read_text(encoding="utf-8")
     editing_css = Path("src/web/static/css/editing-state.css").read_text(encoding="utf-8")
     assert ".autosave-status[hidden]" in editing_css
-    assert "edição guardada neste dispositivo" in coordinator
+    assert "Guardado neste dispositivo" in coordinator
     assert "setCommitActionsEnabled(false)" in coordinator
     assert ".editing-lock-banner[hidden]" in editing_css
-    assert "const SERVER_SAVE_DELAY = 900" in coordinator
-    assert "const HEARTBEAT_DELAY = 3000" in coordinator
-    assert "const LEASE_RETRY_DELAY = 1000" in coordinator
-    assert "comparableRecovery" in coordinator
+    assert "const SERVER_SAVE_DELAY = 750" in coordinator
+    assert "HEARTBEAT_DELAY" not in coordinator
+    assert "const MAX_RETRY_DELAY = 30000" in coordinator
+    assert "comparablePayload" in coordinator
     assert 'window.addEventListener("pagehide"' in coordinator
     assert 'window.addEventListener("beforeunload"' in coordinator
     assert 'document.addEventListener("freeze"' in coordinator
-    assert 'document.addEventListener("visibilitychange", async () =>' in coordinator
-    assert "Ligação restabelecida" in coordinator
-    assert "recuperadas — modo de consulta" in coordinator
+    assert 'document.addEventListener("visibilitychange", () =>' in coordinator
     assert "/editing/close" in coordinator
-    assert "retoma automática" in coordinator
-    assert "await applyRecovery(action.record, action.source)" in coordinator
-    assert "Sincronizado às" in coordinator
+    assert "/bootstrap?client_id=" in coordinator
+    assert "BroadcastChannel" in coordinator
+    assert "indexedDB.open" in coordinator
+    assert "Guardado no servidor" in coordinator
     assert "window.history.pushState" not in document_editor
     assert "const loadFileData" not in document_editor
     assert "window.location.reload()" in document_editor
-    assert 'BUILD_VERSION = "20260714-private-drafts"' in service_worker
+    assert 'BUILD_VERSION = "20260721-sync-v2"' in service_worker

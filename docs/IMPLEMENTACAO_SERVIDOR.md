@@ -122,6 +122,11 @@ FS_SECRET_KEY=<gerar-chave-aleatoria-longa>
 
 FS_APP_DATA_DIR=/var/www/vhosts/service.sensorpoint.pt/private/folhas-servico
 GRAPH_CACHE_DIR=/var/www/vhosts/service.sensorpoint.pt/private/folhas-servico/graph-cache
+FS_EDIT_SESSION_SECONDS=2592000
+FS_STATE_DB_BUSY_MS=10000
+FS_GRAPH_REFRESH_SECONDS=30
+FS_GRAPH_JOB_STALE_SECONDS=900
+
 
 GRAPH_TENANT_ID=afc2679b-0121-4a82-ab15-59c783daedc9
 GRAPH_CLIENT_ID=b233caa9-f51f-4d06-91fe-aa6cf26a982a
@@ -385,6 +390,8 @@ O servidor deve permitir:
 15. Verificar rascunho em SharePoint `Activas`.
 16. Testar `Guardar e enviar`.
 17. Verificar final em SharePoint `Arquivadas`.
+18. Validar a migracao e a fila persistente seguindo `docs/SINCRONIZACAO_V2_ADMIN.md`.
+19. Confirmar que apenas um host usa os ficheiros SQLite; varios workers no mesmo host sao suportados.
 
 ## Testes funcionais apos deploy
 

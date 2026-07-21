@@ -3,6 +3,7 @@
 Versao recomendada para servidor: `v1.0.0-servidor`.
 
 Para deploy em Plesk/Docker, usar a tag acima e seguir `docs/IMPLEMENTACAO_SERVIDOR.md`.
+Para a migracao do sincronismo transacional, seguir tambem `docs/SINCRONIZACAO_V2_ADMIN.md`.
 
 Estrutura principal do projeto:
 

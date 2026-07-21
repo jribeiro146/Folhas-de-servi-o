@@ -14,10 +14,11 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from src.config import APP_DATA_DIR
+from src.services.editing_state_repository import SqliteStateRepository
 
 
 EDIT_METADATA_NAME = ".fs_edit.json"
-STATE_VERSION = 1
+STATE_VERSION = 2
 
 
 class EditingStateError(Exception):
@@ -59,7 +60,7 @@ class EditorIdentity:
 
 
 class EditingStateService:
-    """Coordinates concurrent editors through small atomic JSON state files."""
+    """Coordinates private workspaces, revisions and idempotent operations."""
 
     def __init__(
         self,
@@ -70,9 +71,15 @@ class EditingStateService:
     ):
         self.root = Path(root or (APP_DATA_DIR / "editing-state"))
         self.root.mkdir(parents=True, exist_ok=True)
-        configured_lease = int(os.environ.get("FS_EDIT_LEASE_SECONDS", "10"))
-        self.lease_seconds = max(int(lease_seconds or configured_lease), 1)
+        configured_session = int(os.environ.get("FS_EDIT_SESSION_SECONDS", "2592000"))
+        self.session_seconds = max(int(lease_seconds or configured_session), 60)
+        # Public compatibility alias retained for integrations that inspect it.
+        self.lease_seconds = self.session_seconds
         self.operation_timeout_seconds = max(int(operation_timeout_seconds), 1)
+        self.repository = SqliteStateRepository(
+            self.root / "editing-state.sqlite3",
+            legacy_root=self.root,
+        )
 
     def resolve_document_id(self, path: str | Path) -> str:
         file_path = Path(path)
@@ -110,6 +117,7 @@ class EditingStateService:
         document_id: str,
         *,
         original_name: str,
+        owner: EditorIdentity | None = None,
     ) -> None:
         file_path = Path(path)
         if file_path.parent.name == file_path.stem:
@@ -128,6 +136,9 @@ class EditingStateService:
                 state["aliases"].append(file_path.stem)
             state["original_name"] = state.get("original_name") or original_name
             state["fingerprint"] = self._fingerprint(file_path)
+            state["workspace_kind"] = "draft"
+            if owner is not None and not state.get("owner"):
+                state["owner"] = self._owner_payload(owner)
 
     def snapshot(self, path: str | Path, document_id: str | None = None) -> dict[str, Any]:
         file_path = Path(path)
@@ -147,7 +158,13 @@ class EditingStateService:
     ) -> dict[str, Any]:
         file_path = Path(path)
         document_id = self.resolve_document_id(file_path)
-        return self._acquire_document_lease(file_path, document_id, identity, client_id)
+        return self._acquire_document_session(
+            file_path,
+            document_id,
+            identity,
+            client_id,
+            workspace_kind="draft",
+        )
 
     def acquire_private_workspace(
         self,
@@ -158,45 +175,63 @@ class EditingStateService:
         """Acquire an isolated workspace without reserving the shared source file."""
         file_path = Path(path)
         workspace_id = self.resolve_private_workspace_id(file_path, identity, client_id)
-        return self._acquire_document_lease(
+        return self._acquire_document_session(
             file_path,
             workspace_id,
             identity,
             client_id,
+            workspace_kind="private",
         )
 
-    def _acquire_document_lease(
+    def _acquire_document_session(
         self,
         file_path: Path,
         document_id: str,
         identity: EditorIdentity,
         client_id: str,
+        *,
+        workspace_kind: str,
     ) -> dict[str, Any]:
         if not client_id.strip():
             raise EditingStateError("Identificador da sessão de edição em falta.")
 
         now = time.time()
         with self._state_transaction(document_id, path=file_path) as state:
-            lease = self._active_lease(state, now)
-            if lease and not (
-                lease.get("owner_id") == identity.id
-                and lease.get("client_id") == client_id
-            ):
+            state["workspace_kind"] = workspace_kind
+            self._normalize_sessions(state, now)
+            owner = state.get("owner")
+            if owner and owner.get("owner_id") != identity.id:
                 raise LeaseConflictError(self._public_snapshot(state, now=now))
+            if not owner:
+                state["owner"] = self._owner_payload(identity, now=now)
 
-            if lease:
-                token = str(lease["token"])
-            else:
-                token = secrets.token_urlsafe(32)
-            state["lease"] = {
+            sessions = state.setdefault("sessions", {})
+            token = next(
+                (
+                    value
+                    for value, session in sessions.items()
+                    if session.get("owner_id") == identity.id
+                    and session.get("client_id") == client_id
+                ),
+                "",
+            ) or secrets.token_urlsafe(32)
+            previous = sessions.get(token) or {}
+            sessions[token] = {
                 "token": token,
                 "owner_id": identity.id,
                 "owner_name": identity.display_name,
                 "client_id": client_id,
-                "acquired_at": lease.get("acquired_at", now) if lease else now,
-                "expires_at": now + self.lease_seconds,
+                "acquired_at": previous.get("acquired_at", now),
+                "last_seen_at": now,
+                "expires_at": now + self.session_seconds,
             }
-            return self._public_snapshot(state, now=now, include_token=True)
+            state["lease"] = None
+            return self._public_snapshot(
+                state,
+                now=now,
+                include_token=True,
+                session_token=token,
+            )
 
     def renew_lease(
         self,
@@ -207,9 +242,12 @@ class EditingStateService:
     ) -> dict[str, Any]:
         now = time.time()
         with self._state_transaction(document_id) as state:
-            self._assert_lease(state, identity, client_id, lease_token, now)
-            state["lease"]["expires_at"] = now + self.lease_seconds
-            return self._public_snapshot(state, now=now, include_token=True)
+            session = self._assert_session(state, identity, client_id, lease_token, now)
+            session["last_seen_at"] = now
+            session["expires_at"] = now + self.session_seconds
+            return self._public_snapshot(
+                state, now=now, include_token=True, session_token=lease_token
+            )
 
     def release_lease(
         self,
@@ -219,31 +257,29 @@ class EditingStateService:
         lease_token: str,
     ) -> bool:
         with self._state_transaction(document_id) as state:
-            lease = self._active_lease(state)
-            if not lease:
-                state["lease"] = None
+            self._normalize_sessions(state)
+            session = (state.get("sessions") or {}).get(lease_token)
+            if not session:
                 return False
-            if not self._lease_matches(lease, identity, client_id, lease_token):
+            if not self._session_matches(session, identity, client_id, lease_token):
                 return False
-            state["lease"] = None
+            state["sessions"].pop(lease_token, None)
             return True
 
     def release_user_leases(self, owner_id: str) -> int:
-        """Release every active lease owned by a user during an explicit logout."""
+        """Release browser sessions without changing persistent draft ownership."""
         released = 0
-        for state_path in self.root.glob("*.json"):
-            try:
-                payload = json.loads(state_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            document_id = str(payload.get("document_id") or "").strip()
-            if not document_id:
-                continue
+        for document_id in self.repository.document_ids():
             with self._state_transaction(document_id) as state:
-                lease = self._active_lease(state)
-                if lease and lease.get("owner_id") == owner_id:
-                    state["lease"] = None
-                    released += 1
+                self._normalize_sessions(state)
+                matching = [
+                    token
+                    for token, session in state.get("sessions", {}).items()
+                    if session.get("owner_id") == owner_id
+                ]
+                for token in matching:
+                    state["sessions"].pop(token, None)
+                released += len(matching)
         return released
 
     def save_autosave(
@@ -259,10 +295,12 @@ class EditingStateService:
     ) -> dict[str, Any]:
         now = time.time()
         with self._state_transaction(document_id) as state:
-            self._assert_lease(state, identity, client_id, lease_token, now)
+            self._assert_session(state, identity, client_id, lease_token, now)
             existing = state.get("autosave") or {}
             if existing.get("idempotency_key") == idempotency_key:
-                return self._public_snapshot(state, now=now, include_token=True)
+                return self._public_snapshot(
+                    state, now=now, include_token=True, session_token=lease_token
+                )
             self._assert_revision(state, base_revision, now)
             state["revision"] = int(state.get("revision") or 1) + 1
             state["autosave"] = {
@@ -273,7 +311,9 @@ class EditingStateService:
                 "idempotency_key": idempotency_key,
             }
             state["etag"] = self._etag(state)
-            return self._public_snapshot(state, now=now, include_token=True)
+            return self._public_snapshot(
+                state, now=now, include_token=True, session_token=lease_token
+            )
 
     def close_editing_session(
         self,
@@ -286,15 +326,10 @@ class EditingStateService:
         idempotency_key: str,
         document: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        """Best-effort autosave followed by an immediate lease release.
-
-        This operation is used when a browser tab is being closed or reloaded.
-        A stale document is never written, but the lease is still released so
-        another technician does not have to wait for the expiry timeout.
-        """
+        """Best-effort autosave followed by browser-session cleanup."""
         now = time.time()
         with self._state_transaction(document_id) as state:
-            self._assert_lease(state, identity, client_id, lease_token, now)
+            self._assert_session(state, identity, client_id, lease_token, now)
             autosaved = False
             revision_conflict = False
 
@@ -316,7 +351,7 @@ class EditingStateService:
                     state["etag"] = self._etag(state)
                     autosaved = True
 
-            state["lease"] = None
+            state.setdefault("sessions", {}).pop(lease_token, None)
             return {
                 "autosaved": autosaved,
                 "revision_conflict": revision_conflict,
@@ -335,12 +370,14 @@ class EditingStateService:
     ) -> dict[str, Any]:
         now = time.time()
         with self._state_transaction(document_id) as state:
-            self._assert_lease(state, identity, client_id, lease_token, now)
+            self._assert_session(state, identity, client_id, lease_token, now)
             self._assert_revision(state, base_revision, now)
             state["autosave"] = None
             state["revision"] = int(state.get("revision") or 1) + 1
             state["etag"] = self._etag(state)
-            return self._public_snapshot(state, now=now, include_token=True)
+            return self._public_snapshot(
+                state, now=now, include_token=True, session_token=lease_token
+            )
 
     def claim_operation(
         self,
@@ -368,7 +405,7 @@ class EditingStateService:
                 ):
                     raise OperationInProgressError("A operação já está em curso.")
 
-            self._assert_lease(state, identity, client_id, lease_token, now)
+            self._assert_session(state, identity, client_id, lease_token, now)
             self._assert_revision(state, base_revision, now)
             operation = dict(existing or {})
             operation.update({
@@ -431,7 +468,7 @@ class EditingStateService:
                     state["aliases"].append(alias)
             state["etag"] = self._etag(state)
             if release_lease:
-                state["lease"] = None
+                state["sessions"] = {}
 
             result = dict(response)
             if result_editing is not None:
@@ -464,13 +501,15 @@ class EditingStateService:
         *,
         path: Path | None = None,
     ) -> Iterator[dict[str, Any]]:
-        state_path = self._state_path(document_id)
-        with self._file_lock(state_path):
-            state = self._read_state(state_path, document_id)
+        legacy_path = self._state_path(document_id)
+        with self.repository.transaction(
+            document_id,
+            lambda: self._read_state(legacy_path, document_id),
+        ) as state:
+            self._normalize_state(state)
             if path is not None:
                 self._sync_fingerprint(state, path)
             yield state
-            self._atomic_write_json(state_path, state)
 
     def _read_state(self, path: Path, document_id: str) -> dict[str, Any]:
         if path.exists():
@@ -486,7 +525,11 @@ class EditingStateService:
             "revision": 1,
             "etag": "",
             "fingerprint": "",
+            "source_changed_at": None,
             "aliases": [],
+            "workspace_kind": "draft",
+            "owner": None,
+            "sessions": {},
             "lease": None,
             "autosave": None,
             "operations": {},
@@ -496,9 +539,12 @@ class EditingStateService:
         fingerprint = self._fingerprint(path)
         previous = str(state.get("fingerprint") or "")
         if previous and fingerprint and previous != fingerprint:
-            state["revision"] = int(state.get("revision") or 1) + 1
-            state["autosave"] = None
-            state["etag"] = self._etag(state)
+            if state.get("workspace_kind") == "private":
+                state["source_changed_at"] = time.time()
+            else:
+                state["revision"] = int(state.get("revision") or 1) + 1
+                state["autosave"] = None
+                state["etag"] = self._etag(state)
         state["fingerprint"] = fingerprint
         state.setdefault("aliases", [])
         if path.stem not in state["aliases"]:
@@ -506,44 +552,80 @@ class EditingStateService:
         if not state.get("etag"):
             state["etag"] = self._etag(state)
 
-    def _assert_lease(
+    def _assert_session(
         self,
         state: dict[str, Any],
         identity: EditorIdentity,
         client_id: str,
         lease_token: str,
         now: float,
-    ) -> None:
-        lease = self._active_lease(state, now)
-        if not lease or not self._lease_matches(lease, identity, client_id, lease_token):
+    ) -> dict[str, Any]:
+        self._normalize_sessions(state, now)
+        session = (state.get("sessions") or {}).get(lease_token)
+        if not session or not self._session_matches(session, identity, client_id, lease_token):
             raise LeaseRequiredError(self._public_snapshot(state, now=now))
+        return session
 
     def _assert_revision(self, state: dict[str, Any], base_revision: int, now: float) -> None:
         if int(base_revision) != int(state.get("revision") or 1):
             raise RevisionConflictError(self._public_snapshot(state, now=now))
 
     @staticmethod
-    def _lease_matches(
-        lease: dict[str, Any],
+    def _session_matches(
+        session: dict[str, Any],
         identity: EditorIdentity,
         client_id: str,
         lease_token: str,
     ) -> bool:
         return (
-            lease.get("owner_id") == identity.id
-            and lease.get("client_id") == client_id
-            and secrets.compare_digest(str(lease.get("token") or ""), str(lease_token or ""))
+            session.get("owner_id") == identity.id
+            and session.get("client_id") == client_id
+            and secrets.compare_digest(str(session.get("token") or ""), str(lease_token or ""))
         )
 
+    def _normalize_state(self, state: dict[str, Any]) -> None:
+        state["version"] = STATE_VERSION
+        state.setdefault("revision", 1)
+        state.setdefault("etag", "")
+        state.setdefault("fingerprint", "")
+        state.setdefault("source_changed_at", None)
+        state.setdefault("aliases", [])
+        state.setdefault("workspace_kind", "draft")
+        state.setdefault("owner", None)
+        state.setdefault("sessions", {})
+        state.setdefault("autosave", None)
+        state.setdefault("operations", {})
+        self._normalize_sessions(state)
+
+    def _normalize_sessions(self, state: dict[str, Any], now: float | None = None) -> None:
+        current_time = now or time.time()
+        sessions = state.setdefault("sessions", {})
+        legacy = state.get("lease")
+        if isinstance(legacy, dict) and legacy.get("token"):
+            token = str(legacy["token"])
+            sessions.setdefault(token, dict(legacy))
+            if not state.get("owner"):
+                state["owner"] = {
+                    "owner_id": legacy.get("owner_id"),
+                    "owner_name": legacy.get("owner_name"),
+                    "assigned_at": legacy.get("acquired_at") or current_time,
+                }
+        state["lease"] = None
+        expired = [
+            token
+            for token, session in sessions.items()
+            if float(session.get("expires_at") or 0) <= current_time
+        ]
+        for token in expired:
+            sessions.pop(token, None)
+
     @staticmethod
-    def _active_lease(state: dict[str, Any], now: float | None = None) -> dict[str, Any] | None:
-        lease = state.get("lease")
-        if not isinstance(lease, dict):
-            return None
-        if float(lease.get("expires_at") or 0) <= (now or time.time()):
-            state["lease"] = None
-            return None
-        return lease
+    def _owner_payload(identity: EditorIdentity, *, now: float | None = None) -> dict[str, Any]:
+        return {
+            "owner_id": identity.id,
+            "owner_name": identity.display_name,
+            "assigned_at": now or time.time(),
+        }
 
     def _public_snapshot(
         self,
@@ -551,62 +633,46 @@ class EditingStateService:
         *,
         now: float | None = None,
         include_token: bool = False,
+        session_token: str | None = None,
     ) -> dict[str, Any]:
-        lease = self._active_lease(state, now)
+        self._normalize_sessions(state, now)
+        owner = state.get("owner") or {}
+        session = (state.get("sessions") or {}).get(str(session_token or ""))
         public_lease = None
-        if lease:
+        if session:
             public_lease = {
-                "owner_id": lease.get("owner_id"),
-                "owner_name": lease.get("owner_name"),
-                "client_id": lease.get("client_id"),
-                "acquired_at": lease.get("acquired_at"),
-                "expires_at": lease.get("expires_at"),
+                "owner_id": session.get("owner_id"),
+                "owner_name": session.get("owner_name"),
+                "client_id": session.get("client_id"),
+                "acquired_at": session.get("acquired_at"),
+                "expires_at": session.get("expires_at"),
             }
             if include_token:
-                public_lease["token"] = lease.get("token")
+                public_lease["token"] = session.get("token")
+        elif owner:
+            public_lease = {
+                "owner_id": owner.get("owner_id"),
+                "owner_name": owner.get("owner_name"),
+                "client_id": None,
+                "acquired_at": owner.get("assigned_at"),
+                "expires_at": None,
+            }
         autosave = state.get("autosave") or {}
         return {
             "document_id": state["document_id"],
             "revision": int(state.get("revision") or 1),
             "etag": state.get("etag") or self._etag(state),
             "lease": public_lease,
+            "owner": owner or None,
+            "workspace_kind": state.get("workspace_kind") or "draft",
             "server_document": autosave.get("document"),
             "autosaved_at": autosave.get("updated_at"),
+            "source_changed_at": state.get("source_changed_at"),
         }
 
     def _state_path(self, document_id: str) -> Path:
         safe = hashlib.sha256(document_id.encode("utf-8")).hexdigest()
         return self.root / f"{safe}.json"
-
-    @contextmanager
-    def _file_lock(self, state_path: Path) -> Iterator[None]:
-        lock_path = state_path.with_suffix(state_path.suffix + ".lock")
-        deadline = time.monotonic() + 10
-        descriptor: int | None = None
-        while descriptor is None:
-            try:
-                descriptor = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(descriptor, f"{os.getpid()} {time.time()}".encode("ascii"))
-            except FileExistsError:
-                try:
-                    if time.time() - lock_path.stat().st_mtime > 30:
-                        lock_path.unlink()
-                        continue
-                except FileNotFoundError:
-                    continue
-                if time.monotonic() >= deadline:
-                    raise EditingStateError("Não foi possível bloquear o estado de edição.")
-                time.sleep(0.025)
-        try:
-            yield
-        finally:
-            try:
-                os.close(descriptor)
-            finally:
-                try:
-                    lock_path.unlink()
-                except FileNotFoundError:
-                    pass
 
     @staticmethod
     def _fingerprint(path: Path) -> str:

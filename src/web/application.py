@@ -12,6 +12,7 @@ from pathlib import Path
 from flask import Flask, g, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 
 from src.config import (
+    APP_DATA_DIR,
     AUTH_PROVIDER,
     MICROSOFT_AUTH_REDIRECT_URI,
     STORAGE_BACKEND,
@@ -46,6 +47,8 @@ from src.services.editing_state_service import (
 from src.services.excel_service import ExcelService, ExcelValidationError
 from src.services.file_service import FileService
 from src.services.graph_storage_service import GraphConflictError, GraphStorageError, GraphStorageService
+from src.services.graph_sync_coordinator import GraphRefreshCoordinator
+from src.services.graph_sync_queue import GraphSyncQueue
 from src.services.microsoft_auth_service import MicrosoftAuthError, MicrosoftAuthService
 from src.services.signature_service import CLIENT_SIGNATURE_LABEL, SignatureService
 
@@ -65,6 +68,8 @@ def create_app(
     graph_service: GraphStorageService | None = None,
     microsoft_auth_service: MicrosoftAuthService | None = None,
     editing_state_service: EditingStateService | None = None,
+    graph_refresh_coordinator: GraphRefreshCoordinator | None = None,
+    graph_sync_queue: GraphSyncQueue | None = None,
 ) -> Flask:
     """Cria a aplicação Flask com dependências injetáveis para testes."""
     app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -84,6 +89,18 @@ def create_app(
     )
 
     editing_state_service = editing_state_service or EditingStateService()
+    graph_refresh_coordinator = graph_refresh_coordinator or (
+        GraphRefreshCoordinator(
+            graph_service,
+            file_service.directory,
+            on_complete=file_service.invalidate_cache,
+        )
+        if graph_service is not None else None
+    )
+    graph_sync_queue = graph_sync_queue or (
+        GraphSyncQueue(graph_service, APP_DATA_DIR / "graph-sync.sqlite3")
+        if graph_service is not None else None
+    )
     @app.after_request
     def apply_cache_headers(response):
         if request.path.startswith("/api/") or request.path in {
@@ -385,17 +402,10 @@ def create_app(
         signatures = SignatureService(path).read_as_data_urls()
         return excel_form_data, document_data, signatures
 
-    def sync_graph_active_files() -> str | None:
-        if graph_service is None:
+    def schedule_graph_refresh(*, force: bool = False) -> dict[str, object] | None:
+        if graph_refresh_coordinator is None:
             return None
-
-        try:
-            graph_service.sync_active_files(file_service.directory)
-            file_service.invalidate_cache()
-            return None
-        except GraphStorageError as exc:
-            traceback.print_exc()
-            return str(exc)
+        return graph_refresh_coordinator.request_refresh(force=force)
 
     def load_document_assets() -> tuple[str, str]:
         static_root = Path(app.static_folder)
@@ -433,12 +443,12 @@ def create_app(
 
     @app.route("/")
     def index():
-        storage_error = sync_graph_active_files()
+        schedule_graph_refresh()
         selected_file_name = request.args.get("file", "").strip() or None
         selected_file_data = None
         selected_document_data = None
         selected_signatures = {}
-        selected_file_error = storage_error
+        selected_file_error = None
         selected_editing_state = None
         selected_file_is_draft = None
         editor_identity = current_editor_identity()
@@ -448,22 +458,9 @@ def create_app(
             if not path:
                 selected_file_error = "Ficheiro não encontrado."
             else:
-                try:
-                    selected_file_data, selected_document_data, selected_signatures = load_editor_state(path)
-                    selected_file_is_draft = file_service.is_draft_file(path)
-                    selected_editing_state = editing_state_service.snapshot(path)
-                    if not selected_file_is_draft:
-                        selected_editing_state = {
-                            **selected_editing_state,
-                            "lease": None,
-                            "server_document": None,
-                            "autosaved_at": None,
-                        }
-                except ExcelValidationError as exc:
-                    selected_file_error = str(exc)
-                except Exception as exc:
-                    traceback.print_exc()
-                    selected_file_error = str(exc)
+                # Sentinel only. The browser hydrates once from the bootstrap API.
+                selected_document_data = {}
+                selected_file_is_draft = file_service.is_draft_file(path)
 
         return render_template(
             "field_app.html",
@@ -499,11 +496,14 @@ def create_app(
 
     @app.route("/api/files")
     def get_files():
-        storage_error = sync_graph_active_files()
-        if storage_error:
-            return json_error(storage_error, 502)
+        if request.args.get("refresh") in {"1", "true", "yes"}:
+            schedule_graph_refresh(force=True)
         files_data = [serialize_file_entry(entry) for entry in file_service.list_valid_files()]
-        return jsonify({"success": True, "files": files_data})
+        return jsonify({
+            "success": True,
+            "files": files_data,
+            "refresh": graph_refresh_coordinator.status() if graph_refresh_coordinator else None,
+        })
 
     @app.route("/api/graph/status")
     def graph_status():
@@ -512,6 +512,8 @@ def create_app(
                 "success": True,
                 "backend": STORAGE_BACKEND,
                 "graph_enabled": False,
+                "refresh": None,
+                "outbox": None,
             })
 
         status = graph_service.status()
@@ -520,6 +522,8 @@ def create_app(
             "backend": STORAGE_BACKEND,
             "graph_enabled": True,
             "graph": status,
+            "refresh": graph_refresh_coordinator.status() if graph_refresh_coordinator else None,
+            "outbox": graph_sync_queue.summary() if graph_sync_queue else None,
         })
 
     @app.route("/api/graph/test")
@@ -537,18 +541,70 @@ def create_app(
 
     @app.route("/api/graph/sync", methods=["POST"])
     def graph_sync():
-        if graph_service is None:
+        if graph_refresh_coordinator is None:
             return json_error("Backend Graph não está ativo.", 400)
+        status = schedule_graph_refresh(force=True)
+        return jsonify({"success": True, "refresh": status}), 202
 
+    @app.route("/api/graph/jobs/<job_id>")
+    def graph_job_status(job_id: str):
+        if graph_sync_queue is None:
+            return json_error("Backend Graph não está ativo.", 400)
+        job = graph_sync_queue.status(job_id)
+        if job is None:
+            return json_error("Operação de sincronização não encontrada.", 404)
+        return jsonify({"success": True, "job": job})
+
+    @app.route("/api/file/<name>/bootstrap")
+    def bootstrap_file_editor(name: str):
+        path = file_service.get_file_by_name(name)
+        if not path:
+            return json_error("Ficheiro não encontrado", 404)
+        client_id = str(request.args.get("client_id") or "").strip()
+        if not client_id:
+            return json_error("Identificador da sessão de edição em falta.", 400)
         try:
-            files = graph_service.sync_active_files(file_service.directory)
-            file_service.invalidate_cache()
+            form_data, source_document, signatures = load_editor_state(path)
+            identity = current_editor_identity()
+            if file_service.is_draft_file(path):
+                editing = editing_state_service.acquire_lease(path, identity, client_id)
+            else:
+                editing = editing_state_service.acquire_private_workspace(
+                    path, identity, client_id
+                )
+            effective_document = editing.get("server_document") or source_document
             return jsonify({
                 "success": True,
-                "synced_files": [path.name for path in files],
+                "file": name,
+                "is_draft": file_service.is_draft_file(path),
+                "data": form_data,
+                "source_document": source_document,
+                "document": effective_document,
+                "signatures": signatures,
+                "recovery_source": "server" if editing.get("server_document") else "source",
+                "editing": editing,
             })
-        except GraphStorageError as exc:
-            return json_error(str(exc), 502)
+        except LeaseConflictError as exc:
+            return jsonify({
+                "success": False,
+                "editable": False,
+                "error": str(exc),
+                "code": "lease_conflict",
+                "file": name,
+                "is_draft": True,
+                "data": form_data,
+                "source_document": source_document,
+                "document": source_document,
+                "signatures": signatures,
+                "editing": exc.snapshot,
+            }), 423
+        except EditingStateError as exc:
+            return editing_error_response(exc)
+        except ExcelValidationError as exc:
+            return json_error(str(exc), 400)
+        except Exception as exc:
+            traceback.print_exc()
+            return json_error(str(exc), 500)
 
     @app.route("/api/file/<name>")
     def get_file_data(name: str):
@@ -781,8 +837,6 @@ def create_app(
             created_this_attempt = False
 
             if not context.get("draft_path") and not file_service.is_draft_file(path):
-                if graph_service is not None:
-                    graph_service.assert_active_entry_current(path)
                 draft_path = file_service.create_draft_copy(
                     path,
                     get_primary_technician_name(data),
@@ -816,14 +870,20 @@ def create_app(
                     draft_path,
                     draft_document_id,
                     original_name=path.stem,
+                    owner=current_editor_identity(),
                 )
                 result_editing = editing_state_service.snapshot(draft_path, draft_document_id)
 
             graph_uploaded_files = []
-            if graph_service is not None:
-                graph_uploaded_files = graph_service.upload_active_bundle(
-                    draft_path,
-                    fail_if_exists=created_this_attempt,
+            graph_sync_job = None
+            if graph_sync_queue is not None:
+                graph_sync_job = graph_sync_queue.enqueue(
+                    "upload_active",
+                    {
+                        "draft_path": str(draft_path),
+                        "fail_if_exists": created_this_attempt,
+                    },
+                    job_id=f"draft:{document_id}:{idempotency_key}",
                 )
             file_service.invalidate_cache()
             result = editing_state_service.commit_operation(
@@ -834,11 +894,16 @@ def create_app(
                 result_editing=result_editing,
                 response={
                     "success": True,
-                    "message": "Rascunho guardado.",
+                    "message": (
+                        "Rascunho guardado no servidor; publicação no SharePoint pendente."
+                        if graph_sync_job else "Rascunho guardado."
+                    ),
                     "file": draft_path.stem,
                     "status": "in_progress",
                     "created_copy": created_copy,
                     "graph_uploaded_files": graph_uploaded_files,
+                    "graph_job_id": graph_sync_job.get("id") if graph_sync_job else None,
+                    "publication_status": "pending" if graph_sync_job else "local",
                 },
             )
             return jsonify(result)
@@ -939,10 +1004,11 @@ def create_app(
 
             source_path = Path(str(operation_context.get("source_path") or path))
             graph_active_etag = str(operation_context.get("graph_active_etag") or "") or None
+            graph_active_source_name = str(operation_context.get("graph_active_source_name") or "")
             if archived_path is None:
                 if graph_service is not None:
-                    active_item = graph_service.assert_active_entry_current(source_path)
-                    graph_active_etag = str(active_item.get("eTag") or "") or None
+                    graph_active_source_name = graph_service.active_source_name(source_path)
+                    graph_active_etag = graph_service.active_source_etag(source_path)
                 archived_path = archive_service.archive(source_path)
                 editing_state_service.update_operation_context(
                     document_id,
@@ -950,6 +1016,7 @@ def create_app(
                     source_path=str(source_path),
                     archived_path=str(archived_path),
                     graph_active_etag=graph_active_etag,
+                    graph_active_source_name=graph_active_source_name,
                 )
 
             excel_form_data = document_to_excel_form(document_data)
@@ -972,11 +1039,17 @@ def create_app(
             DocumentArtifactService(archived_path).write_html(document_html)
             graph_uploaded_files = []
             graph_removed_active = False
-            if graph_service is not None:
-                graph_uploaded_files = graph_service.upload_archive_bundle(archived_path)
-                graph_removed_active = graph_service.remove_active_entry(
-                    source_path,
-                    expected_etag=graph_active_etag,
+            graph_sync_job = None
+            if graph_sync_queue is not None:
+                graph_sync_job = graph_sync_queue.enqueue(
+                    "archive_and_remove",
+                    {
+                        "archived_path": str(archived_path),
+                        "source_path": str(source_path),
+                        "source_name": graph_active_source_name,
+                        "expected_etag": graph_active_etag,
+                    },
+                    job_id=f"send:{document_id}:{idempotency_key}",
                 )
             file_service.invalidate_cache()
             result = editing_state_service.commit_operation(
@@ -986,13 +1059,18 @@ def create_app(
                 release_lease=True,
                 response={
                     "success": True,
-                    "message": "Folha finalizada com sucesso.",
+                    "message": (
+                        "Folha finalizada no servidor; publicação no SharePoint pendente."
+                        if graph_sync_job else "Folha finalizada com sucesso."
+                    ),
                     "archived_excel": archived_path.name,
                     "internal_observations": (
                         internal_observations_path.name if internal_observations_path else None
                     ),
                     "graph_uploaded_files": graph_uploaded_files,
                     "graph_removed_active": graph_removed_active,
+                    "graph_job_id": graph_sync_job.get("id") if graph_sync_job else None,
+                    "publication_status": "pending" if graph_sync_job else "local",
                 },
             )
             return jsonify(result)
@@ -1061,10 +1139,11 @@ def create_app(
             context = dict(claim["operation"].get("context") or {})
             source_path = Path(str(context.get("source_path") or path))
             graph_active_etag = str(context.get("graph_active_etag") or "") or None
+            graph_active_source_name = str(context.get("graph_active_source_name") or "")
             if canceled_path is None:
                 if graph_service is not None:
-                    active_item = graph_service.assert_active_entry_current(source_path)
-                    graph_active_etag = str(active_item.get("eTag") or "") or None
+                    graph_active_source_name = graph_service.active_source_name(source_path)
+                    graph_active_etag = graph_service.active_source_etag(source_path)
                 canceled_path = archive_service.cancel(source_path)
                 editing_state_service.update_operation_context(
                     document_id,
@@ -1072,12 +1151,19 @@ def create_app(
                     source_path=str(source_path),
                     canceled_path=str(canceled_path),
                     graph_active_etag=graph_active_etag,
+                    graph_active_source_name=graph_active_source_name,
                 )
             graph_removed_active = False
-            if graph_service is not None:
-                graph_removed_active = graph_service.remove_active_entry(
-                    source_path,
-                    expected_etag=graph_active_etag,
+            graph_sync_job = None
+            if graph_sync_queue is not None:
+                graph_sync_job = graph_sync_queue.enqueue(
+                    "remove_active",
+                    {
+                        "source_path": str(source_path),
+                        "expected_etag": graph_active_etag,
+                        "source_name": graph_active_source_name,
+                    },
+                    job_id=f"cancel:{document_id}:{idempotency_key}",
                 )
             file_service.invalidate_cache()
             result = editing_state_service.commit_operation(
@@ -1087,9 +1173,14 @@ def create_app(
                 release_lease=True,
                 response={
                     "success": True,
-                    "message": "Folha cancelada com sucesso.",
+                    "message": (
+                        "Folha cancelada no servidor; atualização do SharePoint pendente."
+                        if graph_sync_job else "Folha cancelada com sucesso."
+                    ),
                     "canceled_excel": canceled_path.name,
                     "graph_removed_active": graph_removed_active,
+                    "graph_job_id": graph_sync_job.get("id") if graph_sync_job else None,
+                    "publication_status": "pending" if graph_sync_job else "local",
                 },
             )
             return jsonify(result)

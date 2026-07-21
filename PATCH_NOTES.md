@@ -4,6 +4,60 @@ Registo das principais alteracoes por versao da aplicacao Folhas de Servico.
 
 As versoes sem tag formal usam o commit Git como referencia. A versao marcada para servidor continua a ser `v1.0.0-servidor`, salvo indicacao posterior.
 
+## v1.2.0 - Sincronizacao transacional e publicacao assincrona
+
+Data: 2026-07-21
+Commit: incluido nesta versao
+
+### Adicionado
+
+- Estado de edicao transacional em SQLite/WAL, substituindo os ficheiros JSON com locks manuais.
+- Bootstrap unico que devolve Excel, autosave efetivo, assinaturas, identidade e sessao de edicao no primeiro pedido.
+- Fila persistente para publicar, arquivar e remover itens no Microsoft Graph com retry exponencial.
+- Snapshot local imutavel de cada rascunho antes de o trabalho ser colocado na fila.
+- Endpoints de estado `/api/graph/status` e `/api/graph/jobs/<job_id>` para operacao e diagnostico.
+- Coordenacao entre abas do mesmo browser para manter apenas uma aba editavel por rascunho.
+- Checklist de administracao em `docs/SINCRONIZACAO_V2_ADMIN.md`.
+
+### Alterado
+
+- A abertura usa imediatamente a cache local e pede o refresh do SharePoint em segundo plano.
+- O autosave local inicia apos 150 ms e o autosave no servidor apos 750 ms.
+- O indicador distingue copia no dispositivo, gravacao no servidor e publicacao pendente no SharePoint.
+- Sair, atualizar ou mudar de separador fecha apenas a sessao do browser; a propriedade do rascunho permanece com o tecnico que o criou.
+- Folhas originais continuam a criar areas privadas independentes por tecnico/sessao, evitando escrita cruzada antes da criacao dos rascunhos.
+- Guardar, finalizar e cancelar concluem primeiro no armazenamento local; as operacoes Graph deixam de bloquear o pedido web.
+- O refresh da lista deixa de substituir ou recarregar o formulario que esta a ser editado.
+
+### Corrigido
+
+- A primeira abertura deixa de mostrar uma folha vazia antes de recuperar os dados.
+- Uma unica atualizacao passa a recuperar diretamente o autosave efetivo do servidor.
+- A troca de visibilidade da pagina deixa de libertar e readquirir repetidamente a edicao.
+- A ausencia temporaria do Graph deixa de impedir o tecnico de guardar trabalho no servidor local.
+- Finalizar imediatamente depois de criar um rascunho deixa de depender de o upload anterior ja ter terminado.
+- A fila preserva o nome do item ativo antes de o bundle local ser movido para Arquivadas ou Canceladas.
+- Retries parciais sao idempotentes e os snapshots so sao removidos depois da conclusao confirmada.
+- Os caminhos internos da fila foram encurtados para compatibilidade com os limites tradicionais do Windows.
+
+### Migracao e administracao
+
+- Estados JSON antigos sao importados automaticamente para SQLite sem apagar os originais.
+- `FS_APP_DATA_DIR` tem de apontar para disco local persistente e gravavel, fora de OneDrive/NFS/SMB.
+- Novas variaveis recomendadas: `FS_EDIT_SESSION_SECONDS=2592000`, `FS_STATE_DB_BUSY_MS=10000`, `FS_GRAPH_REFRESH_SECONDS=30` e `FS_GRAPH_JOB_STALE_SECONDS=900`.
+- Varios workers no mesmo host sao suportados. Varias replicas em hosts diferentes exigem PostgreSQL e nao fazem parte desta versao.
+
+### Validacao
+- Validacao direta no Chrome: a folha abriu com os dados na primeira tentativa e recuperou o marcador de QA depois de uma unica atualizacao.
+- A acao `Recarregar` preservou a edicao e os tres separadores terminaram sem erros ou avisos na consola.
+- Duas sessoes sobre o mesmo Excel original mantiveram conteudos isolados e criaram rascunhos distintos com os sufixos `Sem_Tecnico` e `Sem_Tecnico_1`.
+- O mesmo rascunho ficou editavel numa unica aba; a aba em consulta recuperou a edicao cerca de um segundo depois da libertacao.
+- Materiais recolhidos, total de horas manual, lista de sistemas e dispensa de assinatura foram confirmados visualmente no formulario.
+- Testes de fila confirmam ETags propagados e execucao serial entre dois workers sobre a mesma base de dados.
+
+- Suite integral: `64 passed` em Python 3.13.
+- Teste de 24 transacoes concorrentes sobre o mesmo documento sem perda de atualizacoes nem ficheiros `.lock`.
+- JavaScript validado sintaticamente com `node --check`.
 ## v1.1.2 - Rascunhos privados por tecnico
 
 Data: 2026-07-14

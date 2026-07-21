@@ -2,16 +2,22 @@ const startEditingCoordinator = () => {
     if (window.__EDITING_COORDINATOR_STARTED__) {
         return true;
     }
+
     const filesApp = window.__FILES_APP__ || {};
     const editor = window.__FILES_EDITOR__;
     const activeFileName = filesApp.selectedFileName || null;
-    const isPrivateSource = filesApp.selectedFileIsDraft === false;
+    const selectedFileIsDraft = filesApp.selectedFileIsDraft === true;
     const form = document.getElementById("service-form");
+    const formWrapper = document.getElementById("form-wrapper");
+    const actionButtons = document.getElementById("action-buttons");
+    const busyPanel = document.getElementById("busy-panel");
+    const busyTitle = document.getElementById("busy-title");
+    const busyMessage = document.getElementById("busy-message");
     const autosaveStatus = document.getElementById("autosave-status");
     const lockBanner = document.getElementById("editing-lock-banner");
     const lockTitle = document.getElementById("editing-lock-title");
     const lockMessage = document.getElementById("editing-lock-message");
-    const retryLeaseButton = document.getElementById("btn-retry-lease");
+    const retryButton = document.getElementById("btn-retry-lease");
     const recoveryPanel = document.getElementById("recovery-panel");
     const recoveryEyebrow = document.getElementById("recovery-eyebrow");
     const recoveryTitle = document.getElementById("recovery-title");
@@ -22,15 +28,11 @@ const startEditingCoordinator = () => {
     const logoutForm = document.querySelector("[data-logout-form]");
 
     if (!form || !activeFileName) {
-        if (autosaveStatus) {
-            autosaveStatus.hidden = true;
-        }
+        if (autosaveStatus) autosaveStatus.hidden = true;
         return true;
     }
     if (!editor) {
-        if (autosaveStatus) {
-            autosaveStatus.textContent = "A carregar o formulário…";
-        }
+        if (autosaveStatus) autosaveStatus.textContent = "A carregar o formulário…";
         return false;
     }
     window.__EDITING_COORDINATOR_STARTED__ = true;
@@ -38,62 +40,94 @@ const startEditingCoordinator = () => {
     const DB_NAME = "sensorpoint-service-recovery-v1";
     const DB_VERSION = 1;
     const STORE_NAME = "recoveries";
-    const LOCAL_SAVE_DELAY = 250;
-    const SERVER_SAVE_DELAY = 900;
-    const HEARTBEAT_DELAY = 3000;
-    const LEASE_RETRY_DELAY = 1000;
-    const RECOVERY_READ_TIMEOUT = 1200;
+    const LOCAL_SAVE_DELAY = 150;
+    const SERVER_SAVE_DELAY = 750;
+    const MAX_RETRY_DELAY = 30000;
     const recoveryMaxAgeMs = Math.max(Number(filesApp.recoveryMaxAgeDays || 30), 1) * 86400000;
     const editorUser = filesApp.editorUser || { id: "local", display_name: "Técnico local" };
 
-    const makeId = () => {
-        if (window.crypto?.randomUUID) {
-            return window.crypto.randomUUID();
-        }
-        return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    };
+    const makeId = () => window.crypto?.randomUUID?.()
+        || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const tabInstanceId = makeId();
 
     let clientId = "";
     try {
-        clientId = sessionStorage.getItem("sensorpoint-editor-client-id") || "";
+        clientId = sessionStorage.getItem("sensorpoint-editor-client-id-v2") || "";
         if (!clientId) {
             clientId = makeId();
-            sessionStorage.setItem("sensorpoint-editor-client-id", clientId);
+            sessionStorage.setItem("sensorpoint-editor-client-id-v2", clientId);
         }
     } catch (error) {
         clientId = makeId();
     }
 
-    let editing = { ...(filesApp.selectedEditingState || {}) };
-    let leaseToken = "";
+    let editing = {};
+    let sessionToken = "";
     let dirty = false;
     let hydrating = false;
     let readOnly = true;
+    let initialized = false;
     let suppressBeforeUnload = false;
     let localSaveTimer = null;
     let serverSaveTimer = null;
-    let heartbeatTimer = null;
-    let leaseRetryTimer = null;
-    let pendingPanelAction = null;
-    let pendingAutosave = null;
+    let retryTimer = null;
+    let retryAttempt = 0;
     let autosaveInFlight = false;
     let autosaveQueued = false;
-    let leaseAcquireInFlight = false;
+    let pendingAutosave = null;
+    let pendingPanelAction = null;
+    let serverPayload = null;
+    let sourceSignatures = {};
+    let otherTabActive = false;
     const operationKeys = new Map();
 
-    const showToast = (message, variant = "info") => {
-        if (typeof editor.showToast === "function") {
-            editor.showToast(message, variant);
-        }
-    };
+    const showToast = (message, variant = "info") => editor.showToast?.(message, variant);
 
     const setAutosaveStatus = (message, state = "idle") => {
-        if (!autosaveStatus) {
-            return;
-        }
+        if (!autosaveStatus) return;
         autosaveStatus.hidden = false;
         autosaveStatus.textContent = message;
         autosaveStatus.dataset.state = state;
+    };
+
+    const setBooting = (booting, message = "A obter a versão mais recente…") => {
+        document.body.classList.toggle("editor-booting", booting);
+        if (busyPanel) {
+            busyPanel.hidden = !booting;
+            if (busyTitle) busyTitle.textContent = "A abrir a folha";
+            if (busyMessage) busyMessage.textContent = message;
+        }
+        if (formWrapper) formWrapper.hidden = booting;
+        if (actionButtons) actionButtons.hidden = booting;
+    };
+
+    const setCommitActionsEnabled = (enabled) => {
+        const draftButton = document.getElementById("btn-save-draft");
+        const sendButton = document.getElementById("btn-save-send");
+        const cancelButton = document.getElementById("btn-cancel-file");
+        if (draftButton) draftButton.disabled = !enabled;
+        if (sendButton) sendButton.disabled = !enabled || !selectedFileIsDraft;
+        if (cancelButton) cancelButton.disabled = !enabled || !selectedFileIsDraft;
+    };
+
+    const setFormReadOnly = (value, ownerName = "") => {
+        readOnly = Boolean(value);
+        form.classList.toggle("is-readonly", readOnly);
+        form.querySelectorAll("input, select, textarea, button").forEach((control) => {
+            if (!control.dataset.editingInitialDisabled) {
+                control.dataset.editingInitialDisabled = control.disabled ? "true" : "false";
+            }
+            control.disabled = readOnly || control.dataset.editingInitialDisabled === "true";
+        });
+        if (lockBanner) lockBanner.hidden = !readOnly;
+        if (retryButton) retryButton.hidden = true;
+        if (readOnly) {
+            if (lockTitle) lockTitle.textContent = "Rascunho em modo de consulta";
+            if (lockMessage) {
+                const owner = ownerName || editing.owner?.owner_name || "outro técnico";
+                lockMessage.textContent = `Este rascunho pertence a ${owner}. Abra a folha original para criar uma cópia privada.`;
+            }
+        }
     };
 
     const openDatabase = () => new Promise((resolve, reject) => {
@@ -115,9 +149,7 @@ const startEditingCoordinator = () => {
 
     const withStore = async (mode, callback) => {
         const database = await openDatabase();
-        if (!database) {
-            return null;
-        }
+        if (!database) return null;
         return new Promise((resolve, reject) => {
             const transaction = database.transaction(STORE_NAME, mode);
             const store = transaction.objectStore(STORE_NAME);
@@ -142,101 +174,49 @@ const startEditingCoordinator = () => {
 
     const recoveryKey = () => `${editorUser.id}:${editing.document_id || activeFileName}`;
 
-    const readRecovery = async () => {
-        const key = recoveryKey();
-        return withStore("readonly", (store) => store.get(key));
+    const readLatestRecoveryForFile = async () => {
+        let latest = null;
+        await withStore("readonly", (store) => {
+            const index = store.index("userId");
+            const request = index.openCursor(IDBKeyRange.only(editorUser.id));
+            request.onsuccess = () => {
+                const cursor = request.result;
+                if (!cursor) return;
+                const record = cursor.value;
+                if (
+                    record?.fileName === activeFileName
+                    && Number(record.updatedAt || 0) > Number(latest?.updatedAt || 0)
+                ) {
+                    latest = record;
+                }
+                cursor.continue();
+            };
+            return request;
+        });
+        return latest;
     };
 
     const deleteRecovery = async (key = recoveryKey()) => {
         await withStore("readwrite", (store) => store.delete(key));
     };
 
-    const discardServerAutosave = async () => {
-        if (!editing.server_document || !leaseToken) {
-            return;
-        }
-        const response = await fetch(
-            `/api/file/${encodeURIComponent(activeFileName)}/autosave/discard`,
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ _edit: editMetadata() }),
-            },
-        );
-        const result = await response.json();
-        if (!response.ok || !result.success) {
-            if (handleConflict(result)) {
-                return;
-            }
-            throw new Error(result.error || "Não foi possível ignorar o autosave.");
-        }
-        editing = { ...editing, ...(result.editing || {}) };
-        leaseToken = result.editing?.lease?.token || leaseToken;
-    };
-
-    const clearUserRecoveries = async () => {
-        await withStore("readwrite", (store) => {
-            const index = store.index("userId");
-            const cursorRequest = index.openCursor(IDBKeyRange.only(editorUser.id));
-            cursorRequest.onsuccess = () => {
-                const cursor = cursorRequest.result;
-                if (!cursor) {
-                    return;
-                }
-                cursor.delete();
-                cursor.continue();
-            };
-            return cursorRequest;
-        });
-    };
-
-    const pruneExpiredRecoveries = async () => {
-        const threshold = Date.now() - recoveryMaxAgeMs;
-        await withStore("readwrite", (store) => {
-            const cursorRequest = store.openCursor();
-            cursorRequest.onsuccess = () => {
-                const cursor = cursorRequest.result;
-                if (!cursor) {
-                    return;
-                }
-                if (Number(cursor.value?.updatedAt || 0) < threshold) {
-                    cursor.delete();
-                }
-                cursor.continue();
-            };
-            return cursorRequest;
-        });
-    };
-
-    const payloadHasSignatures = (payload) => Boolean(
-        payload?.["Assinatura Cliente"] || payload?.["Assinatura Técnico"]
-    );
-
     const persistLocalRecovery = async ({ announce = false, force = false } = {}) => {
-        if ((!dirty && !force) || !editing.document_id) {
-            return null;
-        }
+        if ((!dirty && !force) || !editing.document_id) return null;
         try {
-            const payload = editor.collectFormData();
-            const serialized = JSON.stringify(payload);
             const record = {
                 key: recoveryKey(),
                 userId: editorUser.id,
                 documentId: editing.document_id,
                 fileName: activeFileName,
+                clientId,
                 baseRevision: Number(editing.revision || 1),
-                payload,
+                payload: editor.collectFormData(),
                 updatedAt: Date.now(),
                 expiresAt: Date.now() + recoveryMaxAgeMs,
             };
             await withStore("readwrite", (store) => store.put(record));
-            if (
-                announce
-                && dirty
-                && !autosaveInFlight
-                && JSON.stringify(editor.collectFormData()) === serialized
-            ) {
-                setAutosaveStatus("Guardado neste dispositivo — a sincronizar…", "saving");
+            if (announce && dirty && !autosaveInFlight) {
+                setAutosaveStatus("Guardado neste dispositivo — a guardar no servidor…", "saving");
             }
             return record;
         } catch (error) {
@@ -245,81 +225,103 @@ const startEditingCoordinator = () => {
         }
     };
 
-    const setFormReadOnly = (value, ownerName = "") => {
-        readOnly = Boolean(value);
-        form.classList.toggle("is-readonly", readOnly);
-        form.querySelectorAll("input, select, textarea, button").forEach((control) => {
-            if (!control.dataset.editingInitialDisabled) {
-                control.dataset.editingInitialDisabled = control.disabled ? "true" : "false";
-            }
-            control.disabled = readOnly || control.dataset.editingInitialDisabled === "true";
+    const pruneExpiredRecoveries = async () => {
+        const threshold = Date.now() - recoveryMaxAgeMs;
+        await withStore("readwrite", (store) => {
+            const request = store.openCursor();
+            request.onsuccess = () => {
+                const cursor = request.result;
+                if (!cursor) return;
+                if (Number(cursor.value?.updatedAt || 0) < threshold) cursor.delete();
+                cursor.continue();
+            };
+            return request;
         });
-        if (lockBanner) {
-            lockBanner.hidden = !readOnly;
-        }
-        if (readOnly) {
-            const owner = ownerName || editing.lease?.owner_name || "outro utilizador";
-            if (lockTitle) {
-                lockTitle.textContent = "Folha em modo de consulta";
-            }
-            if (lockMessage) {
-                lockMessage.textContent = `Em edição por ${owner}. A edição será retomada automaticamente assim que ficar livre.`;
-            }
-        }
     };
 
-    const setCommitActionsEnabled = (enabled) => {
-        const draftButton = document.getElementById("btn-save-draft");
-        const sendButton = document.getElementById("btn-save-send");
-        const cancelButton = document.getElementById("btn-cancel-file");
-        if (draftButton) draftButton.disabled = !enabled;
-        if (sendButton) sendButton.disabled = !enabled || isPrivateSource;
-        if (cancelButton) cancelButton.disabled = !enabled || isPrivateSource;
+    const payloadHasSignatures = (payload) => Boolean(
+        payload?.["Assinatura Cliente"] || payload?.["Assinatura Técnico"]
+    );
+
+    const comparablePayload = (payload) => {
+        const value = { ...(payload || {}) };
+        delete value["Assinatura Cliente"];
+        delete value["Assinatura Técnico"];
+        const sort = (item) => {
+            if (Array.isArray(item)) return item.map(sort);
+            if (item && typeof item === "object") {
+                return Object.keys(item).sort().reduce((result, key) => {
+                    result[key] = sort(item[key]);
+                    return result;
+                }, {});
+            }
+            return item;
+        };
+        return JSON.stringify(sort(value));
     };
 
     const editMetadata = (idempotencyKey = "") => ({
         document_id: editing.document_id || "",
         client_id: clientId,
-        lease_token: leaseToken,
+        lease_token: sessionToken,
         base_revision: Number(editing.revision || 1),
         idempotency_key: idempotencyKey,
     });
 
-    const handleConflict = (result) => {
-        if (!result || !["revision_conflict", "graph_conflict"].includes(result.code)) {
-            return false;
+    const hideRecoveryPanel = () => {
+        pendingPanelAction = null;
+        if (recoveryPanel) {
+            recoveryPanel.hidden = true;
+            recoveryPanel.classList.remove("is-conflict");
         }
+    };
+
+    const showConflictPanel = (localRecord, remotePayload, title = "Existem duas versões da folha") => {
+        pendingPanelAction = { kind: "conflict", localRecord, remotePayload };
+        recoveryPanel?.classList.add("is-conflict");
+        if (recoveryPanel) recoveryPanel.hidden = false;
+        if (recoveryEyebrow) recoveryEyebrow.textContent = "Conflito protegido";
+        if (recoveryTitle) recoveryTitle.textContent = title;
+        if (recoveryMessage) recoveryMessage.textContent = "Nenhuma versão foi sobrescrita. Escolha qual deve continuar.";
+        if (recoveryTimestamp) recoveryTimestamp.textContent = "A cópia deste dispositivo continua guardada.";
+        if (ignoreRecoveryButton) ignoreRecoveryButton.textContent = "Usar servidor";
+        if (restoreRecoveryButton) restoreRecoveryButton.textContent = "Usar este dispositivo";
+    };
+
+    const handleConflict = (result) => {
+        if (!result || !["revision_conflict", "graph_conflict"].includes(result.code)) return false;
         editing = { ...editing, ...(result.editing || {}) };
-        pendingAutosave = null;
-        setAutosaveStatus("Conflito — é necessária uma decisão", "conflict");
-        pendingPanelAction = {
-            kind: "conflict",
-            localPayload: editor.collectFormData(),
-            serverPayload: result.editing?.server_document || null,
+        serverPayload = result.editing?.server_document || serverPayload;
+        const localRecord = {
+            payload: editor.collectFormData(),
+            updatedAt: Date.now(),
+            baseRevision: Number(editing.revision || 1),
         };
-        recoveryPanel.classList.add("is-conflict");
-        recoveryPanel.hidden = false;
-        recoveryEyebrow.textContent = "Conflito de edição";
-        recoveryTitle.textContent = "A folha foi alterada noutro local";
-        recoveryMessage.textContent = "Mantivemos a sua versão neste dispositivo. Escolha qual deve continuar.";
-        recoveryTimestamp.textContent = "Nenhuma versão foi sobrescrita automaticamente.";
-        ignoreRecoveryButton.textContent = "Usar servidor";
-        restoreRecoveryButton.textContent = "Manter a minha cópia";
-        recoveryPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        dirty = true;
+        persistLocalRecovery({ force: true });
+        setAutosaveStatus("Conflito — escolha a versão a manter", "conflict");
+        showConflictPanel(localRecord, serverPayload, "A folha foi alterada noutra sessão");
         return true;
+    };
+
+    const scheduleRetry = () => {
+        window.clearTimeout(retryTimer);
+        const delay = Math.min(MAX_RETRY_DELAY, 1000 * (2 ** retryAttempt));
+        retryAttempt += 1;
+        retryTimer = window.setTimeout(() => runAutosave(), delay);
     };
 
     const runAutosave = async ({ keepalive = false } = {}) => {
         if (autosaveInFlight) {
             autosaveQueued = true;
-            return;
+            return false;
         }
-        if (!dirty || readOnly || !leaseToken || !editing.document_id) {
-            return;
-        }
+        if (!dirty || readOnly || !sessionToken || !editing.document_id) return true;
         if (!navigator.onLine) {
-            setAutosaveStatus("Sem ligação — guardado neste dispositivo", "offline");
-            return;
+            setCommitActionsEnabled(false);
+            setAutosaveStatus("Sem ligação — alterações protegidas neste dispositivo", "offline");
+            scheduleRetry();
+            return false;
         }
 
         autosaveInFlight = true;
@@ -334,10 +336,7 @@ const startEditingCoordinator = () => {
             };
         }
         const requestState = { ...pendingAutosave };
-        setAutosaveStatus(
-            isPrivateSource ? "A guardar na sua área privada…" : "A sincronizar com o servidor…",
-            "saving",
-        );
+        setAutosaveStatus("A guardar no servidor…", "saving");
         try {
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/autosave`, {
                 method: "POST",
@@ -353,58 +352,59 @@ const startEditingCoordinator = () => {
             });
             const result = await response.json();
             if (!response.ok || !result.success) {
-                if (handleConflict(result)) {
-                    return;
-                }
+                if (handleConflict(result)) return false;
                 if ([401, 423].includes(response.status)) {
-                    setFormReadOnly(true, result.editing?.lease?.owner_name);
+                    setFormReadOnly(true, result.editing?.owner?.owner_name);
                 }
-                throw new Error(result.error || "Falha no autosave.");
+                throw new Error(result.error || "Falha ao guardar no servidor.");
             }
+
             editing = { ...editing, ...(result.editing || {}) };
-            leaseToken = result.editing?.lease?.token || leaseToken;
-            if (pendingAutosave?.key === requestState.key) {
-                pendingAutosave = null;
-            }
+            sessionToken = result.editing?.lease?.token || sessionToken;
+            serverPayload = result.editing?.server_document || payload;
+            retryAttempt = 0;
+            window.clearTimeout(retryTimer);
             setCommitActionsEnabled(true);
+            if (pendingAutosave?.key === requestState.key) pendingAutosave = null;
+
             const currentPayload = editor.collectFormData();
-            const currentSerialized = JSON.stringify(currentPayload);
-            if (currentSerialized === requestState.serialized) {
+            if (JSON.stringify(currentPayload) === requestState.serialized) {
                 dirty = false;
                 window.clearTimeout(localSaveTimer);
                 window.clearTimeout(serverSaveTimer);
                 if (payloadHasSignatures(currentPayload)) {
-                    persistLocalRecovery({ force: true });
+                    await persistLocalRecovery({ force: true });
                 } else {
-                    deleteRecovery().catch(() => {});
+                    await deleteRecovery().catch(() => {});
                 }
                 const savedTime = new Date().toLocaleTimeString("pt-PT", {
                     hour: "2-digit",
                     minute: "2-digit",
                 });
-                setAutosaveStatus(
-                    isPrivateSource ? `Rascunho privado guardado às ${savedTime}` : `Sincronizado às ${savedTime}`,
-                    "saved",
-                );
+                setAutosaveStatus(`Guardado no servidor às ${savedTime}`, "saved");
             } else {
                 dirty = true;
                 await persistLocalRecovery();
                 autosaveQueued = true;
-                setAutosaveStatus("Novas alterações por sincronizar…", "saving");
             }
+            return true;
         } catch (error) {
-            if (!navigator.onLine || error instanceof TypeError) {
-                setCommitActionsEnabled(false);
-                setAutosaveStatus("Sem ligação — alterações guardadas neste dispositivo", "offline");
-                return;
-            }
-            setAutosaveStatus("Não foi possível sincronizar — cópia local mantida", "conflict");
+            await persistLocalRecovery({ force: true });
+            setCommitActionsEnabled(false);
+            setAutosaveStatus(
+                navigator.onLine
+                    ? "Servidor indisponível — alterações protegidas neste dispositivo"
+                    : "Sem ligação — alterações protegidas neste dispositivo",
+                "offline",
+            );
+            scheduleRetry();
+            return false;
         } finally {
             autosaveInFlight = false;
-            if (autosaveQueued && dirty && navigator.onLine && !readOnly) {
+            if (autosaveQueued && dirty && !readOnly) {
                 autosaveQueued = false;
                 window.clearTimeout(serverSaveTimer);
-                serverSaveTimer = window.setTimeout(() => runAutosave(), 150);
+                serverSaveTimer = window.setTimeout(() => runAutosave(), 100);
             }
         }
     };
@@ -413,421 +413,159 @@ const startEditingCoordinator = () => {
         window.clearTimeout(localSaveTimer);
         window.clearTimeout(serverSaveTimer);
         localSaveTimer = window.setTimeout(
-            () => persistLocalRecovery({ announce: true }), LOCAL_SAVE_DELAY
+            () => persistLocalRecovery({ announce: true }),
+            LOCAL_SAVE_DELAY,
         );
         serverSaveTimer = window.setTimeout(() => runAutosave(), SERVER_SAVE_DELAY);
     };
 
     const markDirty = () => {
-        if (hydrating || readOnly) {
-            return;
-        }
+        if (hydrating || readOnly || !initialized) return;
         dirty = true;
-        setAutosaveStatus(
-            isPrivateSource ? "A guardar na sua área privada…" : "A guardar neste dispositivo…",
-            "saving",
-        );
+        setAutosaveStatus("A guardar neste dispositivo…", "saving");
         schedulePersistence();
     };
 
-    const showRecovery = (record, source = "device") => {
-        if (!record?.payload) {
-            return;
-        }
-        pendingPanelAction = { kind: "recovery", record, source };
-        recoveryPanel.classList.remove("is-conflict");
-        recoveryPanel.hidden = false;
-        recoveryEyebrow.textContent = "Recuperação automática";
-        recoveryTitle.textContent = "Encontrámos alterações recuperáveis";
-        recoveryMessage.textContent = source === "server"
-            ? "A versão sincronizada no servidor é mais recente do que a folha consolidada no Excel."
-            : "Existem alterações neste dispositivo que ainda não chegaram ao servidor.";
-        const timestamp = Number(record.updatedAt || 0);
-        recoveryTimestamp.textContent = timestamp
-            ? `Última alteração: ${new Date(timestamp).toLocaleString("pt-PT")}`
-            : "";
-        ignoreRecoveryButton.textContent = "Ignorar";
-        restoreRecoveryButton.textContent = "Restaurar";
+    const applyPayload = (payload, signatures = {}, { shouldSave = false } = {}) => {
+        hydrating = true;
+        editor.populateForm(activeFileName, payload || {}, signatures || {});
+        hydrating = false;
+        dirty = Boolean(shouldSave);
     };
 
-    const showStartupRecoveryConflict = (localRecord, serverRecord) => {
-        pendingPanelAction = {
-            kind: "startup-conflict",
-            localRecord,
-            serverRecord,
-        };
-        recoveryPanel.classList.add("is-conflict");
-        recoveryPanel.hidden = false;
-        recoveryEyebrow.textContent = "Duas versões recuperáveis";
-        recoveryTitle.textContent = "Escolha a versão que pretende repor";
-        recoveryMessage.textContent = "A cópia deste dispositivo é diferente da versão sincronizada no servidor.";
-        const localTime = Number(localRecord.updatedAt || 0);
-        const serverTime = Number(serverRecord.updatedAt || 0);
-        const localLabel = localTime ? new Date(localTime).toLocaleString("pt-PT") : "hora desconhecida";
-        const serverLabel = serverTime ? new Date(serverTime).toLocaleString("pt-PT") : "hora desconhecida";
-        recoveryTimestamp.textContent = `Dispositivo: ${localLabel} · Servidor: ${serverLabel}`;
-        ignoreRecoveryButton.textContent = "Usar servidor";
-        restoreRecoveryButton.textContent = "Usar este dispositivo";
-    };
-
-    const showNavigationGuard = (kind, callback) => {
-        persistLocalRecovery();
-        pendingPanelAction = { kind, callback };
-        recoveryPanel.classList.remove("is-conflict");
-        recoveryPanel.hidden = false;
-        recoveryEyebrow.textContent = "Alterações pendentes";
-        recoveryTitle.textContent = kind === "logout"
-            ? "Sair e limpar a recuperação local?"
-            : "Continuar sem consolidar a folha?";
-        recoveryMessage.textContent = kind === "logout"
-            ? "Ao sair, as cópias deste utilizador serão removidas deste dispositivo partilhado."
-            : "A cópia de recuperação fica guardada e será apresentada quando voltar a abrir esta folha.";
-        recoveryTimestamp.textContent = "";
-        ignoreRecoveryButton.textContent = "Ficar";
-        restoreRecoveryButton.textContent = kind === "logout" ? "Sair" : "Continuar";
-        recoveryPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    };
-
-    const hideRecoveryPanel = () => {
-        pendingPanelAction = null;
-        recoveryPanel.hidden = true;
-        recoveryPanel.classList.remove("is-conflict");
-    };
-
-    const setRecoveryActionsDisabled = (disabled) => {
-        if (ignoreRecoveryButton) {
-            ignoreRecoveryButton.disabled = disabled;
-        }
-        if (restoreRecoveryButton) {
-            restoreRecoveryButton.disabled = disabled;
-        }
-    };
-
-    const signaturesFromPayload = (payload) => ({
-        "Assinatura Cliente": payload?.["Assinatura Cliente"] || "",
-        "Assinatura Técnico": payload?.["Assinatura Técnico"] || "",
-    });
-
-    const applyRecovery = async (record, source) => {
-        if (!record?.payload) {
-            return;
-        }
-        setRecoveryActionsDisabled(true);
-        setAutosaveStatus("A repor alterações…", "saving");
-        try {
-            hydrating = true;
-            editor.populateForm(
-                activeFileName,
-                record.payload,
-                signaturesFromPayload(record.payload),
-            );
-            await new Promise((resolve) => window.requestAnimationFrame(resolve));
-            hydrating = false;
-            hideRecoveryPanel();
-
-            if (["server", "synced-device"].includes(source)) {
-                dirty = false;
-                window.clearTimeout(localSaveTimer);
-                window.clearTimeout(serverSaveTimer);
-                if (source === "server") {
-                    deleteRecovery().catch(() => {});
-                }
-                setAutosaveStatus(
-                    isPrivateSource
-                        ? "Rascunho privado recuperado — só este técnico o vê"
-                        : (readOnly || !leaseToken
-                            ? "Alterações recuperadas — modo de consulta"
-                            : "Alterações recuperadas — sincronizadas"),
-                    isPrivateSource ? "saved" : (readOnly || !leaseToken ? "offline" : "saved"),
-                );
-                showToast("Alterações recuperadas automaticamente.", "success");
-                return;
-            }
-
-            dirty = true;
-            await persistLocalRecovery();
-            if (readOnly || !leaseToken) {
-                setAutosaveStatus("Alterações recuperadas — aguardam edição", "offline");
-                showToast("Alterações recuperadas automaticamente.", "success");
-                return;
-            }
-            setAutosaveStatus(
-                isPrivateSource ? "Rascunho privado reposto — a guardar…" : "Alterações repostas — a sincronizar…",
-                "saving",
-            );
-            showToast("Alterações deste dispositivo repostas.", "success");
-            await runAutosave();
-        } finally {
-            hydrating = false;
-            setRecoveryActionsDisabled(false);
-        }
-    };
-
-    const clearLeaseRetry = () => {
-        window.clearTimeout(leaseRetryTimer);
-        leaseRetryTimer = null;
-    };
-
-    const releaseLease = async ({ background = false } = {}) => {
-        if (!leaseToken || !editing.document_id) {
-            return;
-        }
-        const tokenToRelease = leaseToken;
-        leaseToken = "";
-        window.clearInterval(heartbeatTimer);
-        clearLeaseRetry();
-
-        if (background) {
-            const closeDocument = dirty ? {
-                ...editor.collectFormData(),
-                "Assinatura Cliente": "",
-                "Assinatura Técnico": "",
-            } : null;
-            const closePayload = JSON.stringify({
-                document: closeDocument,
-                _edit: {
-                    document_id: editing.document_id,
-                    client_id: clientId,
-                    lease_token: tokenToRelease,
-                    base_revision: Number(editing.revision || 1),
-                    idempotency_key: makeId(),
-                },
-            });
-            const closeUrl = `/api/file/${encodeURIComponent(activeFileName)}/editing/close`;
-            if (navigator.sendBeacon) {
-                const queued = navigator.sendBeacon(
-                    closeUrl,
-                    new Blob([closePayload], { type: "application/json" }),
-                );
-                if (queued) {
-                    return;
-                }
-            }
-            try {
-                await fetch(closeUrl, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: closePayload,
-                    keepalive: true,
-                });
-            } catch (error) {
-                // A reserva curta continua a garantir a libertação de emergência.
-            }
-            return;
-        }
-
-        try {
-            await fetch(`/api/file/${encodeURIComponent(activeFileName)}/lease/release`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    document_id: editing.document_id,
-                    client_id: clientId,
-                    lease_token: tokenToRelease,
-                }),
-                keepalive: true,
-            });
-        } catch (error) {
-            // A reserva curta continua a garantir a libertação de emergência.
-        }
-    };
-
-    const scheduleLeaseRetry = () => {
-        if (leaseToken || !navigator.onLine) {
-            return;
-        }
-        clearLeaseRetry();
-        leaseRetryTimer = window.setTimeout(
-            () => acquireLease({ quiet: true }),
-            LEASE_RETRY_DELAY,
+    const loadBootstrap = async () => {
+        const response = await fetch(
+            `/api/file/${encodeURIComponent(activeFileName)}/bootstrap?client_id=${encodeURIComponent(clientId)}`,
+            { headers: { "Accept": "application/json" } },
         );
-    };
-
-    const startHeartbeat = () => {
-        window.clearInterval(heartbeatTimer);
-        heartbeatTimer = window.setInterval(async () => {
-            if (!leaseToken || document.hidden) {
-                return;
-            }
-            const heartbeatToken = leaseToken;
-            try {
-                const response = await fetch(
-                    `/api/file/${encodeURIComponent(activeFileName)}/lease/heartbeat`,
-                    {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                            document_id: editing.document_id,
-                            client_id: clientId,
-                            lease_token: heartbeatToken,
-                        }),
-                    },
-                );
-                const result = await response.json();
-                if (!response.ok || !result.success) {
-                    leaseToken = "";
-                    editing = { ...editing, ...(result.editing || {}) };
-                    setFormReadOnly(true, result.editing?.lease?.owner_name);
-                    setAutosaveStatus("Em consulta — retoma automática", "offline");
-                    scheduleLeaseRetry();
-                    return;
-                }
-                editing = { ...editing, ...(result.editing || {}) };
-                leaseToken = result.editing?.lease?.token || heartbeatToken;
-                setCommitActionsEnabled(true);
-                if (autosaveStatus?.dataset.state === "offline") {
-                    if (dirty) {
-                        runAutosave();
-                    } else {
-                        setAutosaveStatus("Ligação restabelecida — edição disponível", "saved");
-                    }
-                }
-            } catch (error) {
-                setCommitActionsEnabled(false);
-                setAutosaveStatus("Sem ligação — guardado neste dispositivo", "offline");
-            }
-        }, HEARTBEAT_DELAY);
-    };
-
-    const acquireLease = async ({ quiet = false } = {}) => {
-        if (leaseAcquireInFlight) {
-            return false;
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+            const error = new Error(result.error || "Não foi possível abrir a folha.");
+            error.result = result;
+            error.status = response.status;
+            throw error;
         }
-        leaseAcquireInFlight = true;
+        return result;
+    };
+
+    const initialize = async () => {
+        setBooting(true);
         setFormReadOnly(true);
-        if (!quiet) {
-            setAutosaveStatus("A preparar edição…", "saving");
-        }
+        setAutosaveStatus("A abrir a área de trabalho…", "saving");
+        const localRecoveryPromise = readLatestRecoveryForFile().catch(() => null);
         try {
-            const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/lease`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ client_id: clientId }),
-            });
-            const result = await response.json();
-            if (!response.ok || !result.success) {
-                editing = { ...editing, ...(result.editing || {}) };
-                leaseToken = "";
-                setFormReadOnly(true, result.editing?.lease?.owner_name);
-                setAutosaveStatus("Em consulta — retoma automática", "offline");
-                scheduleLeaseRetry();
-                return false;
+            const result = await loadBootstrap();
+            const localRecovery = await localRecoveryPromise;
+            editing = { ...(result.editing || {}) };
+            sessionToken = result.editing?.lease?.token || "";
+            serverPayload = result.editing?.server_document || result.document || null;
+            sourceSignatures = result.signatures || {};
+            if (selectedFileIsDraft && tabChannel) {
+                tabChannel.postMessage({
+                    type: "hello",
+                    fileName: activeFileName,
+                    userId: editorUser.id,
+                    instanceId: tabInstanceId,
+                });
+                await new Promise((resolve) => window.setTimeout(resolve, 100));
             }
-            editing = { ...editing, ...(result.editing || {}) };
-            leaseToken = result.editing?.lease?.token || "";
-            clearLeaseRetry();
-            setFormReadOnly(false);
-            setCommitActionsEnabled(true);
-            setAutosaveStatus(
-                isPrivateSource ? "Área privada — só este técnico vê as alterações" : "Edição disponível",
-                "saved",
-            );
-            startHeartbeat();
-            if (dirty) {
-                window.setTimeout(() => runAutosave(), 0);
+
+
+            let initialPayload = result.document || result.source_document || {};
+            let initialSignatures = sourceSignatures;
+            let shouldSave = false;
+
+            if (localRecovery?.payload) {
+                const remoteComparable = comparablePayload(initialPayload);
+                const localComparable = comparablePayload(localRecovery.payload);
+                if (remoteComparable === localComparable) {
+                    if (payloadHasSignatures(localRecovery.payload)) {
+                        initialPayload = localRecovery.payload;
+                        initialSignatures = localRecovery.payload;
+                    } else {
+                        deleteRecovery(localRecovery.key).catch(() => {});
+                    }
+                } else if (
+                    result.editing?.server_document
+                    && Number(localRecovery.baseRevision || 1) < Number(editing.revision || 1)
+                ) {
+                    showConflictPanel(localRecovery, initialPayload);
+                } else {
+                    initialPayload = localRecovery.payload;
+                    initialSignatures = localRecovery.payload;
+                    shouldSave = true;
+                }
             }
-            return true;
+
+            applyPayload(initialPayload, initialSignatures, { shouldSave });
+            setFormReadOnly(otherTabActive, otherTabActive ? "outra aba deste técnico" : "");
+            setCommitActionsEnabled(!otherTabActive && navigator.onLine);
+            initialized = true;
+            setBooting(false);
+            if (otherTabActive) {
+                setAutosaveStatus("Modo de consulta — rascunho aberto noutra aba", "conflict");
+            } else if (shouldSave) {
+                setAutosaveStatus("Alterações recuperadas — a guardar no servidor…", "saving");
+                schedulePersistence();
+            } else {
+                setAutosaveStatus(
+                    result.is_draft
+                        ? "Rascunho pronto — guardado no servidor"
+                        : "Área privada pronta — só este técnico vê as alterações",
+                    "saved",
+                );
+            }
+            pruneExpiredRecoveries().catch(() => {});
         } catch (error) {
-            leaseToken = "";
-            setFormReadOnly(false);
-            setCommitActionsEnabled(false);
-            setAutosaveStatus("Sem ligação — edição guardada neste dispositivo", "offline");
-            return false;
-        } finally {
-            leaseAcquireInFlight = false;
+            const result = error.result || {};
+            editing = { ...editing, ...(result.editing || {}) };
+            const localRecovery = await localRecoveryPromise;
+            if (result.document) {
+                applyPayload(result.document, result.signatures || {}, { shouldSave: false });
+            } else if (localRecovery?.payload) {
+                applyPayload(localRecovery.payload, localRecovery.payload, { shouldSave: false });
+            }
+            initialized = true;
+            setBooting(false);
+            if (error.status === 423) {
+                setFormReadOnly(true, result.editing?.owner?.owner_name);
+                setAutosaveStatus("Modo de consulta — rascunho de outro técnico", "conflict");
+            } else {
+                setFormReadOnly(false);
+                setCommitActionsEnabled(false);
+                setAutosaveStatus("Servidor indisponível — pode consultar a cópia local", "offline");
+                showToast(error.message, "error");
+            }
         }
     };
 
     ignoreRecoveryButton?.addEventListener("click", async () => {
         const action = pendingPanelAction;
-        if (!action) {
-            hideRecoveryPanel();
-            return;
-        }
-        if (action.kind === "startup-conflict") {
-            await applyRecovery(action.serverRecord, "server");
-            return;
-        }
-        if (action.kind === "recovery") {
-            setRecoveryActionsDisabled(true);
-            try {
-                await deleteRecovery();
-                await discardServerAutosave();
-                hideRecoveryPanel();
-                setAutosaveStatus("Autosave ignorado", "saved");
-            } catch (error) {
-                showToast(error.message, "error");
-            } finally {
-                setRecoveryActionsDisabled(false);
-            }
-            return;
-        }
+        if (!action) return hideRecoveryPanel();
         if (action.kind === "conflict") {
-            await deleteRecovery();
-            if (action.serverPayload) {
-                hydrating = true;
-                editor.populateForm(activeFileName, action.serverPayload, {});
-                hydrating = false;
-            } else {
-                suppressBeforeUnload = true;
-                window.location.reload();
-                return;
-            }
+            if (action.remotePayload) applyPayload(action.remotePayload, sourceSignatures);
             dirty = false;
+            await deleteRecovery(action.localRecord?.key).catch(() => {});
             hideRecoveryPanel();
             setAutosaveStatus("Versão do servidor carregada", "saved");
-            return;
         }
-        hideRecoveryPanel();
     });
 
     restoreRecoveryButton?.addEventListener("click", async () => {
         const action = pendingPanelAction;
-        if (!action) {
+        if (!action) return hideRecoveryPanel();
+        if (action.kind === "conflict" && action.localRecord?.payload) {
+            applyPayload(action.localRecord.payload, action.localRecord.payload, { shouldSave: true });
             hideRecoveryPanel();
-            return;
+            await persistLocalRecovery({ force: true });
+            await runAutosave();
         }
-        if (action.kind === "startup-conflict") {
-            await applyRecovery(action.localRecord, "device");
-            return;
-        }
-        if (action.kind === "recovery") {
-            await applyRecovery(action.record, action.source);
-            return;
-        }
-        if (action.kind === "conflict") {
-            editing = { ...editing, revision: Number(editing.revision || 1) };
-            dirty = true;
-            hideRecoveryPanel();
-            schedulePersistence();
-            showToast("A sua cópia foi mantida e será sincronizada como nova revisão.", "info");
-            return;
-        }
-        if (["navigate", "reload", "logout"].includes(action.kind)) {
-            if (action.kind === "logout") {
-                await clearUserRecoveries();
-            } else {
-                await persistLocalRecovery();
-            }
-            await releaseLease();
-            suppressBeforeUnload = true;
-            const callback = action.callback;
-            hideRecoveryPanel();
-            callback?.();
-        }
-    });
-
-    retryLeaseButton?.addEventListener("click", () => {
-        clearLeaseRetry();
-        acquireLease({ quiet: false });
     });
 
     form.addEventListener("input", markDirty, true);
     form.addEventListener("change", markDirty, true);
     form.addEventListener("pointerup", (event) => {
-        if (event.target.closest?.(".signature-canvas")) {
-            window.setTimeout(markDirty, 0);
-        }
+        if (event.target.closest?.(".signature-canvas")) window.setTimeout(markDirty, 0);
     }, true);
     form.addEventListener("click", (event) => {
         if (event.target.closest?.("[data-row-remove], #btn-add-material, #btn-add-technician, [data-duration-reset], [data-signature-clear]")) {
@@ -835,12 +573,45 @@ const startEditingCoordinator = () => {
         }
     }, true);
 
+    const releaseSession = async ({ background = false } = {}) => {
+        if (!sessionToken || !editing.document_id) return;
+        const token = sessionToken;
+        sessionToken = "";
+        const payload = JSON.stringify({
+            document: dirty ? {
+                ...editor.collectFormData(),
+                "Assinatura Cliente": "",
+                "Assinatura Técnico": "",
+            } : null,
+            _edit: {
+                ...editMetadata(makeId()),
+                lease_token: token,
+            },
+        });
+        const url = `/api/file/${encodeURIComponent(activeFileName)}/editing/close`;
+        if (background && navigator.sendBeacon) {
+            if (navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }))) return;
+        }
+        try {
+            await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: payload,
+                keepalive: background,
+            });
+        } catch (error) {
+            // The IndexedDB copy remains the recovery source.
+        }
+    };
+
     const leavePage = async (callback) => {
+        window.clearTimeout(localSaveTimer);
+        window.clearTimeout(serverSaveTimer);
         if (dirty) {
-            await persistLocalRecovery();
+            await persistLocalRecovery({ force: true });
             await runAutosave({ keepalive: true });
         }
-        await releaseLease();
+        await releaseSession();
         suppressBeforeUnload = true;
         callback?.();
     };
@@ -850,216 +621,132 @@ const startEditingCoordinator = () => {
         if (link && link.dataset.name !== activeFileName) {
             event.preventDefault();
             event.stopImmediatePropagation();
-            const navigate = () => {
-                window.location.href = link.href;
-            };
-            leavePage(navigate);
+            leavePage(() => { window.location.href = link.href; });
             return;
         }
-
-        const reloadButton = event.target.closest?.("#btn-refresh, #btn-cancel-edit");
-        if (!reloadButton) {
-            return;
+        const reloadButton = event.target.closest?.("#btn-cancel-edit");
+        if (reloadButton) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            leavePage(() => window.location.reload());
         }
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        const reload = () => window.location.reload();
-        leavePage(reload);
     }, true);
 
     logoutForm?.addEventListener("submit", (event) => {
-        if (suppressBeforeUnload) {
-            return;
-        }
+        if (suppressBeforeUnload) return;
         event.preventDefault();
-        const submitLogout = () => logoutForm.submit();
-        if (dirty) {
-            showNavigationGuard("logout", submitLogout);
-            return;
-        }
-        clearUserRecoveries()
-            .then(() => releaseLease())
-            .finally(() => {
-                suppressBeforeUnload = true;
-                submitLogout();
-            });
+        leavePage(() => logoutForm.submit());
     });
 
     const releaseOnPageExit = () => {
+        if (tabChannel && !otherTabActive) {
+            tabChannel.postMessage({
+                type: "closing",
+                fileName: activeFileName,
+                userId: editorUser.id,
+                instanceId: tabInstanceId,
+            });
+        }
         window.clearTimeout(localSaveTimer);
         window.clearTimeout(serverSaveTimer);
-        window.clearInterval(heartbeatTimer);
-        clearLeaseRetry();
-        if (dirty) {
-            persistLocalRecovery();
-        }
-        releaseLease({ background: true });
+        window.clearTimeout(retryTimer);
+        if (dirty) persistLocalRecovery({ force: true });
+        releaseSession({ background: true });
     };
 
     window.addEventListener("pagehide", releaseOnPageExit);
     window.addEventListener("beforeunload", releaseOnPageExit);
     document.addEventListener("freeze", releaseOnPageExit);
-
-    document.addEventListener("visibilitychange", async () => {
-        if (document.hidden) {
-            if (dirty) {
-                persistLocalRecovery();
-            }
-            setFormReadOnly(true);
-            releaseLease({ background: true });
-            return;
-        }
-        const acquired = await acquireLease({ quiet: false });
-        if (acquired && dirty) {
-            runAutosave();
-        }
+    document.addEventListener("visibilitychange", () => {
+        if (document.hidden && dirty) persistLocalRecovery({ force: true });
     });
-
     window.addEventListener("offline", () => {
         setCommitActionsEnabled(false);
-        if (dirty) {
-            setAutosaveStatus("Sem ligação — guardado neste dispositivo", "offline");
-        }
+        if (dirty) setAutosaveStatus("Sem ligação — alterações protegidas neste dispositivo", "offline");
     });
-    window.addEventListener("online", async () => {
-        const acquired = await acquireLease({ quiet: false });
-        if (acquired && dirty) {
-            runAutosave();
-        }
+    window.addEventListener("online", () => {
+        retryAttempt = 0;
+        setCommitActionsEnabled(!readOnly && !otherTabActive);
+        if (dirty && !readOnly && !otherTabActive) runAutosave();
     });
+
+    let tabChannel = null;
+    if (selectedFileIsDraft && "BroadcastChannel" in window) {
+        tabChannel = new BroadcastChannel("sensorpoint-editing-v2");
+        tabChannel.onmessage = (event) => {
+            const message = event.data || {};
+            if (
+                message.fileName !== activeFileName
+                || message.userId !== editorUser.id
+                || message.instanceId === tabInstanceId
+            ) return;
+            if (message.type === "hello" && sessionToken && !otherTabActive) {
+                tabChannel.postMessage({
+                    type: "active",
+                    fileName: activeFileName,
+                    userId: editorUser.id,
+                    instanceId: tabInstanceId,
+                });
+            }
+            if (message.type === "active") {
+                otherTabActive = true;
+                setFormReadOnly(true, "outra aba deste técnico");
+                setAutosaveStatus("Modo de consulta — rascunho aberto noutra aba", "conflict");
+            }
+            if (message.type === "closing" && otherTabActive && sessionToken) {
+                otherTabActive = false;
+                setFormReadOnly(false);
+                setCommitActionsEnabled(navigator.onLine);
+                setAutosaveStatus("Rascunho pronto — esta aba pode editar", "saved");
+                if (dirty && navigator.onLine) runAutosave();
+            }
+        };
+    }
 
     window.__EDITING_COORDINATOR__ = {
         operationMetadata(kind) {
-            if (!operationKeys.has(kind)) {
-                operationKeys.set(kind, makeId());
-            }
+            if (!operationKeys.has(kind)) operationKeys.set(kind, makeId());
             return editMetadata(operationKeys.get(kind));
         },
         async markCommitted(result, kind) {
-            const committedRecoveryKey = recoveryKey();
+            const committedKey = recoveryKey();
             editing = { ...editing, ...result };
             operationKeys.delete(kind);
             dirty = false;
             pendingAutosave = null;
             window.clearTimeout(localSaveTimer);
             window.clearTimeout(serverSaveTimer);
-            await deleteRecovery(committedRecoveryKey);
-            setAutosaveStatus("Alterações consolidadas", "saved");
-            if (["send", "cancel"].includes(kind) || result.created_copy) {
-                leaseToken = "";
+            await deleteRecovery(committedKey).catch(() => {});
+            if (result.publication_status === "pending") {
+                setAutosaveStatus("Guardado no servidor — publicação no SharePoint pendente", "saving");
+            } else {
+                setAutosaveStatus("Alterações consolidadas", "saved");
             }
+            if (["send", "cancel"].includes(kind) || result.created_copy) sessionToken = "";
         },
         handleConflict,
         markDirty,
         isDirty: () => dirty,
     };
 
-    const comparableRecovery = (payload) => {
-        const withoutSignatures = { ...(payload || {}) };
-        delete withoutSignatures["Assinatura Cliente"];
-        delete withoutSignatures["Assinatura Técnico"];
-        const sortValue = (value) => {
-            if (Array.isArray(value)) {
-                return value.map(sortValue);
-            }
-            if (value && typeof value === "object") {
-                return Object.keys(value).sort().reduce((sorted, key) => {
-                    sorted[key] = sortValue(value[key]);
-                    return sorted;
-                }, {});
-            }
-            return value;
-        };
-        return JSON.stringify(sortValue(withoutSignatures));
-    };
-
-    const readRecoveryWithoutBlocking = async () => {
-        try {
-            return await Promise.race([
-                readRecovery(),
-                new Promise((resolve) => window.setTimeout(
-                    () => resolve(null), RECOVERY_READ_TIMEOUT
-                )),
-            ]);
-        } catch (error) {
-            return null;
-        }
-    };
-
-    const initialize = async () => {
-        await acquireLease();
-        const localRecovery = await readRecoveryWithoutBlocking();
-        pruneExpiredRecoveries().catch(() => {});
-        const serverRecovery = editing.server_document ? {
-            payload: editing.server_document,
-            updatedAt: Number(editing.autosaved_at || 0) * 1000,
-            baseRevision: Number(editing.revision || 1),
-        } : null;
-
-        if (localRecovery?.payload && serverRecovery?.payload) {
-            const localComparable = comparableRecovery(localRecovery.payload);
-            const serverComparable = comparableRecovery(serverRecovery.payload);
-            if (localComparable === serverComparable) {
-                const source = payloadHasSignatures(localRecovery.payload)
-                    ? "synced-device"
-                    : "server";
-                const record = source === "synced-device" ? localRecovery : serverRecovery;
-                await applyRecovery(record, source);
-                return;
-            }
-            if (Number(localRecovery.baseRevision || 1) < Number(serverRecovery.baseRevision || 1)) {
-                showStartupRecoveryConflict(localRecovery, serverRecovery);
-                return;
-            }
-            const localIsNewer = Number(localRecovery.updatedAt || 0) >= Number(serverRecovery.updatedAt || 0);
-            await applyRecovery(
-                localIsNewer ? localRecovery : serverRecovery,
-                localIsNewer ? "device" : "server",
-            );
-            return;
-        }
-        if (localRecovery?.payload) {
-            await applyRecovery(localRecovery, "device");
-            return;
-        }
-        if (serverRecovery?.payload) {
-            await applyRecovery(serverRecovery, "server");
-        }
-    };
-
-    initialize().catch(() => {
-        setFormReadOnly(false);
-        setCommitActionsEnabled(false);
-        setAutosaveStatus("Edição local disponível — sincronização pendente", "offline");
-    });
+    initialize();
     return true;
 };
 
 const bootEditingCoordinator = () => {
-    if (startEditingCoordinator()) {
-        return;
-    }
-    const status = document.getElementById("autosave-status");
     let attempts = 0;
     let retryTimer = null;
     const retry = () => {
         attempts += 1;
         if (startEditingCoordinator()) {
             window.clearInterval(retryTimer);
-            document.removeEventListener("files-editor-ready", retry);
             return;
         }
-        if (attempts >= 40) {
-            window.clearInterval(retryTimer);
-            if (status) {
-                status.hidden = false;
-                status.textContent = "Não foi possível iniciar a edição";
-                status.dataset.state = "conflict";
-            }
-        }
+        if (attempts > 100) window.clearInterval(retryTimer);
     };
-    document.addEventListener("files-editor-ready", retry);
+    retry();
     retryTimer = window.setInterval(retry, 100);
+    document.addEventListener("files-editor-ready", retry);
 };
 
 if (document.readyState === "loading") {

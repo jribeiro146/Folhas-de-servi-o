@@ -214,11 +214,7 @@ class GraphStorageService:
     def assert_active_entry_current(self, local_source_path: Path) -> dict[str, Any]:
         """Verify that the cached active item still has the Graph eTag that was read."""
         self.validate_config()
-        source_name = (
-            local_source_path.parent.name
-            if self._is_local_bundle_file(local_source_path)
-            else local_source_path.name
-        )
+        source_name = self.active_source_name(local_source_path)
         remote_path = self._join_graph_path(self.config.active_path, source_name)
         item = self._get_item_by_path(remote_path)
         if not item:
@@ -231,19 +227,37 @@ class GraphStorageService:
             )
         return item
 
+    @staticmethod
+    def active_source_name(local_source_path: Path) -> str:
+        """Return the stable Graph child name before the local bundle is moved."""
+        return (
+            local_source_path.parent.name
+            if GraphStorageService._is_local_bundle_file(local_source_path)
+            else local_source_path.name
+        )
+
+    def active_source_etag(self, local_source_path: Path) -> str | None:
+        return self._active_source_etag(local_source_path)
+
     def remove_active_entry(
         self,
         local_source_path: Path,
         *,
         expected_etag: str | None = None,
     ) -> bool:
-        """Remove the finalized source from the Graph active folder."""
-        self.validate_config()
-        source_name = (
-            local_source_path.parent.name
-            if self._is_local_bundle_file(local_source_path)
-            else local_source_path.name
+        return self.remove_active_name(
+            self.active_source_name(local_source_path),
+            expected_etag=expected_etag,
         )
+
+    def remove_active_name(
+        self,
+        source_name: str,
+        *,
+        expected_etag: str | None = None,
+    ) -> bool:
+        """Remove an active Graph child using its pre-archive name."""
+        self.validate_config()
         remote_path = self._join_graph_path(self.config.active_path, source_name)
         item = self._get_item_by_path(remote_path)
         if item:

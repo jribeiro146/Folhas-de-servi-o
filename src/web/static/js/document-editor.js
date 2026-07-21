@@ -1279,7 +1279,43 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
 
-    refreshBtn?.addEventListener("click", () => window.location.reload());
+    const refreshFileList = async () => {
+        if (!refreshBtn || refreshBtn.disabled) return;
+        refreshBtn.disabled = true;
+        showToast("A atualizar a lista em segundo plano…", "info");
+        try {
+            const response = await fetch("/api/files?refresh=1", {
+                headers: { "Accept": "application/json" },
+            });
+            const result = await response.json();
+            if (!response.ok || !result.success) {
+                throw new Error(result.error || "N??o foi poss??vel atualizar a lista.");
+            }
+            if (result.refresh) {
+                let refresh = result.refresh;
+                for (let attempt = 0; refresh?.in_progress && attempt < 40; attempt += 1) {
+                    await new Promise((resolve) => window.setTimeout(resolve, 500));
+                    const statusResponse = await fetch("/api/graph/status", {
+                        headers: { "Accept": "application/json" },
+                    });
+                    const statusResult = await statusResponse.json();
+                    refresh = statusResult.refresh;
+                }
+                if (refresh?.last_error) throw new Error(refresh.last_error);
+            }
+            if (activeFileName) {
+                showToast("Lista atualizada. A edição atual foi mantida.", "success");
+            } else {
+                window.location.reload();
+            }
+        } catch (error) {
+            showToast(error.message, "error");
+        } finally {
+            refreshBtn.disabled = false;
+        }
+    };
+
+    refreshBtn?.addEventListener("click", refreshFileList);
     toggleSidebarBtn?.addEventListener("click", () => {
         setSidebarOpen(!sidebar?.classList.contains("is-open"));
     });
@@ -1467,7 +1503,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initializeSignaturePads();
     resetActiveState();
 
-    if (selectedFileName && selectedDocumentData) {
+    if (!filesApp.bootstrapEnabled && selectedFileName && selectedDocumentData) {
         populateForm(selectedFileName, selectedDocumentData, selectedSignatures);
     } else if (selectedFileError) {
         setStatusMessage(selectedFileError);

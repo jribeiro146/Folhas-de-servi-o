@@ -1,4 +1,4 @@
-const BUILD_VERSION = "20260714-private-drafts";
+const BUILD_VERSION = "20260721-sync-v2";
 const CACHE_PREFIX = "sensorpoint-service-static-";
 const CACHE_NAME = `${CACHE_PREFIX}${BUILD_VERSION}`;
 const VERSION_QUERY = `?v=${encodeURIComponent(BUILD_VERSION)}`;
