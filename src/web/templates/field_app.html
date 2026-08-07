@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="pt">
 <head>
     <meta charset="UTF-8">
@@ -166,6 +166,13 @@
                 </div>
             </header>
 
+            {% if mail_test_recipient %}
+            <section class="mail-test-banner" role="status" data-mail-test-recipient="{{ mail_test_recipient }}">
+                <strong>MODO DE TESTE</strong>
+                <span>O email indicado na ficha não será utilizado. Todos os envios vão para {{ mail_test_recipient }}.</span>
+            </section>
+            {% endif %}
+
             <section id="confirm-panel" class="confirm-panel" hidden aria-live="polite">
                 <div class="confirm-panel-copy">
                     <p class="eyebrow" id="confirm-eyebrow">Confirmar ação</p>
@@ -276,8 +283,8 @@
                                 <input id="nif-number" type="text" data-field="nif_number" data-mirror-field="vat_number" inputmode="numeric" maxlength="32">
                             </div>
                             <div class="form-field">
-                                <label for="customer-email">E-mail</label>
-                                <input id="customer-email" type="email" data-field="customer_email">
+                                <label for="customer-email">E-mail do cliente{% if mail_enabled %} *{% endif %}{% if mail_test_recipient %} (não utilizado no teste){% endif %}</label>
+                                <input id="customer-email" type="email" data-field="customer_email"{% if mail_enabled %} required{% endif %}>
                             </div>
                             <div class="form-field">
                                 <label for="customer-phone" data-i18n="phone">Telefone</label>
@@ -305,6 +312,24 @@
                             <div class="form-field">
                                 <label for="local-store" data-i18n="local_store">Local / loja</label>
                                 <input id="local-store" type="text" data-field="local_store">
+                            </div>
+                            <div class="form-field">
+                                <span id="work-number-label" data-i18n="work_number">N.º de obra</span>
+                                <input id="work-number" type="hidden" data-field="work_number">
+                                <a
+                                    id="work-number-link"
+                                    class="btn btn-primary work-number-link"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    role="link"
+                                    aria-label="Número de obra indisponível"
+                                    aria-describedby="work-number-help"
+                                    aria-disabled="true"
+                                    tabindex="-1"
+                                >----</a>
+                                <small id="work-number-help" class="work-number-help" data-i18n="work_number_unavailable">
+                                    Número de obra indisponível ou inválido.
+                                </small>
                             </div>
                             <div class="form-field">
                                 <label for="contract-number" data-i18n="contract">Contrato</label>
@@ -445,6 +470,33 @@
                         </div>
                     </section>
 
+                    <section class="group-card section-card photos-section" id="photos-section">
+                        <div class="section-header section-header-split">
+                            <div>
+                                <p class="eyebrow" data-i18n="photos_eyebrow">Fotografias</p>
+                                <h3 data-i18n="photos_title">Fotografias da intervenção</h3>
+                                <p class="section-note" data-i18n="photos_internal_help">Uso interno: não são incluídas no relatório nem enviadas ao cliente.</p>
+                            </div>
+                            <button id="btn-add-photos" class="btn btn-secondary" type="button" data-i18n="add_photos">Adicionar fotografias</button>
+                        </div>
+                        <input
+                            id="photos-input"
+                            class="photos-input"
+                            hidden
+                            aria-hidden="true"
+                            tabindex="-1"
+                            type="file"
+                            accept="image/*,.heic,.heif,.avif,.dng,.tif,.tiff,.bmp"
+                            multiple
+                        >
+                        <div id="photos-empty" class="photos-empty" data-i18n="no_photos">Ainda não foram adicionadas fotografias.</div>
+                        <div id="photos-list" class="photos-grid" aria-live="polite" hidden></div>
+                        <p class="photos-limit">
+                            <span id="photos-count">0</span>
+                            <span data-i18n="photos_limits">fotografias · 10 MB por ficheiro · 50 MB no total</span>
+                        </p>
+                    </section>
+
                     <section class="group-card section-card signature-group">
                         <div class="section-header">
                             <div>
@@ -471,11 +523,25 @@
                                     <span class="absence-notice-icon" aria-hidden="true">✓</span>
                                     <span data-i18n="signature_waived">Assinatura dispensada por ausência do cliente.</span>
                                 </div>
-                                <div class="form-field signature-date">
-                                    <label for="customer-signature-date" data-i18n="customer_signature_date">Cliente - data</label>
-                                    <input id="customer-signature-date" type="date" data-field="customer_signature_date">
-                                </div>
                                 <div id="signature-client-capture" class="signature-capture">
+                                    <div class="signature-details">
+                                        <div class="form-field">
+                                            <label for="customer-signer-name" data-i18n="customer_signer_name">Primeiro e último nome</label>
+                                            <input
+                                                id="customer-signer-name"
+                                                type="text"
+                                                data-field="customer_signer_name"
+                                                data-i18n-placeholder="customer_signer_name_placeholder"
+                                                placeholder="Nome completo"
+                                                autocomplete="name"
+                                                maxlength="120"
+                                            >
+                                        </div>
+                                        <div class="form-field signature-date">
+                                            <label for="customer-signature-date" data-i18n="customer_signature_date">Cliente - data</label>
+                                            <input id="customer-signature-date" type="date" data-field="customer_signature_date">
+                                        </div>
+                                    </div>
                                     <canvas
                                         id="signature-client-canvas"
                                         class="signature-canvas"
@@ -550,6 +616,9 @@
     <script>
         window.__FILES_APP__ = {
             bootstrapEnabled: true,
+            mailEnabled: {{ mail_enabled | tojson }},
+            mailTestRecipient: {{ mail_test_recipient | tojson }},
+            teamsEnabled: {{ teams_enabled | tojson }},
             requiredFields: {{ document_required_fields | tojson }},
             serviceTypeOptions: {{ service_type_options | tojson }},
             equipmentOptions: {{ equipment_options | tojson }},

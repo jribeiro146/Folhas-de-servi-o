@@ -15,6 +15,7 @@ import time
 from src.config import EXCEL_ARQUIVADAS_DIR, EXCEL_CANCELADAS_DIR
 from src.services.document_artifact_service import DocumentArtifactService
 from src.services.document_data_service import DocumentDataService
+from src.services.photo_attachment_service import PhotoAttachmentService
 from src.services.signature_service import SignatureService
 
 
@@ -138,6 +139,7 @@ class ArchiveService:
         DocumentArtifactService(source).copy_to(destination)
         DocumentDataService(source).copy_to(destination)
         SignatureService(source).copy_to(destination)
+        PhotoAttachmentService(source).copy_to(destination)
 
     def _cleanup_source_file(self, file_path: Path) -> None:
         try:

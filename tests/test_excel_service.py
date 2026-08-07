@@ -128,6 +128,33 @@ def create_shifted_link_file():
     return Path(tmp.name)
 
 
+def create_work_number_link_file(header, value, position):
+    """Cria um LINK mínimo com a coluna da obra numa posição variável."""
+    import openpyxl
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+    tmp.close()
+
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.title = "LINK"
+    workbook.create_sheet("FS")
+
+    headers = ["Folha nº", "Email", "Cliente nome", "Local", "NIF"]
+    headers.insert(position, header)
+    for column_index, current_header in enumerate(headers, start=1):
+        worksheet.cell(row=2, column=column_index, value=current_header)
+        worksheet.cell(
+            row=3,
+            column=column_index,
+            value=value if column_index == position + 1 else "fixture",
+        )
+
+    workbook.save(tmp.name)
+    workbook.close()
+    return Path(tmp.name)
+
+
 class TestExcelServiceValidation:
     """Testes de validação do ficheiro Excel."""
 
@@ -210,6 +237,68 @@ class TestExcelServiceRead:
             assert form_data["Avaria reportada"] == "Corrigir as ligações"
             assert "Fim" not in form_data
             assert "Data serviço" not in form_data
+        finally:
+            test_file.unlink(missing_ok=True)
+
+    @pytest.mark.parametrize(
+        ("header", "position"),
+        [
+            ("N.º de obra", 0),
+            ("Nº Obra", 2),
+            ("Nº de Obra", 3),
+            ("N.º obra", 4),
+            ("Número de obra", 5),
+        ],
+    )
+    def test_read_work_number_alias_in_variable_column(self, header, position):
+        from src.document_schema import document_from_excel_and_extra
+        from src.services.excel_service import ExcelService
+
+        test_file = create_work_number_link_file(header, 22, position)
+        try:
+            form_data = ExcelService(test_file).read_link_as_form_data()
+            document = document_from_excel_and_extra(form_data, {})
+
+            assert form_data["N.º de obra"] == 22
+            assert document["work_number"] == "0022"
+        finally:
+            test_file.unlink(missing_ok=True)
+
+    def test_missing_work_number_header_returns_empty_value(self):
+        from src.services.excel_service import ExcelService
+
+        assert ExcelService(SAMPLE_FILE).read_link_as_form_data()["N.º de obra"] == ""
+
+    def test_read_work_number_from_column_ah_preserves_shifted_postal_code(self):
+        import openpyxl
+
+        from src.services.excel_service import ExcelService
+
+        test_file = get_test_copy()
+        try:
+            workbook = openpyxl.load_workbook(test_file)
+            worksheet = workbook["LINK"]
+            worksheet.insert_cols(34)
+            worksheet.cell(row=2, column=34, value="Nº Obra")
+            worksheet.cell(row=3, column=34, value=22)
+            workbook.save(test_file)
+            workbook.close()
+
+            form_data = ExcelService(test_file).read_link_as_form_data()
+
+            assert form_data["N.º de obra"] == 22
+            assert form_data["Cód. Postal"] == "1998-018 Lisboa"
+        finally:
+            test_file.unlink(missing_ok=True)
+
+    def test_work_number_is_read_only(self):
+        from src.services.excel_service import ExcelService
+
+        test_file = create_work_number_link_file("N.º de obra", "0022", 3)
+        try:
+            service = ExcelService(test_file)
+            service.write_link_from_form({"N.º de obra": "0036"})
+            assert service.read_link_as_form_data()["N.º de obra"] == "0022"
         finally:
             test_file.unlink(missing_ok=True)
 

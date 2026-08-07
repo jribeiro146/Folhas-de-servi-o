@@ -1,10 +1,91 @@
+import pytest
+
 from src.document_schema import (
     EQUIPMENT_OPTIONS,
+    TECHNICIAN_OPTIONS,
     document_from_excel_and_extra,
     document_invalid_fields,
     document_to_excel_form,
+    get_technician_initials,
     normalize_document_payload,
+    normalize_work_number,
 )
+
+
+def test_technician_options_use_luis_california():
+    assert "Luís Califórnia" in TECHNICIAN_OPTIONS
+    assert "José Califórnia" not in TECHNICIAN_OPTIONS
+
+
+@pytest.mark.parametrize(
+    ("technician", "expected_initials"),
+    [
+        ("Armando Correia", "ARC"),
+        ("Artur Carvalho", "AC"),
+    ],
+)
+def test_technician_initials_distinguish_armando_from_artur(
+    technician,
+    expected_initials,
+):
+    assert get_technician_initials(technician) == expected_initials
+
+
+def test_normalize_document_payload_keeps_customer_signer_name():
+    document = normalize_document_payload(
+        {
+            "customer_signer_name": "Maria Santos",
+            "customer_signature_date": "2026-08-06",
+        }
+    )
+
+    assert document["customer_signer_name"] == "Maria Santos"
+    assert document["customer_signature_date"] == "2026-08-06"
+
+
+def test_legacy_work_number_is_persisted_without_excel_mapping():
+    document = document_from_excel_and_extra({}, {"work_number": "42"})
+    excel_form = document_to_excel_form(document)
+
+    assert document["work_number"] == "0042"
+    assert "N.º de obra" not in excel_form
+
+
+@pytest.mark.parametrize("value", [22, 22.0, "22", "0022"])
+def test_normalize_work_number_uses_exactly_four_digits(value):
+    assert normalize_work_number(value) == "0022"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, "", "22A", "12345", "٠٠٢٢", -22, -22.0, "-22", 1.5, True],
+)
+def test_normalize_work_number_rejects_invalid_values(value):
+    assert normalize_work_number(value) == ""
+
+
+def test_excel_work_number_has_priority_over_legacy_json():
+    document = document_from_excel_and_extra(
+        {"N.º de obra": 22},
+        {"work_number": "0036"},
+    )
+    assert document["work_number"] == "0022"
+
+
+def test_legacy_json_is_used_when_excel_work_number_is_empty():
+    document = document_from_excel_and_extra(
+        {"N.º de obra": ""},
+        {"work_number": "36"},
+    )
+    assert document["work_number"] == "0036"
+
+
+def test_invalid_non_empty_excel_work_number_disables_legacy_link():
+    document = document_from_excel_and_extra(
+        {"N.º de obra": "OBRA 22"},
+        {"work_number": "0036"},
+    )
+    assert document["work_number"] == ""
 
 
 def test_normalize_document_payload_keeps_four_technicians():

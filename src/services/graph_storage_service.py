@@ -23,6 +23,7 @@ from src.config import (
     GRAPH_DRIVE_ID,
     GRAPH_TENANT_ID,
 )
+from src.services.photo_attachment_service import PHOTO_FOLDER_NAME, PhotoAttachmentService
 
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
@@ -152,6 +153,55 @@ class GraphStorageService:
         )
         return list(response.get("value") or [])
 
+    def list_folder_children(self, folder_path: str) -> list[dict[str, Any]]:
+        """Lista todos os filhos diretos de uma pasta, incluindo todas as páginas Graph."""
+        self.validate_config()
+        normalized_path = str(folder_path or "").strip().strip("/")
+        if not normalized_path:
+            raise GraphStorageError("O caminho da pasta SharePoint não está configurado.")
+
+        folder_item = self._graph_json(
+            "GET",
+            (
+                f"/drives/{self.config.drive_id}/root:/"
+                f"{self._quote_path(normalized_path)}"
+                ":?$select=id,name,folder"
+            ),
+        )
+        if not folder_item.get("id") or not isinstance(folder_item.get("folder"), dict):
+            raise GraphStorageError("O caminho configurado não corresponde a uma pasta SharePoint.")
+
+        next_url: str | None = (
+            f"{GRAPH_ROOT}/drives/{self.config.drive_id}/items/"
+            f"{parse.quote(str(folder_item['id']), safe='')}"
+            "/children?$select=id,name,webUrl,folder&$top=200"
+        )
+        children: list[dict[str, Any]] = []
+
+        while next_url:
+            parsed_next = parse.urlsplit(next_url)
+            parsed_root = parse.urlsplit(GRAPH_ROOT)
+            if (
+                parsed_next.scheme != "https"
+                or parsed_next.netloc.casefold() != parsed_root.netloc.casefold()
+                or not parsed_next.path.startswith(f"{parsed_root.path}/")
+            ):
+                raise GraphStorageError("O Microsoft Graph devolveu uma paginação inválida.")
+
+            response = self._request_json(
+                next_url,
+                method="GET",
+                headers={"Accept": "application/json"},
+            )
+            page = response.get("value") or []
+            if not isinstance(page, list):
+                raise GraphStorageError("O Microsoft Graph devolveu uma listagem inválida.")
+            children.extend(item for item in page if isinstance(item, dict))
+            next_link = response.get("@odata.nextLink")
+            next_url = str(next_link) if next_link else None
+
+        return children
+
     def download_item(self, item_id: str, destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         content = self._graph_bytes("GET", f"/drives/{self.config.drive_id}/items/{item_id}/content")
@@ -182,7 +232,53 @@ class GraphStorageService:
             self._write_item_meta(self._item_meta_path(local_file), item)
             uploaded.append(remote_path)
 
+        uploaded.extend(
+            self._upload_photo_folder(archived_excel_path.parent, remote_folder)
+        )
         return uploaded
+
+    def export_archive_pdf(self, archived_excel_path: Path) -> tuple[Path, str]:
+        """Converte o Excel remoto em PDF e guarda/publica o artefacto final."""
+        self.validate_config()
+        if not archived_excel_path.exists():
+            raise GraphStorageError(f"Ficheiro arquivado não encontrado: {archived_excel_path}")
+
+        archive_folder = self._join_graph_path(
+            self.config.archive_path,
+            archived_excel_path.parent.name,
+        )
+        remote_excel = self._join_graph_path(archive_folder, archived_excel_path.name)
+        pdf_bytes = self._graph_bytes(
+            "GET",
+            (
+                f"/drives/{self.config.drive_id}/root:/"
+                f"{self._quote_path(remote_excel)}:/content?format=pdf"
+            ),
+        )
+        if not pdf_bytes.startswith(b"%PDF-"):
+            raise GraphStorageError("O Microsoft Graph não devolveu um PDF válido para a folha.")
+
+        pdf_path = archived_excel_path.with_name(
+            f"{archived_excel_path.stem}__folha_final.pdf"
+        )
+        temp_path = pdf_path.with_name(f".{pdf_path.name}.{secrets.token_hex(6)}.tmp")
+        try:
+            temp_path.write_bytes(pdf_bytes)
+            os.replace(str(temp_path), str(pdf_path))
+        finally:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+
+        remote_pdf = self._join_graph_path(archive_folder, pdf_path.name)
+        item = self.upload_file(
+            pdf_path,
+            remote_pdf,
+            expected_etag=self._expected_etag(pdf_path),
+        )
+        self._write_item_meta(self._item_meta_path(pdf_path), item)
+        return pdf_path, remote_pdf
 
     def upload_active_bundle(self, draft_excel_path: Path, *, fail_if_exists: bool = False) -> list[str]:
         """Upload or update a draft bundle in the Graph active folder."""
@@ -206,6 +302,9 @@ class GraphStorageService:
             self._write_item_meta(self._item_meta_path(local_file), item)
             uploaded.append(remote_path)
 
+        uploaded.extend(
+            self._upload_photo_folder(bundle_dir, remote_folder, prune=True)
+        )
         folder_item = self._get_item_by_path(remote_folder) or {"name": bundle_dir.name}
         folder_item["remote_path"] = remote_folder
         self._write_bundle_meta(bundle_dir, folder_item)
@@ -361,6 +460,12 @@ class GraphStorageService:
         downloaded_excel: Path | None = None
 
         for child in children:
+            if (
+                child.get("folder")
+                and str(child.get("name") or "").casefold() == PHOTO_FOLDER_NAME.casefold()
+            ):
+                self._sync_photo_folder(child, local_dir)
+                continue
             if not child.get("file"):
                 continue
 
@@ -464,8 +569,7 @@ class GraphStorageService:
 
         req = request.Request(url, data=data, headers=request_headers, method=method)
         try:
-            with request.urlopen(req, timeout=60) as response:
-                return response.read()
+            return self._open_request_with_retry(req, method)
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             if exc.code in {409, 412}:
@@ -474,6 +578,30 @@ class GraphStorageService:
             raise GraphStorageError(f"Microsoft Graph HTTP {exc.code}: {detail}") from exc
         except error.URLError as exc:
             raise GraphStorageError(f"Microsoft Graph indisponível: {exc}") from exc
+
+    @staticmethod
+    def _open_request_with_retry(req: request.Request, method: str) -> bytes:
+        attempts = 2 if method.upper() == "GET" else 1
+
+        for attempt in range(attempts):
+            try:
+                with request.urlopen(req, timeout=60) as response:
+                    return response.read()
+            except error.HTTPError as exc:
+                if exc.code not in {429, 503} or attempt + 1 >= attempts:
+                    raise
+
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                try:
+                    delay_seconds = float(retry_after) if retry_after is not None else 1.0
+                except (TypeError, ValueError):
+                    delay_seconds = 1.0
+                finally:
+                    exc.close()
+
+                time.sleep(max(0.0, min(delay_seconds, 5.0)))
+
+        raise GraphStorageError("Microsoft Graph indisponível após nova tentativa.")
 
     def _path_exists(self, graph_path: str) -> bool:
         return self._get_item_by_path(graph_path) is not None
@@ -757,3 +885,90 @@ class GraphStorageService:
     @staticmethod
     def _quote_path(path: str) -> str:
         return parse.quote(path.strip("/"), safe="/")
+
+    def _upload_photo_folder(
+        self,
+        bundle_dir: Path,
+        remote_bundle: str,
+        *,
+        prune: bool = False,
+    ) -> list[str]:
+        local_directory = bundle_dir / PHOTO_FOLDER_NAME
+        remote_directory = self._join_graph_path(remote_bundle, PHOTO_FOLDER_NAME)
+        local_files = (
+            [
+                path for path in self._iter_uploadable_files(local_directory)
+                if PhotoAttachmentService.is_managed_filename(path.name)
+            ]
+            if local_directory.exists()
+            else []
+        )
+
+        remote_item = self._get_item_by_path(remote_directory)
+        if local_files and remote_item is None:
+            self.ensure_folder_path(remote_directory)
+            remote_item = self._get_item_by_path(remote_directory)
+
+        uploaded: list[str] = []
+        for local_file in local_files:
+            remote_path = self._join_graph_path(remote_directory, local_file.name)
+            item = self.upload_file(
+                local_file,
+                remote_path,
+                expected_etag=self._expected_etag(local_file),
+            )
+            self._write_item_meta(self._item_meta_path(local_file), item)
+            uploaded.append(remote_path)
+
+        if prune and remote_item is not None:
+            local_names = {path.name for path in local_files}
+            for child in self._list_children(str(remote_item["id"])):
+                child_name = str(child.get("name") or "")
+                if (
+                    child.get("file")
+                    and PhotoAttachmentService.is_managed_filename(child_name)
+                    and child_name not in local_names
+                ):
+                    self._delete_item_by_id(
+                        str(child["id"]),
+                        expected_etag=str(child.get("eTag") or "") or None,
+                    )
+
+        return uploaded
+
+    def _sync_photo_folder(
+        self,
+        folder_item: dict[str, Any],
+        local_bundle_dir: Path,
+    ) -> None:
+        local_directory = local_bundle_dir / PHOTO_FOLDER_NAME
+        local_directory.mkdir(parents=True, exist_ok=True)
+        remote_names: set[str] = set()
+
+        for child in self._list_children(str(folder_item["id"])):
+            child_name = self._safe_file_name(str(child.get("name") or ""))
+            if (
+                not child.get("file")
+                or not PhotoAttachmentService.is_managed_filename(child_name)
+            ):
+                continue
+
+            remote_names.add(child_name)
+            local_path = local_directory / child_name
+            meta_path = self._item_meta_path(local_path)
+            if not self._is_cache_current(local_path, meta_path, child):
+                self.download_item(str(child["id"]), local_path)
+                self._write_item_meta(meta_path, child)
+
+        for local_path in list(local_directory.iterdir()):
+            if not PhotoAttachmentService.is_managed_filename(local_path.name):
+                continue
+            meta_path = self._item_meta_path(local_path)
+            if local_path.name not in remote_names and meta_path.exists():
+                self._remove_local_path(local_path)
+                self._remove_local_path(meta_path)
+
+        for meta_path in list(local_directory.glob("*.graph.json")):
+            owner = self._metadata_owner_path(meta_path)
+            if owner is None or not owner.exists():
+                self._remove_local_path(meta_path)

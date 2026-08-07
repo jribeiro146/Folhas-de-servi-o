@@ -78,6 +78,7 @@ const startEditingCoordinator = () => {
     let pendingPanelAction = null;
     let serverPayload = null;
     let sourceSignatures = {};
+    let sourcePhotos = [];
     let otherTabActive = false;
     const operationKeys = new Map();
 
@@ -119,6 +120,7 @@ const startEditingCoordinator = () => {
             }
             control.disabled = readOnly || control.dataset.editingInitialDisabled === "true";
         });
+        editor.renderAttachments?.();
         if (lockBanner) lockBanner.hidden = !readOnly;
         if (retryButton) retryButton.hidden = true;
         if (readOnly) {
@@ -369,7 +371,8 @@ const startEditingCoordinator = () => {
 
             const currentPayload = editor.collectFormData();
             if (JSON.stringify(currentPayload) === requestState.serialized) {
-                dirty = false;
+                const attachmentsPending = Boolean(editor.hasPendingPhotoChanges?.());
+                dirty = attachmentsPending;
                 window.clearTimeout(localSaveTimer);
                 window.clearTimeout(serverSaveTimer);
                 if (payloadHasSignatures(currentPayload)) {
@@ -377,11 +380,15 @@ const startEditingCoordinator = () => {
                 } else {
                     await deleteRecovery().catch(() => {});
                 }
-                const savedTime = new Date().toLocaleTimeString("pt-PT", {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                });
-                setAutosaveStatus(`Guardado no servidor às ${savedTime}`, "saved");
+                if (attachmentsPending) {
+                    setAutosaveStatus("Fotografias por guardar — use Guardar rascunho", "saving");
+                } else {
+                    const savedTime = new Date().toLocaleTimeString("pt-PT", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                    });
+                    setAutosaveStatus(`Guardado no servidor às ${savedTime}`, "saved");
+                }
             } else {
                 dirty = true;
                 await persistLocalRecovery();
@@ -419,16 +426,23 @@ const startEditingCoordinator = () => {
         serverSaveTimer = window.setTimeout(() => runAutosave(), SERVER_SAVE_DELAY);
     };
 
-    const markDirty = () => {
+    const markDirty = (event = null) => {
+        if (event?.target?.closest?.("#photos-section")) return;
         if (hydrating || readOnly || !initialized) return;
         dirty = true;
         setAutosaveStatus("A guardar neste dispositivo…", "saving");
         schedulePersistence();
     };
 
+    const markAttachmentsDirty = () => {
+        if (hydrating || readOnly || !initialized) return;
+        dirty = true;
+        setAutosaveStatus("Fotografias por guardar — use Guardar rascunho", "saving");
+    };
+
     const applyPayload = (payload, signatures = {}, { shouldSave = false } = {}) => {
         hydrating = true;
-        editor.populateForm(activeFileName, payload || {}, signatures || {});
+        editor.populateForm(activeFileName, payload || {}, signatures || {}, sourcePhotos);
         hydrating = false;
         dirty = Boolean(shouldSave);
     };
@@ -460,6 +474,7 @@ const startEditingCoordinator = () => {
             sessionToken = result.editing?.lease?.token || "";
             serverPayload = result.editing?.server_document || result.document || null;
             sourceSignatures = result.signatures || {};
+            sourcePhotos = result.photos || [];
             if (selectedFileIsDraft && tabChannel) {
                 tabChannel.postMessage({
                     type: "hello",
@@ -521,6 +536,7 @@ const startEditingCoordinator = () => {
             editing = { ...editing, ...(result.editing || {}) };
             const localRecovery = await localRecoveryPromise;
             if (result.document) {
+                sourcePhotos = result.photos || sourcePhotos;
                 applyPayload(result.document, result.signatures || {}, { shouldSave: false });
             } else if (localRecovery?.payload) {
                 applyPayload(localRecovery.payload, localRecovery.payload, { shouldSave: false });
@@ -726,6 +742,7 @@ const startEditingCoordinator = () => {
         },
         handleConflict,
         markDirty,
+        markAttachmentsDirty,
         isDirty: () => dirty,
     };
 

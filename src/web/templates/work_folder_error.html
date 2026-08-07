@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0b4a8b">
+    <title>{{ status_code }} · {{ title }} | Folhas de Serviço</title>
+    <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='img/pwa/icon-192.png', v=asset_version) }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/field-app.css', v=asset_version) }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css', v=asset_version) }}">
+</head>
+<body class="auth-page">
+    <main class="auth-shell">
+        <section class="auth-card" role="alert" aria-labelledby="work-folder-error-title">
+            <img
+                class="auth-logo"
+                src="{{ url_for('static', filename='img/sensorpoint-logo.png', v=asset_version) }}"
+                alt="Sensorpoint"
+            >
+            <p class="eyebrow">Erro {{ status_code }}</p>
+            <h1 id="work-folder-error-title">{{ title }}</h1>
+            <p class="auth-copy">{{ message }}</p>
+            <a
+                class="btn btn-primary auth-submit auth-ms-button"
+                href="{{ url_for('index') }}"
+            >
+                Voltar às folhas de serviço
+            </a>
+        </section>
+    </main>
+</body>
+</html>

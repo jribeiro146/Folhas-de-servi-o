@@ -50,6 +50,13 @@ FIELD_HEADER_ALIASES = {
         "Relatório Técnico da Intervenção",
         "Relatório Técnico da Intervenção | Intervention report",
     ),
+    "N.º de obra": (
+        "Nº Obra",
+        "Nº de Obra",
+        "N.º obra",
+        "Número de obra",
+        "Numero de obra",
+    ),
     "T.Total h (2)": ("T.Total h",),
     "T.Total m (2)": ("T.Total m",),
 }
@@ -62,6 +69,7 @@ FIELD_HEADER_OCCURRENCES = {
 
 LINK_FORM_INPUT_LABELS = {
     "Folha nº",
+    "N.º de obra",
     "Pedido por",
     "Email",
     "Telefone",
@@ -193,6 +201,7 @@ class ExcelService:
         data: dict[str, Any],
         *,
         signatures: dict[str, str | None] | None = None,
+        final: bool = False,
     ) -> None:
         wb = self._load_workbook()
         temp_path = self.file_path.with_name(
@@ -216,6 +225,11 @@ class ExcelService:
 
             if signatures is not None:
                 self._write_fs_signatures(wb[SHEET_TEMPLATE], signatures)
+
+            if final:
+                wb[SHEET_LINK].sheet_state = "hidden"
+                wb[SHEET_TEMPLATE].sheet_state = "visible"
+                wb.active = wb.sheetnames.index(SHEET_TEMPLATE)
 
             wb.save(str(temp_path))
         except PermissionError as exc:
@@ -248,6 +262,7 @@ class ExcelService:
         form_data: dict[str, Any],
         *,
         signatures: dict[str, str | None] | None = None,
+        final: bool = False,
     ) -> None:
         column_data: dict[str, Any] = {}
 
@@ -258,7 +273,7 @@ class ExcelService:
                 value = form_data[field.label]
                 column_data[field.column] = self._format_for_excel(field, value)
 
-        self.write_link(column_data, signatures=signatures)
+        self.write_link(column_data, signatures=signatures, final=final)
 
     def get_folha_numero(self) -> str | None:
         data = self.read_link()

@@ -91,7 +91,9 @@
                         </tr>
                         <tr>
                             <th>{{ "Local / store" if doc_lang == "en" else "Local / loja" }}</th>
-                            <td colspan="3">{{ document.local_store or "-" }}</td>
+                            <td>{{ document.local_store or "-" }}</td>
+                            <th>{{ "Work no." if doc_lang == "en" else "N.º de obra" }}</th>
+                            <td>{{ document.work_number or "-" }}</td>
                             <th>{{ "Store no." if doc_lang == "en" else "Loja n.º" }}</th>
                             <td>{{ document.store_number or "-" }}</td>
                         </tr>
@@ -228,6 +230,15 @@
                     <span>{{ "No signature captured." if doc_lang == "en" else "Sem assinatura recolhida." }}</span>
                     {% endif %}
                 </div>
+                {% if not document.client_not_present %}
+                <div class="signature-meta signature-meta-customer">
+                    <div class="signature-signer-name">
+                        <span>{{ "First and last name" if doc_lang == "en" else "Primeiro e último nome" }}</span>
+                        <strong>{{ document.customer_signer_name or "-" }}</strong>
+                    </div>
+                    <span>{{ "Date" if doc_lang == "en" else "Data" }}: {{ document.customer_signature_date or "-" }}</span>
+                </div>
+                {% endif %}
             </article>
         </section>
     </main>

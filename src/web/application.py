@@ -1,10 +1,12 @@
-﻿"""Aplicação Flask e API da webapp de Folhas de Serviço."""
+"""Aplicação Flask e API da webapp de Folhas de Serviço."""
 
 from __future__ import annotations
 
 import base64
 import datetime as dt
+import json
 import os
+import re
 import secrets
 import traceback
 from pathlib import Path
@@ -14,7 +16,12 @@ from flask import Flask, g, jsonify, redirect, render_template, request, send_fr
 from src.config import (
     APP_DATA_DIR,
     AUTH_PROVIDER,
+    GRAPH_SHAREPOINT_HOSTNAME,
+    GRAPH_WORKS_CACHE_SECONDS,
+    GRAPH_WORKS_PATH,
+    MAIL_ENABLED,
     MICROSOFT_AUTH_REDIRECT_URI,
+    TEAMS_NOTIFICATIONS_ENABLED,
     STORAGE_BACKEND,
 )
 from src.document_schema import (
@@ -46,12 +53,31 @@ from src.services.editing_state_service import (
 )
 from src.services.excel_service import ExcelService, ExcelValidationError
 from src.services.file_service import FileService
+from src.services.graph_mail_service import (
+    GraphMailConfigurationError,
+    GraphMailError,
+    GraphMailService,
+)
 from src.services.graph_storage_service import GraphConflictError, GraphStorageError, GraphStorageService
 from src.services.graph_sync_coordinator import GraphRefreshCoordinator
 from src.services.graph_sync_queue import GraphSyncQueue
+from src.services.local_pdf_service import LocalPdfService
 from src.services.microsoft_auth_service import MicrosoftAuthError, MicrosoftAuthService
+from src.services.photo_attachment_service import PhotoAttachmentError, PhotoAttachmentService
 from src.services.signature_service import CLIENT_SIGNATURE_LABEL, SignatureService
+from src.services.teams_notification_service import (
+    TeamsNotificationConfigurationError,
+    TeamsNotificationError,
+    TeamsNotificationService,
+)
 
+from src.services.work_folder_service import (
+    WorkFolderAmbiguousError,
+    WorkFolderInvalidNumberError,
+    WorkFolderNotFoundError,
+    WorkFolderService,
+    WorkFolderUnsafeUrlError,
+)
 
 ACTIVE_AUTH_PROVIDER = "microsoft" if AUTH_PROVIDER == "microsoft" else "none"
 AUTH_ENABLED = ACTIVE_AUTH_PROVIDER == "microsoft"
@@ -66,10 +92,14 @@ def create_app(
     file_service: FileService | None = None,
     archive_service: ArchiveService | None = None,
     graph_service: GraphStorageService | None = None,
+    mail_service: GraphMailService | None = None,
     microsoft_auth_service: MicrosoftAuthService | None = None,
     editing_state_service: EditingStateService | None = None,
     graph_refresh_coordinator: GraphRefreshCoordinator | None = None,
     graph_sync_queue: GraphSyncQueue | None = None,
+    local_pdf_service: LocalPdfService | None = None,
+    teams_notification_service: TeamsNotificationService | None = None,
+    work_folder_service: WorkFolderService | None = None,
 ) -> Flask:
     """Cria a aplicação Flask com dependências injetáveis para testes."""
     app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -78,12 +108,28 @@ def create_app(
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
+        MAX_CONTENT_LENGTH=64 * 1024 * 1024,
         PERMANENT_SESSION_LIFETIME=dt.timedelta(hours=14),
     )
 
     file_service = file_service or FileService()
     archive_service = archive_service or ArchiveService()
     graph_service = graph_service or (GraphStorageService() if STORAGE_BACKEND == "graph" else None)
+    work_folder_service = work_folder_service or WorkFolderService(
+        graph_service if graph_service is not None else GraphStorageService(),
+        folder_path=GRAPH_WORKS_PATH,
+        allowed_hostname=GRAPH_SHAREPOINT_HOSTNAME,
+        cache_seconds=GRAPH_WORKS_CACHE_SECONDS,
+    )
+    mail_service = mail_service or (GraphMailService() if MAIL_ENABLED else None)
+    teams_notification_service = teams_notification_service or (
+        TeamsNotificationService()
+        if TEAMS_NOTIFICATIONS_ENABLED and mail_service is not None
+        else None
+    )
+    local_pdf_service = local_pdf_service or (
+        LocalPdfService() if mail_service is not None and graph_service is None else None
+    )
     microsoft_auth_service = microsoft_auth_service or (
         MicrosoftAuthService() if ACTIVE_AUTH_PROVIDER == "microsoft" else None
     )
@@ -98,12 +144,19 @@ def create_app(
         if graph_service is not None else None
     )
     graph_sync_queue = graph_sync_queue or (
-        GraphSyncQueue(graph_service, APP_DATA_DIR / "graph-sync.sqlite3")
-        if graph_service is not None else None
+        GraphSyncQueue(
+            graph_service,
+            APP_DATA_DIR / "graph-sync.sqlite3",
+            mail_service=mail_service,
+            local_pdf_service=local_pdf_service,
+            teams_notification_service=teams_notification_service,
+        )
+        if graph_service is not None or mail_service is not None else None
     )
+
     @app.after_request
     def apply_cache_headers(response):
-        if request.path.startswith("/api/") or request.path in {
+        if request.path.startswith(("/api/", "/work-folder/")) or request.path in {
             "/",
             "/login",
             "/service-worker.js",
@@ -123,6 +176,10 @@ def create_app(
 
     def json_error(message: str, status: int = 400):
         return jsonify({"success": False, "error": message}), status
+
+    @app.errorhandler(413)
+    def request_too_large(_error):
+        return json_error("O pedido excede o limite máximo permitido.", 413)
 
     def current_editor_identity() -> EditorIdentity:
         current_user = g.get("current_user")
@@ -391,6 +448,47 @@ def create_app(
         serialized = dict(entry)
         return serialize_payload(serialized)
 
+    def parse_commit_request() -> tuple[dict[str, object], list[object], list[str]]:
+        if request.is_json:
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict) or not payload:
+                raise PhotoAttachmentError("Sem dados")
+            return dict(payload), [], []
+
+        raw_document = str(request.form.get("document") or "").strip()
+        if not raw_document:
+            raise PhotoAttachmentError("Sem dados")
+        try:
+            payload = json.loads(raw_document)
+        except json.JSONDecodeError as exc:
+            raise PhotoAttachmentError("Documento inválido.") from exc
+        if not isinstance(payload, dict) or not payload:
+            raise PhotoAttachmentError("Documento inválido.")
+
+        raw_removed = str(request.form.get("removed_photo_ids") or "[]")
+        try:
+            removed_ids = json.loads(raw_removed)
+        except json.JSONDecodeError as exc:
+            raise PhotoAttachmentError("Lista de fotografias removidas inválida.") from exc
+        if not isinstance(removed_ids, list) or not all(
+            isinstance(value, str) for value in removed_ids
+        ):
+            raise PhotoAttachmentError("Lista de fotografias removidas inválida.")
+
+        return dict(payload), list(request.files.getlist("photos")), removed_ids
+
+    def photos_for_response(path: Path) -> list[dict[str, object]]:
+        photos: list[dict[str, object]] = []
+        for photo in PhotoAttachmentService(path).list():
+            item = dict(photo)
+            item["url"] = url_for(
+                "get_file_photo",
+                name=path.stem,
+                photo_id=str(photo["id"]),
+            )
+            photos.append(item)
+        return photos
+
     def load_editor_state(path):
         excel_form_data = serialize_payload(ExcelService(path).read_link_as_form_data())
         document_data = serialize_payload(
@@ -399,6 +497,12 @@ def create_app(
                 DocumentDataService(path).read(),
             )
         )
+        if not document_data.get("work_number"):
+            app.logger.warning(
+                "Número de obra ausente ou inválido em %s; ligação SharePoint desativada.",
+                Path(path).name,
+            )
+
         signatures = SignatureService(path).read_as_data_urls()
         return excel_form_data, document_data, signatures
 
@@ -477,7 +581,18 @@ def create_app(
             service_type_options=SERVICE_TYPE_OPTIONS,
             equipment_options=EQUIPMENT_OPTIONS,
             technician_options=TECHNICIAN_OPTIONS,
-            document_required_fields=DOCUMENT_REQUIRED_FIELDS,
+            document_required_fields=[
+                *DOCUMENT_REQUIRED_FIELDS,
+                *(
+                    [{"key": "customer_email", "label": "E-mail do cliente"}]
+                    if mail_service is not None else []
+                ),
+            ],
+            mail_enabled=mail_service is not None,
+            mail_test_recipient=(
+                mail_service.config.test_recipient if mail_service is not None else ""
+            ),
+            teams_enabled=teams_notification_service is not None,
             current_user=g.current_user,
             editor_user={
                 "id": editor_identity.id,
@@ -485,6 +600,69 @@ def create_app(
             },
             asset_version=app.config["ASSET_VERSION"],
         )
+
+    def render_work_folder_error(status_code: int, title: str, message: str):
+        return render_template(
+            "work_folder_error.html",
+            status_code=status_code,
+            title=title,
+            message=message,
+            asset_version=app.config["ASSET_VERSION"],
+        ), status_code
+
+    @app.get("/work-folder/<work_number>")
+    def open_work_folder(work_number: str):
+        if not re.fullmatch(r"[0-9]{4}", work_number):
+            return render_work_folder_error(
+                400,
+                "Número de obra inválido",
+                "O número de obra tem de conter exatamente quatro algarismos.",
+            )
+
+        try:
+            folder = work_folder_service.resolve(work_number)
+        except WorkFolderInvalidNumberError:
+            return render_work_folder_error(
+                400,
+                "Número de obra inválido",
+                "O número de obra tem de conter exatamente quatro algarismos.",
+            )
+        except WorkFolderNotFoundError as exc:
+            app.logger.warning("Pasta da obra %s não encontrada: %s", work_number, exc)
+            return render_work_folder_error(
+                404,
+                "Pasta de obra não encontrada",
+                (
+                    f"Não foi encontrada uma pasta com o número {work_number} em "
+                    f"{GRAPH_WORKS_PATH.replace('/', ' / ')}."
+                ),
+            )
+        except WorkFolderAmbiguousError as exc:
+            app.logger.error("Número de obra duplicado no SharePoint: %s", exc)
+            return render_work_folder_error(
+                409,
+                "Número de obra duplicado",
+                (
+                    f"Existe mais de uma pasta para a obra {work_number}. "
+                    "A ligação foi bloqueada para evitar abrir a pasta errada."
+                ),
+            )
+        except WorkFolderUnsafeUrlError as exc:
+            app.logger.error("URL SharePoint rejeitado para a obra %s: %s", work_number, exc)
+            return render_work_folder_error(
+                502,
+                "Destino SharePoint inválido",
+                "O SharePoint devolveu um destino que a aplicação não pode abrir em segurança.",
+            )
+        except GraphStorageError as exc:
+            app.logger.error("Falha Graph ao resolver a obra %s: %s", work_number, exc)
+            return render_work_folder_error(
+                502,
+                "SharePoint temporariamente indisponível",
+                "Não foi possível consultar as pastas de obra. Tente novamente dentro de momentos.",
+            )
+
+        return redirect(folder.web_url, code=302)
 
     @app.route("/manifest.webmanifest")
     def manifest():
@@ -513,7 +691,12 @@ def create_app(
                 "backend": STORAGE_BACKEND,
                 "graph_enabled": False,
                 "refresh": None,
-                "outbox": None,
+                "outbox": graph_sync_queue.summary() if graph_sync_queue else None,
+                "mail": mail_service.status() if mail_service else {"enabled": False},
+                "teams": (
+                    teams_notification_service.status()
+                    if teams_notification_service else {"enabled": False}
+                ),
             })
 
         status = graph_service.status()
@@ -524,6 +707,11 @@ def create_app(
             "graph": status,
             "refresh": graph_refresh_coordinator.status() if graph_refresh_coordinator else None,
             "outbox": graph_sync_queue.summary() if graph_sync_queue else None,
+            "mail": mail_service.status() if mail_service else {"enabled": False},
+            "teams": (
+                teams_notification_service.status()
+                if teams_notification_service else {"enabled": False}
+            ),
         })
 
     @app.route("/api/graph/test")
@@ -581,6 +769,7 @@ def create_app(
                 "source_document": source_document,
                 "document": effective_document,
                 "signatures": signatures,
+                "photos": photos_for_response(path),
                 "recovery_source": "server" if editing.get("server_document") else "source",
                 "editing": editing,
             })
@@ -596,6 +785,7 @@ def create_app(
                 "source_document": source_document,
                 "document": source_document,
                 "signatures": signatures,
+                "photos": photos_for_response(path),
                 "editing": exc.snapshot,
             }), 423
         except EditingStateError as exc:
@@ -628,6 +818,7 @@ def create_app(
                 "data": form_data,
                 "document": document_data,
                 "signatures": signatures,
+                "photos": photos_for_response(path),
                 "editing": editing,
             })
         except ExcelValidationError as exc:
@@ -635,6 +826,22 @@ def create_app(
         except Exception as exc:
             traceback.print_exc()
             return json_error(str(exc), 500)
+    @app.route("/api/file/<name>/photos/<photo_id>")
+    def get_file_photo(name: str, photo_id: str):
+        path = file_service.get_file_by_name(name)
+        if not path:
+            return json_error("Ficheiro não encontrado", 404)
+        photo_path = PhotoAttachmentService(path).resolve(photo_id)
+        if photo_path is None:
+            return json_error("Fotografia não encontrada", 404)
+        return send_from_directory(
+            photo_path.parent,
+            photo_path.name,
+            mimetype=PhotoAttachmentService.content_type_for_path(photo_path),
+            conditional=True,
+            max_age=0,
+        )
+
 
     @app.route("/api/file/<name>/lease", methods=["POST"])
     def acquire_file_lease(name: str):
@@ -808,13 +1015,15 @@ def create_app(
         if not path:
             return json_error("Ficheiro não encontrado", 404)
 
-        received = request.get_json(silent=True)
-        if not received:
-            return json_error("Sem dados", 400)
-
         document_id = ""
         idempotency_key = ""
         try:
+            received, photo_uploads, removed_photo_ids = parse_commit_request()
+            prepared_photos = PhotoAttachmentService.prepare_uploads(photo_uploads)
+            PhotoAttachmentService(path).validate_changes(
+                prepared_photos,
+                removed_photo_ids,
+            )
             data = dict(received)
             metadata = extract_edit_metadata(data, require_idempotency=True)
             document_id = validate_document_identity(path, metadata)
@@ -862,6 +1071,10 @@ def create_app(
             )
             DocumentDataService(draft_path).write(strip_signature_payload(document_data))
             signature_service.save_from_form_data(data)
+            PhotoAttachmentService(draft_path).apply(
+                prepared_photos,
+                removed_photo_ids,
+            )
 
             result_editing = None
             if created_copy:
@@ -876,7 +1089,7 @@ def create_app(
 
             graph_uploaded_files = []
             graph_sync_job = None
-            if graph_sync_queue is not None:
+            if graph_service is not None and graph_sync_queue is not None:
                 graph_sync_job = graph_sync_queue.enqueue(
                     "upload_active",
                     {
@@ -901,12 +1114,19 @@ def create_app(
                     "file": draft_path.stem,
                     "status": "in_progress",
                     "created_copy": created_copy,
+                    "photos": photos_for_response(draft_path),
                     "graph_uploaded_files": graph_uploaded_files,
                     "graph_job_id": graph_sync_job.get("id") if graph_sync_job else None,
-                    "publication_status": "pending" if graph_sync_job else "local",
+                    "publication_status": (
+                        "pending" if graph_service is not None and graph_sync_job else "local"
+                    ),
                 },
             )
             return jsonify(result)
+        except PhotoAttachmentError as exc:
+            if document_id and idempotency_key:
+                editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
+            return json_error(str(exc), 400)
         except EditingStateError as exc:
             return editing_error_response(exc)
         except GraphConflictError as exc:
@@ -930,13 +1150,10 @@ def create_app(
 
     @app.route("/api/file/<name>/send", methods=["POST"])
     def save_and_send(name: str):
-        received = request.get_json(silent=True)
-        if not received:
-            return json_error("Sem dados", 400)
-
         document_id = ""
         idempotency_key = ""
         try:
+            received, photo_uploads, removed_photo_ids = parse_commit_request()
             document_payload = dict(received)
             metadata = extract_edit_metadata(document_payload, require_idempotency=True)
             document_id = str(metadata["document_id"])
@@ -966,9 +1183,28 @@ def create_app(
             document_data = normalize_document_payload(document_payload)
             missing_fields = document_missing_required_fields(document_data)
             invalid_fields = document_invalid_fields(document_data)
+            mail_payload = None
+            teams_payload = None
+            if mail_service is not None:
+                customer_email = str(document_data.get("customer_email") or "").strip()
+                if not customer_email:
+                    missing_fields.append("E-mail do cliente")
+                else:
+                    try:
+                        mail_service.validate_address(
+                            customer_email,
+                            label="e-mail do cliente",
+                        )
+                    except GraphMailError:
+                        invalid_fields.append("E-mail do cliente")
             if document_data.get("client_not_present"):
                 document_payload[CLIENT_SIGNATURE_LABEL] = ""
             validation_path = archived_path or path
+            prepared_photos = PhotoAttachmentService.prepare_uploads(photo_uploads)
+            PhotoAttachmentService(validation_path).validate_changes(
+                prepared_photos,
+                removed_photo_ids,
+            )
             resolved_signatures = SignatureService(validation_path).resolve_from_form_data(
                 document_payload
             )
@@ -989,6 +1225,46 @@ def create_app(
                     "invalid_fields": invalid_fields,
                 }), 400
 
+            if mail_service is not None:
+                if graph_sync_queue is None:
+                    return json_error(
+                        "O envio de e-mail requer o backend Microsoft Graph ativo.",
+                        503,
+                    )
+                current_user = g.get("current_user")
+                technician_email = str(getattr(current_user, "email", "") or "").strip()
+                if not technician_email:
+                    return json_error(
+                        "Não foi possível determinar o e-mail do técnico autenticado.",
+                        400,
+                    )
+                try:
+                    mail_payload = mail_service.prepare_service_email(
+                        customer_email=str(document_data["customer_email"]),
+                        technician_email=technician_email,
+                        customer_name=str(document_data.get("customer_name") or ""),
+                        service_number=str(document_data.get("service_number") or name),
+                        document_language=str(document_data.get("document_language") or "pt"),
+                    )
+                except GraphMailConfigurationError as exc:
+                    return json_error(str(exc), 503)
+                except GraphMailError as exc:
+                    return json_error(str(exc), 400)
+
+                if teams_notification_service is not None:
+                    try:
+                        teams_payload = (
+                            teams_notification_service.prepare_service_sent_notification(
+                                service_number=str(
+                                    document_data.get("service_number") or name
+                                ),
+                            )
+                        )
+                    except TeamsNotificationConfigurationError as exc:
+                        return json_error(str(exc), 503)
+                    except TeamsNotificationError as exc:
+                        return json_error(str(exc), 400)
+
             claim = editing_state_service.claim_operation(
                 document_id=document_id,
                 kind="send",
@@ -1003,6 +1279,11 @@ def create_app(
             operation_context = dict(claim["operation"].get("context") or {})
 
             source_path = Path(str(operation_context.get("source_path") or path))
+            photo_target_path = archived_path or source_path
+            PhotoAttachmentService(photo_target_path).apply(
+                prepared_photos,
+                removed_photo_ids,
+            )
             graph_active_etag = str(operation_context.get("graph_active_etag") or "") or None
             graph_active_source_name = str(operation_context.get("graph_active_source_name") or "")
             if archived_path is None:
@@ -1023,6 +1304,7 @@ def create_app(
             ExcelService(archived_path).write_link_from_form(
                 excel_form_data,
                 signatures=resolved_signatures,
+                final=True,
             )
             DocumentDataService(archived_path).write(strip_signature_payload(document_data))
             SignatureService(archived_path).save_from_form_data(document_payload)
@@ -1040,17 +1322,33 @@ def create_app(
             graph_uploaded_files = []
             graph_removed_active = False
             graph_sync_job = None
-            if graph_sync_queue is not None:
+            if graph_service is not None and graph_sync_queue is not None:
+                graph_job_payload = {
+                    "archived_path": str(archived_path),
+                    "source_path": str(source_path),
+                    "source_name": graph_active_source_name,
+                    "expected_etag": graph_active_etag,
+                }
+                if mail_payload is not None:
+                    graph_job_payload["mail"] = mail_payload
+                if teams_payload is not None:
+                    graph_job_payload["teams"] = teams_payload
                 graph_sync_job = graph_sync_queue.enqueue(
                     "archive_and_remove",
+                    graph_job_payload,
+                    job_id=f"send:{document_id}:{idempotency_key}",
+                )
+            elif mail_payload is not None and graph_sync_queue is not None:
+                graph_sync_job = graph_sync_queue.enqueue(
+                    "archive_and_mail_local",
                     {
                         "archived_path": str(archived_path),
-                        "source_path": str(source_path),
-                        "source_name": graph_active_source_name,
-                        "expected_etag": graph_active_etag,
+                        "mail": mail_payload,
+                        "teams": teams_payload,
                     },
                     job_id=f"send:{document_id}:{idempotency_key}",
                 )
+
             file_service.invalidate_cache()
             result = editing_state_service.commit_operation(
                 document_id=document_id,
@@ -1060,8 +1358,24 @@ def create_app(
                 response={
                     "success": True,
                     "message": (
-                        "Folha finalizada no servidor; publicação no SharePoint pendente."
-                        if graph_sync_job else "Folha finalizada com sucesso."
+                        (
+                            "Folha arquivada; publicação do PDF, envio por e-mail e aviso no Teams pendentes."
+                            if graph_service is not None and teams_payload is not None
+                            else (
+                                "Folha arquivada; geração do PDF, envio por e-mail e aviso no Teams pendentes."
+                                if teams_payload is not None
+                                else (
+                                    "Folha arquivada; publicação do PDF e envio por e-mail pendentes."
+                                    if graph_service is not None
+                                    else "Folha arquivada; geração do PDF e envio por e-mail pendentes."
+                                )
+                            )
+                        )
+                        if graph_sync_job and mail_payload is not None
+                        else (
+                            "Folha finalizada no servidor; publicação no SharePoint pendente."
+                            if graph_sync_job else "Folha finalizada com sucesso."
+                        )
                     ),
                     "archived_excel": archived_path.name,
                     "internal_observations": (
@@ -1070,10 +1384,25 @@ def create_app(
                     "graph_uploaded_files": graph_uploaded_files,
                     "graph_removed_active": graph_removed_active,
                     "graph_job_id": graph_sync_job.get("id") if graph_sync_job else None,
-                    "publication_status": "pending" if graph_sync_job else "local",
+                    "publication_status": (
+                        "pending" if graph_service is not None and graph_sync_job else "local"
+                    ),
+                    "email_status": (
+                        "pending" if mail_payload is not None else "disabled"
+                    ),
+                    "email_recipient": (
+                        mail_payload.get("to") if mail_payload is not None else None
+                    ),
+                    "teams_status": (
+                        "pending" if teams_payload is not None else "disabled"
+                    ),
                 },
             )
             return jsonify(result)
+        except PhotoAttachmentError as exc:
+            if document_id and idempotency_key:
+                editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
+            return json_error(str(exc), 400)
         except EditingStateError as exc:
             return editing_error_response(exc)
         except GraphConflictError as exc:
@@ -1155,7 +1484,7 @@ def create_app(
                 )
             graph_removed_active = False
             graph_sync_job = None
-            if graph_sync_queue is not None:
+            if graph_service is not None and graph_sync_queue is not None:
                 graph_sync_job = graph_sync_queue.enqueue(
                     "remove_active",
                     {
@@ -1180,7 +1509,9 @@ def create_app(
                     "canceled_excel": canceled_path.name,
                     "graph_removed_active": graph_removed_active,
                     "graph_job_id": graph_sync_job.get("id") if graph_sync_job else None,
-                    "publication_status": "pending" if graph_sync_job else "local",
+                    "publication_status": (
+                        "pending" if graph_service is not None and graph_sync_job else "local"
+                    ),
                 },
             )
             return jsonify(result)

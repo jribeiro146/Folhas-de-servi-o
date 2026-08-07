@@ -10,6 +10,26 @@ import sys
 from pathlib import Path
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Lê uma variável booleana sem aceitar silenciosamente valores ambíguos."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().casefold() in {"1", "true", "yes", "sim", "on"}
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    """Lê uma variável inteira e usa o valor seguro por defeito se for inválida."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw.strip())
+    except (TypeError, ValueError):
+        return default
+    return value if value >= minimum else default
+
+
 def _load_env_file() -> None:
     """Carrega um ficheiro .env simples antes de ler a configuração."""
     project_root = Path(__file__).resolve().parent.parent
@@ -99,6 +119,30 @@ MICROSOFT_AUTH_ALLOWED_DOMAINS: list[str] = [
 ]
 
 # ---------------------------------------------------------------------------
+# Envio das folhas finalizadas por Microsoft Graph
+# ---------------------------------------------------------------------------
+
+MAIL_ENABLED: bool = _env_flag("FS_MAIL_ENABLED", False)
+MAIL_SENDER: str = os.environ.get("FS_MAIL_SENDER", "").strip()
+MAIL_TEST_RECIPIENT: str = os.environ.get("FS_MAIL_TEST_RECIPIENT", "").strip()
+GRAPH_MAIL_TENANT_ID: str = (
+    os.environ.get("GRAPH_MAIL_TENANT_ID", "").strip()
+    or os.environ.get("GRAPH_TENANT_ID", "").strip()
+)
+GRAPH_MAIL_CLIENT_ID: str = (
+    os.environ.get("GRAPH_MAIL_CLIENT_ID", "").strip()
+    or os.environ.get("GRAPH_CLIENT_ID", "").strip()
+)
+GRAPH_MAIL_CLIENT_SECRET: str = (
+    os.environ.get("GRAPH_MAIL_CLIENT_SECRET", "").strip()
+    or os.environ.get("GRAPH_CLIENT_SECRET", "").strip()
+)
+
+# O destino (canal ou chat) é escolhido no Workflow do Teams associado ao URL.
+TEAMS_NOTIFICATIONS_ENABLED: bool = _env_flag("FS_TEAMS_NOTIFICATIONS_ENABLED", False)
+TEAMS_WEBHOOK_URL: str = os.environ.get("FS_TEAMS_WEBHOOK_URL", "").strip()
+
+# ---------------------------------------------------------------------------
 # Backend de armazenamento
 # ---------------------------------------------------------------------------
 
@@ -112,6 +156,15 @@ GRAPH_DRIVE_ID: str = os.environ.get("GRAPH_DRIVE_ID", "").strip()
 GRAPH_ACTIVE_PATH: str = os.environ.get("GRAPH_ACTIVE_PATH", "Activas").strip().strip("/")
 GRAPH_ARCHIVE_PATH: str = os.environ.get("GRAPH_ARCHIVE_PATH", "Arquivadas").strip().strip("/")
 GRAPH_CACHE_DIR: Path = Path(os.environ.get("GRAPH_CACHE_DIR", str(APP_DATA_DIR / "graph-cache")))
+GRAPH_WORKS_PATH: str = os.environ.get(
+    "GRAPH_WORKS_PATH",
+    "07-Obras/Obras a realizar",
+).strip().strip("/")
+GRAPH_WORKS_CACHE_SECONDS: int = _env_int("GRAPH_WORKS_CACHE_SECONDS", 300)
+GRAPH_SHAREPOINT_HOSTNAME: str = os.environ.get(
+    "GRAPH_SHAREPOINT_HOSTNAME",
+    GRAPH_SITE_ID.partition(",")[0] or "sensorpointpt.sharepoint.com",
+).strip().lower()
 
 # ---------------------------------------------------------------------------
 # Subpastas do projecto

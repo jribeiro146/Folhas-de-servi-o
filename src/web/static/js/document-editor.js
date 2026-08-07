@@ -4,6 +4,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const filesApp = window.__FILES_APP__ || {};
     const requiredFields = Array.isArray(filesApp.requiredFields) ? filesApp.requiredFields : [];
+    const mailEnabled = Boolean(filesApp.mailEnabled);
+    const mailTestRecipient = String(filesApp.mailTestRecipient || "").trim();
+    const teamsEnabled = Boolean(filesApp.teamsEnabled);
     const selectedFileName = filesApp.selectedFileName || null;
     const selectedFileIsDraft = filesApp.selectedFileIsDraft;
     const selectedDocumentData = filesApp.selectedDocumentData || null;
@@ -45,11 +48,19 @@ document.addEventListener("DOMContentLoaded", () => {
     const btnCancelFile = document.getElementById("btn-cancel-file");
     const btnAddMaterial = document.getElementById("btn-add-material");
     const btnAddTechnician = document.getElementById("btn-add-technician");
+    const btnAddPhotos = document.getElementById("btn-add-photos");
     const languageSelect = document.getElementById("document-language-select");
     const documentLanguageInput = document.getElementById("document-language");
+    const workNumberInput = document.getElementById("work-number");
+    const workNumberLink = document.getElementById("work-number-link");
+    const workNumberHelp = document.getElementById("work-number-help");
 
     const materialsList = document.getElementById("materials-list");
     const techniciansList = document.getElementById("technicians-list");
+    const photosInput = document.getElementById("photos-input");
+    const photosList = document.getElementById("photos-list");
+    const photosEmpty = document.getElementById("photos-empty");
+    const photosCount = document.getElementById("photos-count");
     const materialTemplate = document.getElementById("material-row-template");
     const technicianTemplate = document.getElementById("technician-row-template");
     const materialsSection = document.getElementById("materials-section");
@@ -66,6 +77,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const equipmentInputs = Array.from(form.querySelectorAll('[data-group="equipments"]'));
     let currentLanguage = "pt";
     const MAX_TECHNICIANS = 4;
+    const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+    const MAX_TOTAL_PHOTO_BYTES = 50 * 1024 * 1024;
+    let storedPhotos = [];
+    let pendingPhotos = [];
+    const removedPhotoIds = new Set();
 
     const translations = {
         pt: {
@@ -89,6 +105,9 @@ document.addEventListener("DOMContentLoaded", () => {
             site_data: "Dados da instalação",
             contact: "Contacto",
             local_store: "Local / loja",
+            work_number: "N.º de obra",
+            work_number_unavailable: "Número de obra indisponível ou inválido.",
+            work_number_open: "Abrir pasta da obra {number} no SharePoint",
             contract: "Contrato",
             address: "Morada",
             store_number: "Loja n.º",
@@ -113,6 +132,16 @@ document.addEventListener("DOMContentLoaded", () => {
             technicians_eyebrow: "Técnicos",
             technicians_title: "Registo de técnicos e horas",
             add_technician: "Adicionar técnico",
+            photos_eyebrow: "Fotografias",
+            photos_title: "Fotografias da intervenção",
+            photos_internal_help: "Uso interno: não são incluídas no relatório nem enviadas ao cliente.",
+            add_photos: "Adicionar fotografias",
+            no_photos: "Ainda não foram adicionadas fotografias.",
+            photos_limits: "fotografias · 10 MB por ficheiro · 50 MB no total",
+            photo_label: "Fotografia",
+            remove_photo: "Remover fotografia",
+            photo_too_large: "Cada fotografia pode ter no máximo 10 MB.",
+            photo_total_limit: "As fotografias podem ocupar no máximo 50 MB no total.",
             technician: "Técnico",
             start_time: "Hora Início",
             end_time: "Hora Fim",
@@ -130,6 +159,8 @@ document.addEventListener("DOMContentLoaded", () => {
             client_not_present_help: "A assinatura deixa de ser obrigatória e a exceção fica registada.",
             signature_waived: "Assinatura dispensada por ausência do cliente.",
             signature_help: "Assine no espaço acima com o dedo ou com uma caneta digital.",
+            customer_signer_name: "Primeiro e último nome",
+            customer_signer_name_placeholder: "Primeiro e último nome",
             customer_signature_date: "Cliente - data",
             save_send: "Guardar e enviar",
             cancel_sheet: "Cancelar folha",
@@ -169,6 +200,9 @@ document.addEventListener("DOMContentLoaded", () => {
             site_data: "Site information",
             contact: "Contact",
             local_store: "Local / store",
+            work_number: "Work no.",
+            work_number_unavailable: "Work number unavailable or invalid.",
+            work_number_open: "Open work folder {number} in SharePoint",
             contract: "Contract",
             address: "Address",
             store_number: "Store no.",
@@ -193,6 +227,16 @@ document.addEventListener("DOMContentLoaded", () => {
             technicians_eyebrow: "Technicians",
             technicians_title: "Technician time records",
             add_technician: "Add technician",
+            photos_eyebrow: "Photographs",
+            photos_title: "Intervention photographs",
+            photos_internal_help: "Internal use: they are not included in the report or sent to the customer.",
+            add_photos: "Add photographs",
+            no_photos: "No photographs have been added yet.",
+            photos_limits: "photographs · 10 MB per file · 50 MB total",
+            photo_label: "Photograph",
+            remove_photo: "Remove photograph",
+            photo_too_large: "Each photograph can be up to 10 MB.",
+            photo_total_limit: "Photographs can use up to 50 MB in total.",
             technician: "Technician",
             start_time: "Start time",
             end_time: "End time",
@@ -210,6 +254,8 @@ document.addEventListener("DOMContentLoaded", () => {
             client_not_present_help: "The signature is no longer required and the exception is recorded.",
             signature_waived: "Signature waived because the customer was absent.",
             signature_help: "Sign in the area above using a finger or digital pen.",
+            customer_signer_name: "First and last name",
+            customer_signer_name_placeholder: "First and last name",
             customer_signature_date: "Customer - date",
             save_send: "Save and send",
             cancel_sheet: "Cancel sheet",
@@ -257,6 +303,40 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const normalizeLanguage = (value) => (value === "en" ? "en" : "pt");
 
+    const normalizeWorkNumber = (value) => {
+        const text = String(value ?? "").trim();
+        return /^\d{1,4}$/.test(text) ? text.padStart(4, "0") : "";
+    };
+
+    const renderWorkNumberLink = () => {
+        if (!workNumberInput || !workNumberLink || !workNumberHelp) {
+            return;
+        }
+
+        const number = normalizeWorkNumber(workNumberInput.value);
+        workNumberInput.value = number;
+
+        if (number) {
+            workNumberLink.textContent = number;
+            workNumberLink.href = `/work-folder/${encodeURIComponent(number)}`;
+            workNumberLink.setAttribute("aria-disabled", "false");
+            workNumberLink.setAttribute(
+                "aria-label",
+                t("work_number_open").replace("{number}", number)
+            );
+            workNumberLink.tabIndex = 0;
+            workNumberHelp.hidden = true;
+            return;
+        }
+
+        workNumberLink.textContent = "----";
+        workNumberLink.removeAttribute("href");
+        workNumberLink.setAttribute("aria-disabled", "true");
+        workNumberLink.setAttribute("aria-label", t("work_number_unavailable"));
+        workNumberLink.tabIndex = -1;
+        workNumberHelp.hidden = false;
+    };
+
     const applyLanguage = (language, root = document) => {
         currentLanguage = normalizeLanguage(language);
 
@@ -287,6 +367,10 @@ document.addEventListener("DOMContentLoaded", () => {
             ...root.querySelectorAll('[data-repeat="technician_records"]')
         ];
         durationRows.forEach((row) => updateTechnicianDurationMeta(row));
+        if (root === document) {
+            renderPhotos();
+            renderWorkNumberLink();
+        }
 
         if (activeFileName) {
             const titleKey = selectedFileIsDraft === false
@@ -320,6 +404,7 @@ document.addEventListener("DOMContentLoaded", () => {
         site_contact: "",
         site_phone: "",
         local_store: "",
+        work_number: "",
         contract_number: "",
         address: "",
         store_number: "",
@@ -338,6 +423,7 @@ document.addEventListener("DOMContentLoaded", () => {
             date: ""
         }],
         document_language: "pt",
+        customer_signer_name: "",
         customer_signature_date: "",
         client_not_present: false
     });
@@ -348,6 +434,193 @@ document.addEventListener("DOMContentLoaded", () => {
         toast.textContent = message;
         toastZone.appendChild(toast);
         window.setTimeout(() => toast.remove(), 3500);
+    };
+
+    const formatPhotoSize = (size) => {
+        const bytes = Math.max(Number(size || 0), 0);
+        if (bytes < 1024 * 1024) {
+            return `${Math.max(bytes / 1024, 0.1).toFixed(1)} KB`;
+        }
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    };
+
+    const releasePendingPhotoUrls = () => {
+        pendingPhotos.forEach((photo) => {
+            if (photo.url) {
+                URL.revokeObjectURL(photo.url);
+            }
+        });
+    };
+
+    const visibleStoredPhotos = () => (
+        storedPhotos.filter((photo) => !removedPhotoIds.has(String(photo.id || "")))
+    );
+
+    const hasPendingPhotoChanges = () => (
+        pendingPhotos.length > 0 || removedPhotoIds.size > 0
+    );
+
+    const renderPhotos = () => {
+        if (!photosList || !photosEmpty || !photosCount) {
+            return;
+        }
+
+        const entries = [
+            ...visibleStoredPhotos().map((photo) => ({ kind: "stored", ...photo })),
+            ...pendingPhotos.map((photo) => ({
+                kind: "pending",
+                filename: photo.file.name,
+                content_type: photo.file.type,
+                size: photo.file.size,
+                url: photo.url,
+                key: photo.key
+            }))
+        ];
+        const readOnly = form.classList.contains("is-readonly");
+        photosList.replaceChildren();
+
+        entries.forEach((entry, index) => {
+            const card = document.createElement("article");
+            card.className = "photo-card";
+
+            const preview = document.createElement("div");
+            preview.className = "photo-preview";
+            const fallback = document.createElement("span");
+            fallback.className = "photo-format-fallback";
+            const extension = String(entry.filename || "").split(".").pop() || "IMG";
+            fallback.textContent = extension.toUpperCase();
+            fallback.hidden = Boolean(entry.url);
+
+            if (entry.url) {
+                const image = document.createElement("img");
+                image.src = entry.url;
+                image.alt = `${t("photo_label")} ${index + 1}`;
+                image.loading = "lazy";
+                image.addEventListener("error", () => {
+                    image.hidden = true;
+                    fallback.hidden = false;
+                }, { once: true });
+                preview.appendChild(image);
+            }
+            preview.appendChild(fallback);
+
+            const details = document.createElement("div");
+            details.className = "photo-card-details";
+            const title = document.createElement("strong");
+            title.textContent = `${t("photo_label")} ${index + 1}`;
+            const metadata = document.createElement("small");
+            metadata.textContent = `${extension.toUpperCase()} · ${formatPhotoSize(entry.size)}`;
+            details.append(title, metadata);
+
+            const removeButton = document.createElement("button");
+            removeButton.className = "btn btn-secondary btn-icon photo-remove";
+            removeButton.type = "button";
+            removeButton.textContent = "×";
+            removeButton.title = t("remove_photo");
+            removeButton.setAttribute("aria-label", `${t("remove_photo")} ${index + 1}`);
+            removeButton.disabled = readOnly;
+            removeButton.addEventListener("click", () => {
+                if (entry.kind === "stored") {
+                    removedPhotoIds.add(String(entry.id));
+                } else {
+                    const pendingIndex = pendingPhotos.findIndex(
+                        (photo) => photo.key === entry.key
+                    );
+                    if (pendingIndex >= 0) {
+                        const [removed] = pendingPhotos.splice(pendingIndex, 1);
+                        if (removed.url) {
+                            URL.revokeObjectURL(removed.url);
+                        }
+                    }
+                }
+                renderPhotos();
+                window.__EDITING_COORDINATOR__?.markAttachmentsDirty?.();
+            });
+
+            card.append(preview, details, removeButton);
+            photosList.appendChild(card);
+        });
+
+        photosEmpty.hidden = entries.length > 0;
+        photosList.hidden = entries.length === 0;
+        photosCount.textContent = String(entries.length);
+        if (btnAddPhotos) {
+            btnAddPhotos.disabled = readOnly;
+        }
+    };
+
+    const resetPhotoState = (photos = []) => {
+        releasePendingPhotoUrls();
+        pendingPhotos = [];
+        removedPhotoIds.clear();
+        storedPhotos = Array.isArray(photos)
+            ? photos.filter((photo) => photo && photo.id && photo.url)
+            : [];
+        renderPhotos();
+    };
+
+    const addPhotoFiles = (files) => {
+        const selected = Array.from(files || []).filter((file) => file && file.size > 0);
+        if (!selected.length) {
+            return;
+        }
+
+        const fingerprints = new Set(pendingPhotos.map((photo) => photo.key));
+        let totalBytes = visibleStoredPhotos().reduce(
+            (total, photo) => total + Number(photo.size || 0),
+            0
+        ) + pendingPhotos.reduce((total, photo) => total + photo.file.size, 0);
+        let changed = false;
+
+        for (const file of selected) {
+            if (file.size > MAX_PHOTO_BYTES) {
+                showToast(t("photo_too_large"), "error");
+                continue;
+            }
+            if (totalBytes + file.size > MAX_TOTAL_PHOTO_BYTES) {
+                showToast(t("photo_total_limit"), "error");
+                break;
+            }
+
+            const key = `${file.name}:${file.size}:${file.lastModified}`;
+            if (fingerprints.has(key)) {
+                continue;
+            }
+            fingerprints.add(key);
+            pendingPhotos.push({
+                file,
+                key,
+                url: URL.createObjectURL(file)
+            });
+            totalBytes += file.size;
+            changed = true;
+        }
+
+        if (changed) {
+            renderPhotos();
+            window.__EDITING_COORDINATOR__?.markAttachmentsDirty?.();
+        }
+    };
+
+    const buildCommitRequest = (payload) => {
+        if (!hasPendingPhotoChanges()) {
+            return {
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            };
+        }
+
+        const formData = new FormData();
+        formData.append("document", JSON.stringify(payload));
+        formData.append("removed_photo_ids", JSON.stringify(Array.from(removedPhotoIds)));
+        pendingPhotos.forEach((photo) => {
+            formData.append("photos", photo.file, photo.file.name);
+        });
+        return { body: formData };
+    };
+
+    const commitPhotoState = (photos = []) => {
+        resetPhotoState(Array.isArray(photos) ? photos : []);
     };
 
     const setStatusMessage = (message = "") => {
@@ -588,6 +861,9 @@ document.addEventListener("DOMContentLoaded", () => {
             btnCancelFile,
             btnAddMaterial,
             btnAddTechnician,
+            btnAddPhotos,
+            photosInput,
+            ...form.querySelectorAll(".photo-remove"),
             languageSelect,
             confirmInternalNotes,
             confirmCancel,
@@ -905,7 +1181,7 @@ document.addEventListener("DOMContentLoaded", () => {
         clientPad.canvas.setAttribute("aria-disabled", String(shouldWaive));
     };
 
-    const populateForm = (fileName, documentData, signatures = {}) => {
+    const populateForm = (fileName, documentData, signatures = {}, photos = []) => {
         const safeDocument = { ...createEmptyDocument(), ...(documentData || {}) };
         activeFileName = fileName;
 
@@ -923,6 +1199,7 @@ document.addEventListener("DOMContentLoaded", () => {
         setMaterialsUsed(Boolean(safeDocument.materials_used || hasSavedMaterials));
         renderTechnicians(safeDocument.technician_records);
         applySignatures(signatures);
+        resetPhotoState(photos);
         setClientNotPresent(Boolean(safeDocument.client_not_present), {
             clearSignature: Boolean(safeDocument.client_not_present)
         });
@@ -944,6 +1221,7 @@ document.addEventListener("DOMContentLoaded", () => {
         setMaterialsUsed(false);
         renderTechnicians();
         applySignatures({});
+        resetPhotoState();
         setClientNotPresent(false);
         applyLanguage("pt");
         updateWorkspaceVisibility(false);
@@ -1128,10 +1406,10 @@ document.addEventListener("DOMContentLoaded", () => {
         try {
             const payload = collectFormData();
             payload._edit = window.__EDITING_COORDINATOR__?.operationMetadata("draft") || {};
+            const requestOptions = buildCommitRequest(payload);
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/draft`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload)
+                ...requestOptions
             });
             const result = await response.json();
 
@@ -1140,6 +1418,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 throw new Error(result.error || "Falha ao guardar rascunho.");
             }
 
+            commitPhotoState(result.photos || []);
             await window.__EDITING_COORDINATOR__?.markCommitted(result, "draft");
             const nextFileName = result.file || activeFileName;
             const successMessage = result.created_copy
@@ -1159,14 +1438,20 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const sendFile = async (payload) => {
         hideConfirm();
-        setBusy(true, "A arquivar a folha", "Estamos a mover a folha para Arquivadas.");
+        setBusy(
+            true,
+            "A guardar e enviar",
+            mailEnabled
+                ? "Estamos a arquivar a folha e a preparar o envio por e-mail."
+                : "Estamos a mover a folha para Arquivadas."
+        );
 
         try {
             payload._edit = window.__EDITING_COORDINATOR__?.operationMetadata("send") || {};
+            const requestOptions = buildCommitRequest(payload);
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/send`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload)
+                ...requestOptions
             });
             const result = await response.json();
 
@@ -1180,8 +1465,9 @@ document.addEventListener("DOMContentLoaded", () => {
                 throw new Error((result.error || "Falha ao fechar a folha.") + suffix);
             }
 
+            commitPhotoState();
             await window.__EDITING_COORDINATOR__?.markCommitted(result, "send");
-            showToast("Folha concluída e arquivada com sucesso.", "success");
+            showToast(result.message || "Folha concluída com sucesso.", "success");
             window.setTimeout(() => {
                 window.location.href = "/";
             }, 1200);
@@ -1211,6 +1497,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 throw new Error(result.error || "Falha ao cancelar a folha.");
             }
 
+            commitPhotoState();
             await window.__EDITING_COORDINATOR__?.markCommitted(result, "cancel");
             showToast("Folha cancelada com sucesso.", "success");
             window.setTimeout(() => {
@@ -1321,6 +1608,11 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     sidebarScrim?.addEventListener("click", () => setSidebarOpen(false));
     window.addEventListener("resize", syncMobileNavigation);
+    workNumberLink?.addEventListener("click", (event) => {
+        if (workNumberLink.getAttribute("aria-disabled") === "true") {
+            event.preventDefault();
+        }
+    });
     languageSelect?.addEventListener("change", () => {
         applyLanguage(languageSelect.value);
     });
@@ -1424,6 +1716,25 @@ document.addEventListener("DOMContentLoaded", () => {
         updateTechnicianControls();
     });
 
+    btnAddPhotos?.addEventListener("click", () => {
+        if (!btnAddPhotos.disabled) {
+            photosInput?.click();
+        }
+    });
+
+    photosInput?.addEventListener("change", () => {
+        addPhotoFiles(photosInput.files);
+        photosInput.value = "";
+    });
+
+    window.addEventListener("beforeunload", (event) => {
+        if (!hasPendingPhotoChanges()) {
+            return;
+        }
+        event.preventDefault();
+        event.returnValue = "";
+    });
+
     btnPreviewDocument?.addEventListener("click", async () => {
         await openDocumentPreview(false);
     });
@@ -1464,9 +1775,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
         showConfirm({
             eyebrow: "Finalizar folha",
-            title: "Guardar e arquivar",
-            message: "A folha será guardada e movida para Arquivadas.",
-            confirmLabel: "Guardar e arquivar",
+            title: "Guardar e enviar",
+            message: mailEnabled
+                ? (
+                    mailTestRecipient
+                        ? `MODO DE TESTE: o PDF será enviado para ${mailTestRecipient}. O email do cliente não será utilizado.`
+                        : (
+                            teamsEnabled
+                                ? "A folha será arquivada e enviada em PDF para o e-mail do cliente, com o técnico em CC. Depois será publicado um aviso no Teams."
+                                : "A folha será arquivada e enviada em PDF para o e-mail do cliente, com o técnico em CC."
+                        )
+                )
+                : "A folha será guardada e movida para Arquivadas.",
+            confirmLabel: "Guardar e enviar",
             confirmVariant: "success",
             showInternalNotes: true,
             onAccept: async () => {
@@ -1497,6 +1818,8 @@ document.addEventListener("DOMContentLoaded", () => {
         collectFormData,
         populateForm,
         showToast,
+        hasPendingPhotoChanges,
+        renderAttachments: renderPhotos,
         getActiveFileName: () => activeFileName
     };
 

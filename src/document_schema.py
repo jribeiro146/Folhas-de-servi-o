@@ -49,8 +49,12 @@ TECHNICIAN_OPTIONS = [
     "Luis Henrique",
     "Valdecir Junior",
     "Luis Duarte",
-    "José Califórnia",
+    "Luís Califórnia",
 ]
+
+TECHNICIAN_INITIALS_OVERRIDES = {
+    "armando correia": "ARC",
+}
 
 DOCUMENT_REQUIRED_FIELDS: list[dict[str, str]] = [
     {"key": "customer_name", "label": "Cliente / Customer"},
@@ -70,16 +74,43 @@ DOCUMENT_SIMPLE_FIELDS = (
     "site_contact",
     "site_phone",
     "local_store",
+    "work_number",
     "contract_number",
     "address",
     "store_number",
     "requested_tasks",
     "intervention_report",
+    "customer_signer_name",
     "customer_signature_date",
 )
 
 DOCUMENT_MAX_MATERIALS = 12
 DOCUMENT_MAX_TECHNICIANS = 4
+
+
+def normalize_work_number(value: Any) -> str:
+    """Normaliza números de obra válidos para exatamente quatro dígitos."""
+    if isinstance(value, bool) or value is None:
+        return ""
+
+    if isinstance(value, (int, float, Decimal)):
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return ""
+
+        if not decimal_value.is_finite() or decimal_value != decimal_value.to_integral_value():
+            return ""
+
+        number = int(decimal_value)
+        if not 0 <= number <= 9999:
+            return ""
+        return f"{number:04d}"
+
+    text = _stringify(value)
+    if not re.fullmatch(r"[0-9]{1,4}", text):
+        return ""
+    return text.zfill(4)
 
 
 def create_empty_material() -> dict[str, str]:
@@ -116,6 +147,7 @@ def create_empty_document() -> dict[str, Any]:
         "site_contact": "",
         "site_phone": "",
         "local_store": "",
+        "work_number": "",
         "contract_number": "",
         "address": "",
         "store_number": "",
@@ -126,6 +158,7 @@ def create_empty_document() -> dict[str, Any]:
         "materials_used": False,
         "materials": [create_empty_material()],
         "technician_records": [create_empty_technician_record()],
+        "customer_signer_name": "",
         "customer_signature_date": "",
         "client_not_present": False,
     }
@@ -138,6 +171,7 @@ def normalize_document_payload(payload: dict[str, Any] | None) -> dict[str, Any]
     for key in DOCUMENT_SIMPLE_FIELDS:
         document[key] = _stringify(source.get(key))
 
+    document["work_number"] = normalize_work_number(document["work_number"])
     document["address"] = _normalize_address(document["address"])
 
     if document["document_language"] not in {"pt", "en"}:
@@ -200,6 +234,10 @@ def document_from_excel_and_extra(
     _prefer_excel_value(document, raw_extra, "site_contact", excel.get("Contacto"))
     _prefer_excel_value(document, raw_extra, "site_phone", excel.get("Telefone (2)"))
     _prefer_excel_value(document, raw_extra, "local_store", excel.get("Local"))
+    excel_work_number = excel.get("N.º de obra")
+    if _stringify(excel_work_number):
+        document["work_number"] = normalize_work_number(excel_work_number)
+
     _prefer_excel_value(document, raw_extra, "contract_number", excel.get("Contrato nº"))
     _prefer_excel_value(document, raw_extra, "address", _compose_address(excel))
     _prefer_excel_value(document, raw_extra, "store_number", excel.get("Loja nº"))
@@ -365,6 +403,11 @@ def get_technician_initials(technician_name: str | None) -> str:
         return ""
 
     normalized_name = unicodedata.normalize("NFKD", raw_name).encode("ascii", "ignore").decode("ascii")
+    normalized_key = " ".join(normalized_name.casefold().split())
+    overridden_initials = TECHNICIAN_INITIALS_OVERRIDES.get(normalized_key)
+    if overridden_initials:
+        return overridden_initials
+
     name_parts = [part for part in normalized_name.replace("-", " ").split() if part]
     if not name_parts:
         return ""

@@ -17,6 +17,7 @@ from src.config import EXCEL_ACTIVAS_DIR, EXCEL_EXTENSION
 from src.services.document_artifact_service import DocumentArtifactService
 from src.services.document_data_service import DocumentDataService
 from src.services.excel_service import ExcelFileLockedError, ExcelService, ExcelValidationError
+from src.services.photo_attachment_service import PhotoAttachmentService
 from src.services.signature_service import SignatureService
 
 
@@ -166,6 +167,7 @@ class FileService:
             DocumentArtifactService(file_path).copy_to(draft_path)
             DocumentDataService(file_path).copy_to(draft_path)
             SignatureService(file_path).copy_to(draft_path)
+            PhotoAttachmentService(file_path).copy_to(draft_path)
         except Exception:
             root = self.directory.resolve()
             reserved = draft_dir.resolve()

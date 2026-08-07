@@ -4,6 +4,81 @@ Registo das principais alteracoes por versao da aplicacao Folhas de Servico.
 
 As versoes sem tag formal usam o commit Git como referencia. A versao marcada para servidor continua a ser `v1.0.0-servidor`, salvo indicacao posterior.
 
+## v1.3.0 - Fotografias, entrega digital e número de obra
+
+Data: 2026-08-07
+Commit: incluído nesta versão
+
+### Adicionado
+
+- Área de fotografias entre os técnicos e o fecho, adaptada a telemóvel, tablet e desktop.
+- Suporte para JPEG, PNG, WebP, HEIC/HEIF, AVIF, GIF, BMP, TIFF e DNG, com seleção múltipla e remoção antes do fecho.
+- Leitura do campo `N.º de obra` na folha `LINK`, descobrindo a coluna pelo cabeçalho da linha 2 e lendo o valor da linha 3.
+- Botão do número de obra entre `Local / loja` e `Contrato`, com abertura da pasta correspondente no SharePoint num novo separador.
+- Resolvedor independente do backend de armazenamento para procurar a pasta em `07-Obras/Obras a realizar`, com cache, paginação Graph e correspondência exata pelo prefixo de quatro dígitos.
+- Endpoint autenticado `GET /work-folder/<numero>` para validar o código e redirecionar apenas para URLs HTTPS de `sensorpointpt.sharepoint.com`.
+- Envio da folha final em PDF por Microsoft Graph, com o cliente em Para e o técnico autenticado em CC.
+- Conversão local do HTML final para PDF através de Chrome ou Edge quando o armazenamento é local.
+- Notificação opcional no Teams por Workflow webhook, executada depois de o Graph aceitar o email.
+- Primeiro e último nome de quem assinou e data da assinatura no formulário e no relatório final.
+- Documentação de configuração do envio Graph em `docs/EMAIL_GRAPH_SETUP.md`.
+
+### Alterado
+
+- As fotografias ficam numa subpasta interna `Fotografias` dentro da pasta da folha no SharePoint.
+- Guardar rascunho, finalizar, arquivar e cancelar preservam a subpasta de fotografias.
+- A sincronização Graph passou a tratar subpastas e metadados aninhados, incluindo remoção de fotografias já apagadas localmente.
+- A fila assíncrona passou a encadear arquivo, PDF, email e aviso Teams de forma persistente e repetível.
+- Ao finalizar, o relatório HTML e o PDF são produzidos antes do envio ao cliente.
+- O Excel final abre a folha `FS` e mantém a folha técnica `LINK` oculta.
+- O email do cliente só é obrigatório quando o envio de email está ativo; o modo de teste apresenta um aviso visível.
+- O corpo português do email passou a indicar que a folha segue num único endereço e pode ser reencaminhada internamente.
+- O valor Excel do número de obra tem prioridade; rascunhos antigos continuam compatíveis através do metadado JSON.
+- Valores como `22` são apresentados como `0022`; valores com letras, negativos ou mais de quatro dígitos são rejeitados.
+- `Armando Correia` utiliza a sigla `ARC`; `Artur Carvalho` mantém a sigla `AC`.
+
+### Corrigido
+
+- As fotografias deixam de entrar no JSON do documento, Excel, HTML, PDF, pré-visualização ou email do cliente.
+- Metadados Graph das fotografias mantêm os caminhos relativos durante staging, publicação e recuperação.
+- Rascunhos com fotografias continuam recuperáveis depois de reiniciar ou sincronizar a aplicação.
+- O novo `N.º de obra` mantém-se depois de guardar e reabrir o rascunho.
+- Cabeçalhos `Nº Obra`, `Nº de Obra`, `N.º obra`, `Número de obra` e `Numero de obra` passam a ser reconhecidos em qualquer coluna, incluindo `AH`.
+- A inserção do número de obra em `AH` preserva a leitura de campos deslocados, como o código postal.
+- A pesquisa da pasta segue todas as páginas Graph, atualiza a cache perante uma ausência e recusa códigos duplicados.
+- Pedidos Graph limitados ou temporariamente indisponíveis repetem uma vez, respeitando `Retry-After` com espera limitada.
+- A geração local do PDF deixa de recomendar um perfil temporário dentro do OneDrive, evitando falhas do lock do Chrome.
+- O layout da assinatura acomoda nomes longos sem afetar a data.
+- A lista de técnicos passa a usar `Luís Califórnia`.
+
+### Limites e compatibilidade
+
+- Não existe limite de quantidade; mantém-se o máximo de 10 MB por ficheiro e 50 MB no total.
+- Formatos sem pré-visualização nativa no browser continuam aceites e são guardados normalmente.
+- O número de obra é apenas de leitura: nenhum URL é guardado no Excel e a aplicação não altera o valor de origem.
+- Sem número válido, a interface apresenta `----` e mantém a ligação desativada com indicação acessível.
+- O acesso efetivo à pasta continua sujeito às permissões SharePoint do utilizador.
+
+### Configuração e deploy
+
+- Novas variáveis: `GRAPH_WORKS_PATH`, `GRAPH_WORKS_CACHE_SECONDS`, `GRAPH_SHAREPOINT_HOSTNAME`, `FS_MAIL_ENABLED`, `FS_MAIL_SENDER`, `FS_MAIL_TEST_RECIPIENT`, `GRAPH_MAIL_*`, `FS_PDF_BROWSER_PATH`, `FS_PDF_TEMP_DIR`, `FS_TEAMS_NOTIFICATIONS_ENABLED` e `FS_TEAMS_WEBHOOK_URL`.
+- A aplicação Microsoft Graph usada no envio necessita da permissão de aplicação `Mail.Send` com consentimento de administrador.
+- O webhook Teams deve ser HTTPS e é considerado um segredo de produção.
+- Chrome ou Edge tem de estar disponível no servidor quando a conversão local para PDF estiver ativa.
+- `FS_PDF_TEMP_DIR` deve ficar vazio para usar os temporários do sistema ou apontar para disco local gravável fora do OneDrive.
+- Recomenda-se uma atualização forçada do browser depois do deploy para substituir o service worker e os assets anteriores.
+
+### Validação
+
+- Suite integral: `155 passed` em Python 3.13.
+- Testes de formatos móveis, limites, deduplicação, remoção, arquivo, cancelamento e sincronização da subpasta `Fotografias`.
+- Testes de leitura do número de obra em colunas variáveis, aliases, normalização, paginação, cache, duplicados, validação do domínio e respostas HTTP de erro.
+- Validação em browser real nos formatos desktop, tablet e telemóvel.
+- Teste completo de adicionar fotografia, guardar rascunho, reabrir e recuperar a fotografia.
+- Teste real do botão `0022`, redirecionamento para a pasta SharePoint e abertura num novo separador.
+- Teste real da conversão local para PDF e aceitação de um único email pelo Microsoft Graph, com cancelamento controlado de uma tentativa duplicada.
+- JavaScript validado sintaticamente com `node --check`.
+
 ## v1.2.0 - Sincronizacao transacional e publicacao assincrona
 
 Data: 2026-07-21

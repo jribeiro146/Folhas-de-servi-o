@@ -161,6 +161,15 @@ FIELD_MAP: list[FieldDef] = [
     FieldDef("BP", "Faturado?",          FieldType.TEXT,     FieldGroup.DESCRICAO),
     FieldDef("BQ", "Material que falta", FieldType.MULTILINE, FieldGroup.DESCRICAO),
     FieldDef("BR", "Observações",        FieldType.MULTILINE, FieldGroup.DESCRICAO),
+
+    # --- Obra (posição física descoberta pelo cabeçalho da linha 2) ---
+    FieldDef(
+        "BS",
+        "N.º de obra",
+        FieldType.TEXT,
+        FieldGroup.CONTRATO,
+        read_only=True,
+    ),
 ]
 
 

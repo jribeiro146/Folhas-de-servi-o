@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import openpyxl
@@ -12,6 +13,7 @@ import pytest
 from src.services.archive_service import ArchiveService
 from src.services.editing_state_service import EditingStateService
 from src.services.file_service import FileService
+from src.services.graph_mail_service import GraphMailConfig, GraphMailService
 from src.web.application import create_app
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -85,6 +87,8 @@ def isolated_dirs(monkeypatch):
 
     monkeypatch.setattr(application_module, "ACTIVE_AUTH_PROVIDER", "none")
     monkeypatch.setattr(application_module, "AUTH_ENABLED", False)
+    monkeypatch.setattr(application_module, "MAIL_ENABLED", False)
+    monkeypatch.setattr(application_module, "TEAMS_NOTIFICATIONS_ENABLED", False)
     monkeypatch.setattr(application_module, "STORAGE_BACKEND", "local")
     active_dir = base_dir / "Excel" / "Activas"
     archived_dir = base_dir / "Excel" / "Arquivadas"
@@ -190,6 +194,8 @@ def test_web_api_flow_send_and_cancel(isolated_dirs):
     send_idempotency_key = str(uuid.uuid4())
     send_body = {
         "customer_name": "Cliente Final",
+        "customer_signer_name": "Maria Santos",
+        "customer_signature_date": "2026-04-17",
         "intervention_report": "Fecho",
         "_internal_observations": "Nota interna para consulta da equipa.",
         "technician_records": [
@@ -231,6 +237,9 @@ def test_web_api_flow_send_and_cancel(isolated_dirs):
     html_content = archived_html.read_text(encoding="utf-8")
     assert "<!DOCTYPE html>" in html_content
     assert "Cliente Final" in html_content
+    assert "Primeiro e último nome" in html_content
+    assert "Maria Santos" in html_content
+    assert "2026-04-17" in html_content
     assert "data:image/png;base64," in html_content
     assert "Nota interna para consulta da equipa." not in html_content
     assert "_internal_observations" not in json.loads(document_json.read_text(encoding="utf-8"))
@@ -387,6 +396,32 @@ def test_two_technicians_create_distinct_drafts_from_the_same_source(isolated_di
         reports.add(json.loads(document_path.read_text(encoding="utf-8"))["intervention_report"])
     assert reports == {"Rascunho exclusivo A", "Rascunho exclusivo B"}
 
+
+def test_installation_form_places_work_number_between_store_and_contract(isolated_dirs):
+    app = create_app(
+        file_service=FileService(isolated_dirs["active"]),
+        archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
+    )
+
+    response = app.test_client().get("/")
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    contact_position = html.index('id="site-contact"')
+    phone_position = html.index('id="site-phone"')
+    store_position = html.index('id="local-store"')
+    work_position = html.index('id="work-number"')
+    contract_position = html.index('id="contract-number"')
+    assert contact_position < phone_position < store_position < work_position < contract_position
+    assert 'id="work-number" type="hidden" data-field="work_number"' in html
+    assert 'id="work-number-link"' in html
+    assert 'target="_blank"' in html
+    assert 'rel="noopener noreferrer"' in html
+    assert 'role="link"' in html
+    assert 'aria-disabled="true"' in html
+
+
 def test_document_preview_returns_html(isolated_dirs):
     active_dir = isolated_dirs["active"]
     copy_sample(active_dir, "2026_4572.xlsx")
@@ -403,6 +438,7 @@ def test_document_preview_returns_html(isolated_dirs):
         json={
             "service_number": "2026_4572",
             "customer_name": "Cliente Preview",
+            "work_number": "0042",
             "intervention_report": "Relatório em HTML",
         },
     )
@@ -416,6 +452,8 @@ def test_document_preview_returns_html(isolated_dirs):
     assert "Relatório de Intervenção" in payload["html"]
     assert "Dados do cliente" in payload["html"]
     assert "Dados da instalação" in payload["html"]
+    assert "N.º de obra" in payload["html"]
+    assert "0042" in payload["html"]
     assert "NIF / N.º de IVA" in payload["html"]
     assert "Trabalhos a efetuar" in payload["html"]
     assert "Descrição" in payload["html"]
@@ -557,3 +595,108 @@ def test_web_api_rejects_invalid_manual_total_on_send(isolated_dirs):
     assert response.status_code == 400
     assert payload["success"] is False
     assert payload["invalid_fields"] == ["Total de horas do técnico 1"]
+
+def test_send_queues_customer_email_with_technician_cc_and_teams_notice(
+    isolated_dirs,
+    monkeypatch,
+):
+    import src.web.application as application_module
+
+    monkeypatch.setattr(application_module, "ACTIVE_AUTH_PROVIDER", "microsoft")
+    monkeypatch.setattr(application_module, "AUTH_ENABLED", True)
+    active_dir = isolated_dirs["active"]
+    draft_name = "2026_7001_2026-08-05_JF"
+    copy_sample(active_dir, f"{draft_name}.xlsx")
+
+    class DummyMicrosoftAuth:
+        @staticmethod
+        def user_from_session(payload):
+            if not payload:
+                return None
+            return SimpleNamespace(
+                id=payload["id"],
+                display_name=payload["display_name"],
+                email=payload["email"],
+            )
+
+    class RecordingQueue:
+        def __init__(self):
+            self.calls = []
+
+        def enqueue(self, kind, payload, *, job_id=None):
+            self.calls.append((kind, payload, job_id))
+            return {"id": job_id, "status": "pending"}
+
+    queue = RecordingQueue()
+    mail_service = GraphMailService(
+        GraphMailConfig(
+            tenant_id="tenant",
+            client_id="client",
+            client_secret="secret",
+            sender="service@sensorpoint.pt",
+        )
+    )
+
+    class RecordingTeams:
+        @staticmethod
+        def prepare_service_sent_notification(*, service_number):
+            return {
+                "service_number": service_number,
+                "payload": {"type": "message", "attachments": [{"content": {}}]},
+            }
+
+        @staticmethod
+        def status():
+            return {"enabled": True, "configured": True}
+
+    app = create_app(
+        file_service=FileService(active_dir),
+        archive_service=ArchiveService(),
+        mail_service=mail_service,
+        microsoft_auth_service=DummyMicrosoftAuth(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
+        graph_sync_queue=queue,
+        teams_notification_service=RecordingTeams(),
+    )
+    client = app.test_client()
+    with client.session_transaction() as user_session:
+        user_session["microsoft_user"] = {
+            "id": "technician-id",
+            "display_name": "Técnico Teste",
+            "email": "tecnico@sensorpoint.pt",
+        }
+
+    editing = acquire_editing(client, draft_name, "mail-tab")
+    response = client.post(
+        f"/api/file/{draft_name}/send",
+        json={
+            "service_number": "2026_7001",
+            "customer_name": "Cliente Email",
+            "customer_email": "cliente@example.com",
+            "client_not_present": True,
+            "intervention_report": "Serviço concluído",
+            "technician_records": [{"technician": "João Freire"}],
+            "_edit": edit_metadata(editing, client_id="mail-tab"),
+        },
+    )
+
+    payload = response.get_json()
+    assert response.status_code == 200, payload
+    assert payload["email_status"] == "pending"
+    assert payload["email_recipient"] == "cliente@example.com"
+    assert payload["teams_status"] == "pending"
+    assert len(queue.calls) == 1
+    kind, queued_payload, job_id = queue.calls[0]
+    assert kind == "archive_and_mail_local"
+    assert job_id.startswith("send:")
+    assert queued_payload["mail"]["to"] == "cliente@example.com"
+    assert queued_payload["mail"]["cc"] == ["tecnico@sensorpoint.pt"]
+    assert queued_payload["teams"]["service_number"] == "2026_7001"
+
+    archived_excel = Path(queued_payload["archived_path"])
+    workbook = openpyxl.load_workbook(archived_excel)
+    try:
+        assert workbook["LINK"].sheet_state == "hidden"
+        assert workbook.active.title == "FS"
+    finally:
+        workbook.close()

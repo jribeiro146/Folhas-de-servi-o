@@ -525,6 +525,22 @@ body {
     min-height: 20mm;
 }
 
+.signature-meta-customer {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 2mm;
+}
+
+.signature-signer-name {
+    display: grid;
+    min-width: 0;
+    gap: 0.5mm;
+}
+
+.signature-signer-name strong {
+    overflow-wrap: anywhere;
+}
+
 .signature-meta strong {
     font-size: 10px;
 }

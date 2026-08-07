@@ -13,14 +13,28 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from src.services.graph_mail_service import GraphMailService
 from src.services.graph_storage_service import GraphStorageService
+from src.services.local_pdf_service import LocalPdfService
+from src.services.teams_notification_service import TeamsNotificationService
 
 
 class GraphSyncQueue:
     """Persist Graph work before executing it and retry transient failures."""
 
-    def __init__(self, graph_service: GraphStorageService, database_path: str | Path):
+    def __init__(
+        self,
+        graph_service: GraphStorageService | None,
+        database_path: str | Path,
+        *,
+        mail_service: GraphMailService | None = None,
+        local_pdf_service: LocalPdfService | None = None,
+        teams_notification_service: TeamsNotificationService | None = None,
+    ):
         self.graph_service = graph_service
+        self.mail_service = mail_service
+        self.local_pdf_service = local_pdf_service
+        self.teams_notification_service = teams_notification_service
         self.database_path = Path(database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.asset_root = self.database_path.parent / "graph-sync-assets"
@@ -150,7 +164,13 @@ class GraphSyncQueue:
                 if job is None:
                     return
                 try:
-                    result = self._execute(job["kind"], job["payload"], attempts=job["attempts"])
+                    result = self._execute(
+                        job["kind"],
+                        job["payload"],
+                        attempts=job["attempts"],
+                        job_id=job["id"],
+                        prior_result=job.get("result"),
+                    )
                 except Exception as exc:
                     self._mark_failed(job, str(exc))
                 else:
@@ -223,8 +243,12 @@ class GraphSyncQueue:
         payload: dict[str, Any],
         *,
         attempts: int = 0,
+        job_id: str = "",
+        prior_result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if kind == "upload_active":
+            if self.graph_service is None:
+                raise RuntimeError("O armazenamento Microsoft Graph não está ativo.")
             self._hydrate_staging_metadata(payload)
             uploaded = self.graph_service.upload_active_bundle(
                 Path(payload["draft_path"]),
@@ -233,19 +257,138 @@ class GraphSyncQueue:
             self._publish_staging_metadata(payload)
             return {"uploaded_files": uploaded}
         if kind == "archive_and_remove":
-            uploaded = self.graph_service.upload_archive_bundle(Path(payload["archived_path"]))
+            if self.graph_service is None:
+                raise RuntimeError("O armazenamento Microsoft Graph não está ativo.")
+            archived_path = Path(payload["archived_path"])
+            uploaded = self.graph_service.upload_archive_bundle(archived_path)
+            pdf_path = None
+            mail_payload = payload.get("mail")
+            if mail_payload:
+                if self.mail_service is None:
+                    raise RuntimeError("O serviço de e-mail não está disponível para este trabalho.")
+                pdf_path, remote_pdf = self.graph_service.export_archive_pdf(archived_path)
+                uploaded.append(remote_pdf)
             removed = self.graph_service.remove_active_name(
                 str(payload["source_name"]),
                 expected_etag=payload.get("expected_etag"),
             )
-            return {"uploaded_files": uploaded, "removed_active": removed}
+            mail_result = None
+            if mail_payload and pdf_path is not None:
+                mail_result = self._send_mail_once(
+                    dict(mail_payload),
+                    pdf_path,
+                    job_id=job_id,
+                    prior_result=prior_result,
+                )
+            teams_job = self._enqueue_teams_notification(
+                payload.get("teams"),
+                parent_job_id=job_id,
+            )
+            return {
+                "uploaded_files": uploaded,
+                "removed_active": removed,
+                "mail": mail_result,
+                "teams_job": teams_job,
+            }
+        if kind == "archive_and_mail_local":
+            if self.mail_service is None:
+                raise RuntimeError("O serviço de e-mail não está disponível para este trabalho.")
+            if self.local_pdf_service is None:
+                raise RuntimeError("O conversor local de PDF não está disponível.")
+            archived_path = Path(payload["archived_path"])
+            mail_payload = dict(payload.get("mail") or {})
+            if not mail_payload:
+                raise RuntimeError("Os destinatários do e-mail não foram guardados no trabalho.")
+            pdf_path = self.local_pdf_service.export_archive_pdf(archived_path)
+            mail_result = self._send_mail_once(
+                mail_payload,
+                pdf_path,
+                job_id=job_id,
+                prior_result=prior_result,
+            )
+            teams_job = self._enqueue_teams_notification(
+                payload.get("teams"),
+                parent_job_id=job_id,
+            )
+            return {
+                "uploaded_files": [],
+                "removed_active": False,
+                "local_pdf": str(pdf_path),
+                "mail": mail_result,
+                "teams_job": teams_job,
+            }
+        if kind == "notify_teams":
+            if self.teams_notification_service is None:
+                raise RuntimeError("O serviço de notificações Teams não está disponível.")
+            notification = dict(payload.get("notification") or {})
+            if not notification:
+                raise RuntimeError("A notificação Teams não foi guardada no trabalho.")
+            return self.teams_notification_service.send_prepared(
+                notification,
+                operation_id=job_id,
+            )
         if kind == "remove_active":
+            if self.graph_service is None:
+                raise RuntimeError("O armazenamento Microsoft Graph não está ativo.")
             removed = self.graph_service.remove_active_name(
                 str(payload["source_name"]),
                 expected_etag=payload.get("expected_etag"),
             )
             return {"removed_active": removed}
         raise ValueError(f"Tipo de sincronização desconhecido: {kind}")
+
+    def _send_mail_once(
+        self,
+        mail_payload: dict[str, Any],
+        pdf_path: Path,
+        *,
+        job_id: str,
+        prior_result: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        previous_mail = dict((prior_result or {}).get("mail") or {})
+        if previous_mail.get("accepted"):
+            return previous_mail
+        if self.mail_service is None:
+            raise RuntimeError("O serviço de e-mail não está disponível para este trabalho.")
+        mail_result = self.mail_service.send_prepared(
+            mail_payload,
+            pdf_path,
+            operation_id=job_id,
+        )
+        self._checkpoint_result(job_id, {"mail": mail_result})
+        return mail_result
+
+    def _enqueue_teams_notification(
+        self,
+        notification: Any,
+        *,
+        parent_job_id: str,
+    ) -> dict[str, Any] | None:
+        if not notification:
+            return None
+        if self.teams_notification_service is None:
+            raise RuntimeError("O serviço de notificações Teams não está disponível.")
+        child_id = f"teams:{parent_job_id}"
+        child = self.enqueue(
+            "notify_teams",
+            {"notification": dict(notification)},
+            job_id=child_id,
+        )
+        return {"id": child_id, "status": child.get("status", "pending")}
+
+    def _checkpoint_result(self, job_id: str, partial_result: dict[str, Any]) -> None:
+        now = time.time()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT result_json FROM graph_sync_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            current = json.loads(row["result_json"]) if row and row["result_json"] else {}
+            current.update(partial_result)
+            connection.execute(
+                "UPDATE graph_sync_jobs SET result_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(current, ensure_ascii=False), now, job_id),
+            )
 
     def _mark_complete(self, job: dict[str, Any], result: dict[str, Any]) -> None:
         now = time.time()
@@ -351,7 +494,7 @@ class GraphSyncQueue:
             return []
         return [
             path
-            for path in directory.iterdir()
+            for path in directory.rglob("*")
             if path.is_file()
             and (path.name == ".graph_bundle.json" or path.name.endswith(".graph.json"))
         ]
@@ -365,8 +508,9 @@ class GraphSyncQueue:
         if not original.parent.exists() or not staged.parent.exists():
             return
         for source in self._metadata_files(original.parent):
-            destination = staged.parent / source.name
+            destination = staged.parent / source.relative_to(original.parent)
             if not destination.exists():
+                destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, destination)
 
     def _publish_staging_metadata(self, payload: dict[str, Any]) -> None:
@@ -378,7 +522,8 @@ class GraphSyncQueue:
         if not original.parent.exists() or not staged.parent.exists():
             return
         for source in self._metadata_files(staged.parent):
-            destination = original.parent / source.name
+            destination = original.parent / source.relative_to(staged.parent)
+            destination.parent.mkdir(parents=True, exist_ok=True)
             temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex[:8]}.tmp")
             shutil.copy2(source, temporary)
             os.replace(str(temporary), str(destination))
