@@ -13,7 +13,11 @@ import pytest
 from src.services.archive_service import ArchiveService
 from src.services.editing_state_service import EditingStateService
 from src.services.file_service import FileService
-from src.services.graph_mail_service import GraphMailConfig, GraphMailService
+from src.services.graph_mail_service import (
+    GraphMailConfig,
+    GraphMailConfigurationError,
+    GraphMailService,
+)
 from src.web.application import create_app
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -109,6 +113,19 @@ def isolated_dirs(monkeypatch):
         shutil.rmtree(base_dir, ignore_errors=True)
 
 
+@pytest.mark.parametrize(
+    ("file_name", "expected"),
+    [
+        ("2026_4577", "2026_4577"),
+        ("2026_4577.xlsx", "2026_4577"),
+        ("2026_4577_2026-08-12_LD", "2026_4577"),
+        ("folha_sem_numero.xlsx", ""),
+    ],
+)
+def test_service_number_is_extracted_from_source_and_draft_names(file_name, expected):
+    assert FileService.service_number_from_name(file_name) == expected
+
+
 def test_archive_service_moves_to_archived(isolated_dirs):
     source = copy_sample(isolated_dirs["active"], "sample.xlsx")
     service = ArchiveService()
@@ -118,6 +135,24 @@ def test_archive_service_moves_to_archived(isolated_dirs):
     assert archived.exists()
     assert archived.parent == isolated_dirs["archived"] / "sample"
     assert not source.exists()
+
+
+def test_editor_prefers_service_number_from_filename_over_stale_excel(isolated_dirs):
+    active_dir = isolated_dirs["active"]
+    copy_sample(active_dir, "2026_4577.xlsx")
+    app = create_app(
+        file_service=FileService(active_dir),
+        archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
+    )
+    client = app.test_client()
+
+    response = client.get("/api/file/2026_4577")
+    payload = response.get_json()
+
+    assert response.status_code == 200, payload
+    assert payload["data"]["Folha nº"] == "2026_4577"
+    assert payload["document"]["service_number"] == "2026_4577"
 
 
 def test_web_api_flow_send_and_cancel(isolated_dirs):
@@ -436,7 +471,7 @@ def test_document_preview_returns_html(isolated_dirs):
     response = client.post(
         "/api/file/2026_4572/document-preview",
         json={
-            "service_number": "2026_4572",
+            "service_number": "2023/3021",
             "customer_name": "Cliente Preview",
             "work_number": "0042",
             "intervention_report": "Relatório em HTML",
@@ -447,6 +482,8 @@ def test_document_preview_returns_html(isolated_dirs):
     assert response.status_code == 200
     assert payload["success"] is True
     assert "<!DOCTYPE html>" in payload["html"]
+    assert "2026_4572" in payload["html"]
+    assert "2023/3021" not in payload["html"]
     assert "Cliente Preview" in payload["html"]
     assert "Folha de Serviço" in payload["html"]
     assert "Relatório de Intervenção" in payload["html"]
@@ -636,6 +673,11 @@ def test_send_queues_customer_email_with_technician_cc_and_teams_notice(
             sender="service@sensorpoint.pt",
         )
     )
+    monkeypatch.setattr(
+        mail_service,
+        "test_connection",
+        lambda: {"authenticated": True, "mail_send_permission": True},
+    )
 
     class RecordingTeams:
         @staticmethod
@@ -670,7 +712,7 @@ def test_send_queues_customer_email_with_technician_cc_and_teams_notice(
     response = client.post(
         f"/api/file/{draft_name}/send",
         json={
-            "service_number": "2026_7001",
+            "service_number": "2023/3021",
             "customer_name": "Cliente Email",
             "customer_email": "cliente@example.com",
             "client_not_present": True,
@@ -691,12 +733,285 @@ def test_send_queues_customer_email_with_technician_cc_and_teams_notice(
     assert job_id.startswith("send:")
     assert queued_payload["mail"]["to"] == "cliente@example.com"
     assert queued_payload["mail"]["cc"] == ["tecnico@sensorpoint.pt"]
+    assert queued_payload["mail"]["service_number"] == "2026_7001"
+    assert "2026_7001" in queued_payload["mail"]["subject"]
+    assert "2023/3021" not in queued_payload["mail"]["subject"]
+    assert "2026_7001" in queued_payload["mail"]["body_html"]
+    assert "2023/3021" not in queued_payload["mail"]["body_html"]
     assert queued_payload["teams"]["service_number"] == "2026_7001"
 
     archived_excel = Path(queued_payload["archived_path"])
     workbook = openpyxl.load_workbook(archived_excel)
     try:
+        assert workbook["LINK"]["A3"].value == "2026_7001"
         assert workbook["LINK"].sheet_state == "hidden"
         assert workbook.active.title == "FS"
     finally:
         workbook.close()
+
+    document_json = archived_excel.with_name(
+        f"{archived_excel.stem}__documento.json"
+    )
+    assert json.loads(document_json.read_text(encoding="utf-8"))["service_number"] == "2026_7001"
+
+
+def test_send_without_customer_email_archives_without_mail_or_preflight(isolated_dirs):
+    active_dir = isolated_dirs["active"]
+    draft_name = "2026_7003_2026-08-12_JF"
+    source = copy_sample(active_dir, f"{draft_name}.xlsx")
+
+    class UnexpectedMail(GraphMailService):
+        def test_connection(self):
+            raise AssertionError("O Graph não deve ser consultado sem e-mail do cliente.")
+
+    class UnexpectedQueue:
+        calls = []
+
+        def enqueue(self, kind, payload, *, job_id=None):
+            self.calls.append((kind, payload, job_id))
+            raise AssertionError("Não deve ser criado um envio sem e-mail do cliente.")
+
+    queue = UnexpectedQueue()
+    mail_service = UnexpectedMail(
+        GraphMailConfig(
+            tenant_id="tenant",
+            client_id="client",
+            client_secret="secret",
+            sender="service@sensorpoint.pt",
+            test_recipient="testes@sensorpoint.pt",
+        )
+    )
+    app = create_app(
+        file_service=FileService(active_dir),
+        archive_service=ArchiveService(),
+        mail_service=mail_service,
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
+        graph_sync_queue=queue,
+    )
+    client = app.test_client()
+    editing = acquire_editing(client, draft_name, "no-mail-tab")
+
+    response = client.post(
+        f"/api/file/{draft_name}/send",
+        json={
+            "service_number": "2026_7003",
+            "customer_name": "Cliente sem email",
+            "client_not_present": True,
+            "intervention_report": "Serviço concluído",
+            "technician_records": [{"technician": "João Freire"}],
+            "_edit": edit_metadata(editing, client_id="no-mail-tab"),
+        },
+    )
+
+    payload = response.get_json()
+    assert response.status_code == 200, payload
+    assert payload["email_status"] == "disabled"
+    assert payload["email_recipient"] is None
+    assert payload["teams_status"] == "disabled"
+    assert payload["graph_job_id"] is None
+    assert queue.calls == []
+    assert not source.exists()
+    assert (
+        isolated_dirs["archived"]
+        / draft_name
+        / f"{draft_name}.xlsx"
+    ).exists()
+
+
+def test_customer_email_is_optional_in_editor_when_mail_is_enabled(isolated_dirs):
+    class IdleQueue:
+        pass
+
+    mail_service = GraphMailService(
+        GraphMailConfig(
+            tenant_id="tenant",
+            client_id="client",
+            client_secret="secret",
+            sender="service@sensorpoint.pt",
+            test_recipient="testes@sensorpoint.pt",
+        )
+    )
+    app = create_app(
+        file_service=FileService(isolated_dirs["active"]),
+        archive_service=ArchiveService(),
+        mail_service=mail_service,
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
+        graph_sync_queue=IdleQueue(),
+    )
+    client = app.test_client()
+
+    response = client.get("/")
+    html = response.get_data(as_text=True)
+    customer_email_input = html.split('id="customer-email"', 1)[1].split(">", 1)[0]
+
+    assert response.status_code == 200
+    assert "E-mail do cliente (opcional)" in html
+    assert "Sem e-mail, a folha é apenas arquivada." in html
+    assert ">Finalizar folha</button>" in html
+    assert "required" not in customer_email_input
+    assert '"key": "customer_email"' not in html
+
+
+def test_mail_diagnostic_endpoint_authenticates_without_sending(isolated_dirs):
+    class DiagnosticMail:
+        calls = 0
+
+        @staticmethod
+        def status():
+            return {"enabled": True, "configured": True}
+
+        def test_connection(self):
+            self.calls += 1
+            return {
+                "authenticated": True,
+                "mail_send_permission": True,
+                "sender": "service@sensorpoint.pt",
+            }
+
+    class EmptyQueue:
+        @staticmethod
+        def summary():
+            return {"pending": 0, "running": 0, "failed": 0, "complete": 0}
+
+    mail = DiagnosticMail()
+    app = create_app(
+        file_service=FileService(isolated_dirs["active"]),
+        archive_service=ArchiveService(),
+        mail_service=mail,
+        graph_sync_queue=EmptyQueue(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
+    )
+    client = app.test_client()
+
+    response = client.get("/api/mail/test")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "success": True,
+        "mail": {
+            "authenticated": True,
+            "mail_send_permission": True,
+            "sender": "service@sensorpoint.pt",
+        },
+    }
+    assert mail.calls == 1
+
+
+def test_send_checks_mail_credentials_before_archiving(isolated_dirs, monkeypatch):
+    import src.web.application as application_module
+
+    monkeypatch.setattr(application_module, "ACTIVE_AUTH_PROVIDER", "microsoft")
+    monkeypatch.setattr(application_module, "AUTH_ENABLED", True)
+    active_dir = isolated_dirs["active"]
+    draft_name = "2026_7002_2026-08-12_JF"
+    source = copy_sample(active_dir, f"{draft_name}.xlsx")
+
+    class DummyMicrosoftAuth:
+        @staticmethod
+        def user_from_session(payload):
+            if not payload:
+                return None
+            return SimpleNamespace(
+                id=payload["id"],
+                display_name=payload["display_name"],
+                email=payload["email"],
+            )
+
+    class RejectingMail(GraphMailService):
+        def test_connection(self):
+            raise GraphMailConfigurationError("A permissão Mail.Send não está disponível.")
+
+    class RecordingQueue:
+        calls = []
+
+        def enqueue(self, kind, payload, *, job_id=None):
+            self.calls.append((kind, payload, job_id))
+            return {"id": job_id, "status": "pending"}
+
+    queue = RecordingQueue()
+    app = create_app(
+        file_service=FileService(active_dir),
+        archive_service=ArchiveService(),
+        mail_service=RejectingMail(GraphMailConfig(
+            tenant_id="tenant",
+            client_id="client",
+            client_secret="secret",
+            sender="service@sensorpoint.pt",
+        )),
+        microsoft_auth_service=DummyMicrosoftAuth(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
+        graph_sync_queue=queue,
+    )
+    client = app.test_client()
+    with client.session_transaction() as user_session:
+        user_session["microsoft_user"] = {
+            "id": "technician-id",
+            "display_name": "Técnico Teste",
+            "email": "tecnico@sensorpoint.pt",
+        }
+    editing = acquire_editing(client, draft_name, "mail-preflight-tab")
+
+    response = client.post(
+        f"/api/file/{draft_name}/send",
+        json={
+            "service_number": "2026_7002",
+            "customer_name": "Cliente Email",
+            "customer_email": "cliente@example.com",
+            "client_not_present": True,
+            "intervention_report": "Serviço concluído",
+            "technician_records": [{"technician": "João Freire"}],
+            "_edit": edit_metadata(editing, client_id="mail-preflight-tab"),
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.get_json()["error"] == "A permissão Mail.Send não está disponível."
+    assert source.exists()
+    assert queue.calls == []
+
+
+def test_failed_job_can_only_be_retried_through_explicit_endpoint(isolated_dirs):
+    class RetryQueue:
+        calls = []
+
+        @staticmethod
+        def summary():
+            return {"pending": 0, "running": 0, "failed": 1, "complete": 0}
+
+        def retry(self, job_id):
+            self.calls.append(job_id)
+            return {"id": job_id, "status": "pending", "will_retry": False}
+
+    queue = RetryQueue()
+    app = create_app(
+        file_service=FileService(isolated_dirs["active"]),
+        archive_service=ArchiveService(),
+        graph_sync_queue=queue,
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
+    )
+    client = app.test_client()
+
+    response = client.post("/api/graph/jobs/send%3Amanual%3A1/retry")
+
+    assert response.status_code == 202
+    assert response.get_json() == {
+        "success": True,
+        "job": {"id": "send:manual:1", "status": "pending", "will_retry": False},
+    }
+    assert queue.calls == ["send:manual:1"]
+
+
+def test_editor_loads_mail_job_monitor_before_document_actions(isolated_dirs):
+    app = create_app(
+        file_service=FileService(isolated_dirs["active"]),
+        archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
+    )
+    client = app.test_client()
+
+    response = client.get("/")
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "mail-job-monitor.js" in html
+    assert html.index("mail-job-monitor.js") < html.index("document-editor.js")

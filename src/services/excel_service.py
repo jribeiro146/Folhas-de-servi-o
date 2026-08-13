@@ -202,6 +202,7 @@ class ExcelService:
         *,
         signatures: dict[str, str | None] | None = None,
         final: bool = False,
+        _trusted_read_only_columns: frozenset[str] = frozenset(),
     ) -> None:
         wb = self._load_workbook()
         temp_path = self.file_path.with_name(
@@ -214,7 +215,9 @@ class ExcelService:
 
             for column, value in data.items():
                 field = FIELD_BY_COLUMN.get(column)
-                if field is None or field.read_only:
+                if field is None or (
+                    field.read_only and column not in _trusted_read_only_columns
+                ):
                     continue
 
                 col_idx = field_columns.get(field.column)
@@ -263,6 +266,7 @@ class ExcelService:
         *,
         signatures: dict[str, str | None] | None = None,
         final: bool = False,
+        trusted_service_number: str | None = None,
     ) -> None:
         column_data: dict[str, Any] = {}
 
@@ -273,7 +277,17 @@ class ExcelService:
                 value = form_data[field.label]
                 column_data[field.column] = self._format_for_excel(field, value)
 
-        self.write_link(column_data, signatures=signatures, final=final)
+        trusted_columns: frozenset[str] = frozenset()
+        if trusted_service_number:
+            column_data["A"] = str(trusted_service_number).strip()
+            trusted_columns = frozenset({"A"})
+
+        self.write_link(
+            column_data,
+            signatures=signatures,
+            final=final,
+            _trusted_read_only_columns=trusted_columns,
+        )
 
     def get_folha_numero(self) -> str | None:
         data = self.read_link()

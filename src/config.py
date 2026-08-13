@@ -92,22 +92,21 @@ def _default_app_data_dir() -> Path:
 APP_DATA_DIR: Path = Path(os.environ.get("FS_APP_DATA_DIR", str(_default_app_data_dir())))
 
 # ---------------------------------------------------------------------------
+# Identidade única da App Registration Microsoft Graph / Entra
+# ---------------------------------------------------------------------------
+
+# SharePoint, envio de e-mail e login Microsoft pertencem à mesma App
+# Registration nesta instalação. Existe uma única origem de credenciais para
+# impedir que um secret específico de um serviço fique desatualizado no Plesk.
+GRAPH_TENANT_ID: str = os.environ.get("GRAPH_TENANT_ID", "").strip()
+GRAPH_CLIENT_ID: str = os.environ.get("GRAPH_CLIENT_ID", "").strip()
+GRAPH_CLIENT_SECRET: str = os.environ.get("GRAPH_CLIENT_SECRET", "").strip()
+
+# ---------------------------------------------------------------------------
 # Autenticação
 # ---------------------------------------------------------------------------
 
 AUTH_PROVIDER: str = os.environ.get("FS_AUTH_PROVIDER", "none").strip().lower()
-MICROSOFT_AUTH_TENANT_ID: str = os.environ.get(
-    "MICROSOFT_AUTH_TENANT_ID",
-    os.environ.get("GRAPH_TENANT_ID", ""),
-).strip()
-MICROSOFT_AUTH_CLIENT_ID: str = os.environ.get(
-    "MICROSOFT_AUTH_CLIENT_ID",
-    os.environ.get("GRAPH_CLIENT_ID", ""),
-).strip()
-MICROSOFT_AUTH_CLIENT_SECRET: str = os.environ.get(
-    "MICROSOFT_AUTH_CLIENT_SECRET",
-    os.environ.get("GRAPH_CLIENT_SECRET", ""),
-).strip()
 MICROSOFT_AUTH_REDIRECT_URI: str = os.environ.get("MICROSOFT_AUTH_REDIRECT_URI", "").strip()
 MICROSOFT_AUTH_ALLOWED_DOMAINS: list[str] = [
     domain.strip().lower().lstrip("@")
@@ -125,18 +124,6 @@ MICROSOFT_AUTH_ALLOWED_DOMAINS: list[str] = [
 MAIL_ENABLED: bool = _env_flag("FS_MAIL_ENABLED", False)
 MAIL_SENDER: str = os.environ.get("FS_MAIL_SENDER", "").strip()
 MAIL_TEST_RECIPIENT: str = os.environ.get("FS_MAIL_TEST_RECIPIENT", "").strip()
-GRAPH_MAIL_TENANT_ID: str = (
-    os.environ.get("GRAPH_MAIL_TENANT_ID", "").strip()
-    or os.environ.get("GRAPH_TENANT_ID", "").strip()
-)
-GRAPH_MAIL_CLIENT_ID: str = (
-    os.environ.get("GRAPH_MAIL_CLIENT_ID", "").strip()
-    or os.environ.get("GRAPH_CLIENT_ID", "").strip()
-)
-GRAPH_MAIL_CLIENT_SECRET: str = (
-    os.environ.get("GRAPH_MAIL_CLIENT_SECRET", "").strip()
-    or os.environ.get("GRAPH_CLIENT_SECRET", "").strip()
-)
 
 # O destino (canal ou chat) é escolhido no Workflow do Teams associado ao URL.
 TEAMS_NOTIFICATIONS_ENABLED: bool = _env_flag("FS_TEAMS_NOTIFICATIONS_ENABLED", False)
@@ -147,10 +134,10 @@ TEAMS_WEBHOOK_URL: str = os.environ.get("FS_TEAMS_WEBHOOK_URL", "").strip()
 # ---------------------------------------------------------------------------
 
 STORAGE_BACKEND: str = os.environ.get("FS_STORAGE_BACKEND", "local").strip().lower()
+# Em alojamento WSGI/Passenger, usar False e executar ``python -m src.queue_worker``
+# num processo ou tarefa agendada independente.
+GRAPH_QUEUE_IN_WEB: bool = _env_flag("FS_GRAPH_QUEUE_IN_WEB", True)
 
-GRAPH_TENANT_ID: str = os.environ.get("GRAPH_TENANT_ID", "").strip()
-GRAPH_CLIENT_ID: str = os.environ.get("GRAPH_CLIENT_ID", "").strip()
-GRAPH_CLIENT_SECRET: str = os.environ.get("GRAPH_CLIENT_SECRET", "").strip()
 GRAPH_SITE_ID: str = os.environ.get("GRAPH_SITE_ID", "").strip()
 GRAPH_DRIVE_ID: str = os.environ.get("GRAPH_DRIVE_ID", "").strip()
 GRAPH_ACTIVE_PATH: str = os.environ.get("GRAPH_ACTIVE_PATH", "Activas").strip().strip("/")

@@ -209,6 +209,36 @@ def test_graph_queue_retries_from_immutable_snapshot(tmp_path):
     assert queue.summary()["complete"] == 1
 
 
+def test_graph_queue_can_be_processed_outside_the_web_process(tmp_path):
+    draft_dir = tmp_path / "2026_6106_2026-07-21_TA"
+    draft_dir.mkdir()
+    source = draft_dir / f"{draft_dir.name}.xlsx"
+    source.write_bytes(b"draft")
+
+    class RecordingGraph:
+        def __init__(self):
+            self.calls = []
+
+        def upload_active_bundle(self, path, *, fail_if_exists=False):
+            self.calls.append((Path(path), fail_if_exists))
+            return [Path(path).name]
+
+    graph = RecordingGraph()
+    queue = GraphSyncQueue(
+        graph,
+        tmp_path / "graph-sync.sqlite3",
+        auto_start=False,
+    )
+    job = queue.enqueue("upload_active", {"draft_path": str(source)})
+
+    assert queue.status(job["id"])["status"] == "pending"
+    assert graph.calls == []
+
+    assert queue.run_until_idle() is True
+    assert queue.status(job["id"])["status"] == "complete"
+    assert len(graph.calls) == 1
+
+
 def test_graph_queue_publishes_etag_metadata_back_to_live_draft(tmp_path):
     draft_dir = tmp_path / "2026_6105_2026-07-21_TA"
     draft_dir.mkdir()

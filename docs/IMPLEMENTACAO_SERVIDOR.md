@@ -47,6 +47,8 @@ Notas:
 - Em Linux/Plesk, usar `requirements-server.txt`, porque `pywin32` nao instala em Linux.
 - A app web atual nao precisa de Microsoft Excel instalado no servidor.
 - A escrita em Excel e feita com `openpyxl`.
+- Em `FS_STORAGE_BACKEND=graph`, o Graph converte o HTML final em PDF. O Plesk nao
+  precisa de Microsoft Excel, Chrome ou Chromium para criar o PDF.
 
 ## Estrutura a publicar
 
@@ -90,6 +92,33 @@ Python version: 3.13.x, preferencialmente
 
 O ficheiro WSGI criado para Plesk esta em `passenger_wsgi.py`. Ele expoe a variavel `application`, que aponta para a app Flask.
 
+### Worker da fila no Plesk
+
+O Passenger deve servir apenas os pedidos HTTP. Como pode reciclar processos WSGI,
+o arquivo, a conversao PDF e o envio de email devem ser executados por uma tarefa
+independente e persistente:
+
+```bash
+FS_GRAPH_QUEUE_IN_WEB=false
+```
+
+No Plesk, criar uma tarefa agendada do tipo `Run a command`, com frequencia de um
+minuto, que execute a fila uma vez e termine. Exemplo (ajustar o caminho real do
+projeto e do ambiente virtual):
+
+```bash
+cd /var/www/vhosts/service.sensorpoint.pt/httpdocs && FS_ENV_FILE=/var/www/vhosts/service.sensorpoint.pt/private/folhas-servico/app.env /caminho/para/venv/bin/python -m src.queue_worker
+```
+
+A app WSGI e o worker precisam exatamente das mesmas variaveis, incluindo
+`FS_APP_DATA_DIR`, credenciais Graph e configuracao de email. Se for usado
+`FS_ENV_FILE`, guardar esse ficheiro fora do document root, legivel apenas pelo
+utilizador da subscricao, e definir a mesma variavel na app Python do Plesk.
+
+Usar `Run Now` no Plesk para confirmar que o comando termina com codigo zero e
+imprime um resumo JSON. Em alojamentos onde as tarefas correm numa shell chroot,
+os caminhos do comando devem ser os caminhos visiveis dentro dessa subscricao.
+
 Referencias no codigo:
 
 ```text
@@ -126,6 +155,8 @@ FS_EDIT_SESSION_SECONDS=2592000
 FS_STATE_DB_BUSY_MS=10000
 FS_GRAPH_REFRESH_SECONDS=30
 FS_GRAPH_JOB_STALE_SECONDS=900
+FS_GRAPH_QUEUE_IN_WEB=false
+FS_MAIL_JOB_STALE_SECONDS=900
 
 
 GRAPH_TENANT_ID=afc2679b-0121-4a82-ab15-59c783daedc9
@@ -141,37 +172,21 @@ MICROSOFT_AUTH_REDIRECT_URI=https://service.sensorpoint.pt/auth/microsoft/callba
 MICROSOFT_AUTH_ALLOWED_DOMAINS=sensorpoint.pt,sensorpoint.com
 ```
 
-Opcional, mas recomendado para separar login e Graph se no futuro forem criadas apps diferentes:
-
-```bash
-MICROSOFT_AUTH_TENANT_ID=afc2679b-0121-4a82-ab15-59c783daedc9
-MICROSOFT_AUTH_CLIENT_ID=b233caa9-f51f-4d06-91fe-aa6cf26a982a
-MICROSOFT_AUTH_CLIENT_SECRET=<introduzir-no-plesk-nao-incluir-no-pacote>
-```
-
-Se estas variaveis `MICROSOFT_AUTH_*` nao forem definidas, a app reutiliza as credenciais `GRAPH_*`.
+`GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID` e `GRAPH_CLIENT_SECRET` são a única origem de
+credenciais da App Registration. A aplicação reutiliza-as no SharePoint, conversão PDF,
+login Microsoft e envio de email. Variáveis antigas `GRAPH_MAIL_*` ou credenciais
+`MICROSOFT_AUTH_*` que ainda existam no Plesk são ignoradas e devem ser removidas. Assim,
+a rotação do secret é feita uma única vez em `GRAPH_CLIENT_SECRET`, seguida do reinício
+da aplicação e do processador da fila.
 
 Referencias no codigo:
 
 ```text
-src/config.py:13 - carrega ficheiro .env simples se existir
-src/config.py:16 - permite mudar o ficheiro via FS_ENV_FILE
-src/config.py:72 - FS_APP_DATA_DIR
-src/config.py:79 - FS_AUTH_PROVIDER
-src/config.py:80 - MICROSOFT_AUTH_TENANT_ID
-src/config.py:84 - MICROSOFT_AUTH_CLIENT_ID
-src/config.py:88 - MICROSOFT_AUTH_CLIENT_SECRET
-src/config.py:92 - MICROSOFT_AUTH_REDIRECT_URI
-src/config.py:93 - MICROSOFT_AUTH_ALLOWED_DOMAINS
-src/config.py:106 - FS_STORAGE_BACKEND
-src/config.py:108 - GRAPH_TENANT_ID
-src/config.py:109 - GRAPH_CLIENT_ID
-src/config.py:110 - GRAPH_CLIENT_SECRET
-src/config.py:111 - GRAPH_SITE_ID (referencia do site SharePoint)
-src/config.py:112 - GRAPH_DRIVE_ID
-src/config.py:113 - GRAPH_ACTIVE_PATH
-src/config.py:114 - GRAPH_ARCHIVE_PATH
-src/config.py:115 - GRAPH_CACHE_DIR
+src/config.py - configuração central, carregamento de .env e FS_ENV_FILE
+src/config.py - GRAPH_TENANT_ID, GRAPH_CLIENT_ID e GRAPH_CLIENT_SECRET
+src/config.py - MICROSOFT_AUTH_REDIRECT_URI e MICROSOFT_AUTH_ALLOWED_DOMAINS
+src/config.py - FS_STORAGE_BACKEND, GRAPH_SITE_ID e GRAPH_DRIVE_ID
+src/config.py - GRAPH_ACTIVE_PATH, GRAPH_ARCHIVE_PATH e GRAPH_CACHE_DIR
 ```
 
 ## Onde mudar o URL
@@ -327,6 +342,9 @@ Dentro dessa pasta, a app pode criar:
 
 ```text
 graph-cache/
+graph-sync-assets/
+graph-sync.sqlite3
+editing-state.sqlite3
 secret.key, se FS_SECRET_KEY nao estiver definido
 ```
 
@@ -364,7 +382,7 @@ Backup: diario da pasta de configuracao e logs
 O servidor deve permitir:
 
 - HTTPS no subdominio;
-- processo Python persistente;
+- processo Python WSGI e tarefa agendada para a fila;
 - escrita numa pasta privada fora do document root publico;
 - acesso outbound a `https://graph.microsoft.com`;
 - acesso outbound a `https://login.microsoftonline.com`;
@@ -383,15 +401,19 @@ O servidor deve permitir:
 8. Configurar variaveis de ambiente no Plesk.
 9. Atualizar Redirect URI no Entra para o URL final HTTPS.
 10. Confirmar permissoes Graph e admin consent.
-11. Reiniciar a app Python no Plesk.
-12. Entrar com conta Microsoft Sensorpoint.
-13. Testar `Atualizar`/lista de folhas.
-14. Testar `Guardar rascunho`.
-15. Verificar rascunho em SharePoint `Activas`.
-16. Testar `Guardar e enviar`.
-17. Verificar final em SharePoint `Arquivadas`.
-18. Validar a migracao e a fila persistente seguindo `docs/SINCRONIZACAO_V2_ADMIN.md`.
-19. Confirmar que apenas um host usa os ficheiros SQLite; varios workers no mesmo host sao suportados.
+11. Definir `FS_GRAPH_QUEUE_IN_WEB=false`.
+12. Criar a tarefa agendada `python -m src.queue_worker` a cada minuto e usar `Run Now`.
+13. Reiniciar a app Python no Plesk.
+14. Entrar com conta Microsoft Sensorpoint.
+15. Testar `Atualizar`/lista de folhas.
+16. Testar `Guardar rascunho`.
+17. Verificar rascunho em SharePoint `Activas`.
+18. Testar `Guardar e enviar`, primeiro com `FS_MAIL_TEST_RECIPIENT` controlado.
+19. Confirmar que o PDF corresponde ao HTML final, esta em `Arquivadas` e chegou anexado no email.
+20. Confirmar a remocao correta em `Activas`.
+21. Esvaziar `FS_MAIL_TEST_RECIPIENT` antes de abrir aos utilizadores.
+22. Validar a migracao e a fila persistente seguindo `docs/SINCRONIZACAO_V2_ADMIN.md`.
+23. Confirmar que apenas um host usa os ficheiros SQLite; varios workers no mesmo host sao suportados.
 
 ## Testes funcionais apos deploy
 
@@ -428,6 +450,9 @@ Teste 4 - Envio final:
 Abrir folha ou rascunho
 Guardar e enviar
 Confirmar pasta final em Aplicacao/Arquivadas
+Confirmar PDF valido dentro da pasta final
+Comparar o PDF com a apresentacao do HTML final da aplicacao
+Confirmar email recebido com o PDF anexado
 Confirmar remocao correta em Activas
 ```
 
@@ -442,6 +467,15 @@ Clicar Atualizar
 Confirmar que reaparece
 ```
 
+Teste 6 - Sobrevivencia da fila:
+
+```text
+Parar/reiniciar apenas a app WSGI
+Executar Run Now na tarefa src.queue_worker
+Confirmar em /api/graph/status que nao ficam trabalhos pending/running antigos
+Confirmar nos logs que o worker terminou com codigo zero
+```
+
 ## Pontos a nao esquecer antes de producao
 
 - Trocar o client secret antes de producao.
@@ -453,6 +487,9 @@ Confirmar que reaparece
 - Confirmar que o servidor tem hora correta/NTP ativo.
 - Confirmar que o subdominio usa HTTPS valido.
 - Confirmar que a app nao esta a correr pelo servidor Flask local de `src/main.py`.
+- Confirmar que `FS_GRAPH_QUEUE_IN_WEB=false` e que a tarefa da fila esta ativa.
+- Confirmar que app e worker usam o mesmo `FS_APP_DATA_DIR` em disco local persistente.
+- Confirmar que `FS_MAIL_TEST_RECIPIENT` fica vazio depois do teste controlado.
 
 ## Comandos uteis
 
@@ -475,11 +512,18 @@ Teste rapido de import WSGI:
 python -c "from passenger_wsgi import application; print(application.name)"
 ```
 
+Executar a fila persistente uma vez:
+
+```bash
+python -m src.queue_worker
+```
+
 Verificar configuracao Graph pela app, depois de login:
 
 ```text
 https://service.sensorpoint.pt/api/graph/status
 https://service.sensorpoint.pt/api/graph/test
+https://service.sensorpoint.pt/api/mail/test
 https://service.sensorpoint.pt/api/graph/sync
 ```
 

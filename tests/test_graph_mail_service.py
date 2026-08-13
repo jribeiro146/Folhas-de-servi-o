@@ -1,16 +1,24 @@
+import base64
+import io
 import json
+import sqlite3
+import subprocess
+import time
 from pathlib import Path
+from urllib import error as urlerror
 
 import pytest
 
 from src.services.graph_mail_service import (
     GraphMailConfig,
+    GraphMailConfigurationError,
     GraphMailError,
     GraphMailService,
+    GraphMailTransientError,
 )
 from src.services.graph_storage_service import GraphConfig, GraphStorageService
 from src.services.graph_sync_queue import GraphSyncQueue
-from src.services.local_pdf_service import LocalPdfService
+from src.services.local_pdf_service import LocalPdfError, LocalPdfService
 
 
 def mail_config() -> GraphMailConfig:
@@ -45,6 +53,74 @@ def test_prepare_service_email_uses_requested_portuguese_body_and_only_technicia
         "Caso considere necessário, agradecemos o seu reencaminhamento interno.</p>"
         "<p>Permanecemos à disposição para qualquer esclarecimento.</p>"
     )
+
+
+def test_connection_validates_mail_send_permission_without_sending(monkeypatch):
+    claims = base64.urlsafe_b64encode(
+        json.dumps(
+            {
+                "roles": ["Mail.Send", "Sites.ReadWrite.All"],
+                "azp": "client",
+                "tid": "tenant",
+            }
+        ).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    token = f"header.{claims}.signature"
+    requested_urls = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({"access_token": token, "expires_in": 3600}).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        requested_urls.append(req.full_url)
+        return FakeResponse()
+
+    monkeypatch.setattr("src.services.graph_mail_service.request.urlopen", fake_urlopen)
+    service = GraphMailService(mail_config())
+
+    result = service.test_connection()
+
+    assert result == {
+        "authenticated": True,
+        "mail_send_permission": True,
+        "sender": "service@sensorpoint.pt",
+        "application_id": "client",
+        "tenant_id": "tenant",
+    }
+    assert len(requested_urls) == 1
+    assert requested_urls[0].startswith("https://login.microsoftonline.com/")
+    assert all("sendMail" not in url for url in requested_urls)
+
+
+def test_connection_reports_an_invalid_secret_as_configuration_error(monkeypatch):
+    def rejected_urlopen(req, timeout):
+        raise urlerror.HTTPError(
+            req.full_url,
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(
+                json.dumps(
+                    {
+                        "error": "invalid_client",
+                        "error_description": "AADSTS7000215: Invalid client secret provided.",
+                    }
+                ).encode("utf-8")
+            ),
+        )
+
+    monkeypatch.setattr("src.services.graph_mail_service.request.urlopen", rejected_urlopen)
+    service = GraphMailService(mail_config())
+
+    with pytest.raises(GraphMailConfigurationError, match="secret"):
+        service.test_connection()
 
 
 def test_prepare_service_email_uses_fixed_recipient_in_test_mode():
@@ -159,6 +235,72 @@ def test_send_prepared_posts_pdf_attachment_to_graph(tmp_path, monkeypatch):
     assert message["internetMessageHeaders"][0]["value"] == "send:documento:1"
 
 
+def test_graph_503_is_retryable_and_respects_retry_after(tmp_path, monkeypatch):
+    service = GraphMailService(mail_config())
+    pdf_path = tmp_path / "FS-503__folha_final.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7\nconteudo")
+    prepared = service.prepare_service_email(
+        customer_email="cliente@example.com",
+        technician_email="tecnico@sensorpoint.pt",
+        customer_name="Cliente",
+        service_number="FS-503",
+    )
+    calls = 0
+
+    class TokenResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({"access_token": "token", "expires_in": 3600}).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return TokenResponse()
+        raise urlerror.HTTPError(
+            req.full_url,
+            503,
+            "Service Unavailable",
+            {"Retry-After": "7"},
+            io.BytesIO(b'{"error":{"code":"serviceNotAvailable"}}'),
+        )
+
+    monkeypatch.setattr("src.services.graph_mail_service.request.urlopen", fake_urlopen)
+
+    with pytest.raises(GraphMailTransientError) as raised:
+        service.send_prepared(prepared, pdf_path, operation_id="send:503")
+
+    assert raised.value.retry_after_seconds == 7
+    assert calls == 2
+
+
+def test_graph_network_outage_is_retryable(tmp_path, monkeypatch):
+    service = GraphMailService(mail_config())
+    pdf_path = tmp_path / "FS-NET__folha_final.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7\nconteudo")
+    prepared = service.prepare_service_email(
+        customer_email="cliente@example.com",
+        technician_email="tecnico@sensorpoint.pt",
+        customer_name="Cliente",
+        service_number="FS-NET",
+    )
+    service._access_token = "cached-token"
+    service._access_token_expires_at = time.time() + 300
+
+    def unavailable_urlopen(req, timeout):
+        raise urlerror.URLError("sem ligação")
+
+    monkeypatch.setattr("src.services.graph_mail_service.request.urlopen", unavailable_urlopen)
+
+    with pytest.raises(GraphMailTransientError, match="temporariamente"):
+        service.send_prepared(prepared, pdf_path, operation_id="send:network")
+
+
 def test_send_prepared_rejects_an_excel_attachment_even_with_pdf_content(tmp_path):
     service = GraphMailService(mail_config())
     excel_path = tmp_path / "FS-123.xlsx"
@@ -190,11 +332,148 @@ def test_local_pdf_service_prints_the_final_html_to_pdf(tmp_path):
     assert pdf_path.read_bytes().startswith(b"%PDF-")
 
 
-def test_graph_storage_exports_and_uploads_archived_pdf(tmp_path, monkeypatch):
+def test_local_pdf_renders_in_configured_local_temp_before_publishing(tmp_path, monkeypatch):
+    archive_dir = tmp_path / "OneDrive" / "Arquivadas" / "FS-LOCAL"
+    archive_dir.mkdir(parents=True)
+    excel_path = archive_dir / "FS-LOCAL.xlsx"
+    excel_path.write_bytes(b"excel")
+    html_path = archive_dir / "FS-LOCAL__folha_final.html"
+    html_path.write_text("<html><body>Folha final</body></html>", encoding="utf-8")
+    local_temp = tmp_path / "local-pdf-temp"
+    monkeypatch.setenv("FS_PDF_TEMP_DIR", str(local_temp))
+    rendered_paths = []
+
+    def fake_renderer(source, destination):
+        assert source == html_path
+        rendered_paths.append(destination)
+        destination.write_bytes(b"%PDF-1.7\nlocal")
+
+    pdf_path = LocalPdfService(fake_renderer).export_archive_pdf(excel_path)
+
+    assert rendered_paths[0].parent == local_temp.resolve()
+    assert rendered_paths[0].exists() is False
+    assert pdf_path == archive_dir / "FS-LOCAL__folha_final.pdf"
+    assert pdf_path.read_bytes().startswith(b"%PDF-")
+    assert list(archive_dir.glob(".*.tmp.pdf")) == []
+
+
+def test_local_pdf_browser_avoids_child_process_pipes_and_closes_job(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv("FS_PDF_BROWSER_NO_SANDBOX", raising=False)
+    browser = tmp_path / "chrome.exe"
+    browser.write_bytes(b"browser")
+    html_path = tmp_path / "folha.html"
+    html_path.write_text("<html><body>Folha</body></html>", encoding="utf-8")
+    destination = tmp_path / "folha.pdf"
+    captured = {}
+    job = object()
+    closed_jobs = []
+
+    class CompletedProcess:
+        pid = 123
+        _handle = 456
+
+        @staticmethod
+        def wait(timeout):
+            captured["wait_timeout"] = timeout
+            return 0
+
+        @staticmethod
+        def poll():
+            return 0
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        destination.write_bytes(b"%PDF-1.7\nprocesso")
+        return CompletedProcess()
+
+    monkeypatch.setattr(LocalPdfService, "_find_browser", staticmethod(lambda: browser))
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        LocalPdfService,
+        "_create_windows_process_job",
+        staticmethod(lambda _process: job),
+    )
+    monkeypatch.setattr(
+        LocalPdfService,
+        "_close_windows_process_job",
+        staticmethod(lambda handle: closed_jobs.append(handle) if handle else None),
+    )
+
+    LocalPdfService._render_with_browser(html_path, destination)
+
+    assert captured["wait_timeout"] == 60
+    assert captured["kwargs"]["stdout"] is not subprocess.PIPE
+    assert captured["kwargs"]["stderr"] == subprocess.STDOUT
+    assert "--disable-breakpad" not in captured["command"]
+    assert "--disable-dev-shm-usage" in captured["command"]
+    assert "--no-sandbox" not in captured["command"]
+    assert closed_jobs == [job]
+
+
+def test_local_pdf_browser_timeout_terminates_the_process_tree(tmp_path, monkeypatch):
+    browser = tmp_path / "chrome.exe"
+    browser.write_bytes(b"browser")
+    html_path = tmp_path / "folha.html"
+    html_path.write_text("<html><body>Folha</body></html>", encoding="utf-8")
+    destination = tmp_path / "folha.pdf"
+    job = object()
+    terminated = []
+
+    class TimedOutProcess:
+        pid = 789
+        _handle = 987
+        stopped = False
+
+        def wait(self, timeout):
+            if not self.stopped:
+                raise subprocess.TimeoutExpired("chrome", timeout)
+            return -1
+
+        def poll(self):
+            return -1 if self.stopped else None
+
+    process = TimedOutProcess()
+
+    def fake_terminate(received_process, received_job):
+        terminated.append((received_process, received_job))
+        received_process.stopped = True
+        return None
+
+    monkeypatch.setattr(LocalPdfService, "_find_browser", staticmethod(lambda: browser))
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(
+        LocalPdfService,
+        "_create_windows_process_job",
+        staticmethod(lambda _process: job),
+    )
+    monkeypatch.setattr(
+        LocalPdfService,
+        "_terminate_browser_process",
+        staticmethod(fake_terminate),
+    )
+    monkeypatch.setattr(
+        LocalPdfService,
+        "_close_windows_process_job",
+        staticmethod(lambda _handle: None),
+    )
+
+    with pytest.raises(LocalPdfError, match="excedeu 60 segundos"):
+        LocalPdfService._render_with_browser(html_path, destination)
+
+    assert terminated == [(process, job)]
+
+
+def test_graph_storage_converts_final_html_and_uploads_pdf(tmp_path, monkeypatch):
     archive_dir = tmp_path / "Arquivadas" / "FS-123"
     archive_dir.mkdir(parents=True)
     archived_excel = archive_dir / "FS-123.xlsx"
     archived_excel.write_bytes(b"excel")
+    final_html = archive_dir / "FS-123__folha_final.html"
+    final_html.write_text("<html><body>Folha final</body></html>", encoding="utf-8")
     service = GraphStorageService(
         GraphConfig(
             tenant_id="tenant",
@@ -208,7 +487,7 @@ def test_graph_storage_exports_and_uploads_archived_pdf(tmp_path, monkeypatch):
 
     def fake_graph_bytes(method, path, data=None, content_type=None, headers=None):
         calls["convert"] = (method, path)
-        return b"%PDF-1.7\nconvertido"
+        return b"%PDF-1.7\nhtml-convertido"
 
     def fake_upload_file(local_path, remote_path, *, expected_etag=None):
         calls["upload"] = (Path(local_path), remote_path, expected_etag)
@@ -220,32 +499,39 @@ def test_graph_storage_exports_and_uploads_archived_pdf(tmp_path, monkeypatch):
 
     pdf_path, remote_pdf = service.export_archive_pdf(archived_excel)
 
-    assert pdf_path.read_bytes().startswith(b"%PDF-")
-    assert pdf_path.name == "FS-123__folha_final.pdf"
+    assert pdf_path.read_bytes() == b"%PDF-1.7\nhtml-convertido"
     assert calls["convert"] == (
         "GET",
-        "/drives/drive/root:/Aplicacao/Arquivadas/FS-123/FS-123.xlsx:/content?format=pdf",
+        "/drives/drive/root:/Aplicacao/Arquivadas/FS-123/"
+        "FS-123__folha_final.html:/content?format=pdf",
     )
     assert remote_pdf == "Aplicacao/Arquivadas/FS-123/FS-123__folha_final.pdf"
     assert calls["upload"][0] == pdf_path
 
 
-def test_archive_queue_exports_pdf_and_sends_mail_once(tmp_path):
+def test_archive_queue_converts_remote_html_and_sends_same_pdf_once(tmp_path):
     archive_dir = tmp_path / "Arquivadas" / "FS-123"
     archive_dir.mkdir(parents=True)
     archived_excel = archive_dir / "FS-123.xlsx"
     archived_excel.write_bytes(b"excel")
+    final_html = archive_dir / "FS-123__folha_final.html"
+    final_html.write_text("<html><body>Folha final</body></html>", encoding="utf-8")
     events = []
 
     class FakeGraph:
         def upload_archive_bundle(self, path):
+            assert Path(path).with_name("FS-123__folha_final.html") == final_html
             events.append(("upload", Path(path)))
-            return ["Arquivadas/FS-123/FS-123.xlsx"]
+            return [
+                "Arquivadas/FS-123/FS-123.xlsx",
+                "Arquivadas/FS-123/FS-123__folha_final.html",
+            ]
 
         def export_archive_pdf(self, path):
-            events.append(("pdf", Path(path)))
+            assert Path(path).with_name("FS-123__folha_final.html") == final_html
+            events.append(("graph_html_pdf", final_html))
             pdf = Path(path).with_name("FS-123__folha_final.pdf")
-            pdf.write_bytes(b"%PDF-1.7\nqueue")
+            pdf.write_bytes(b"%PDF-1.7\nqueue-html")
             return pdf, "Arquivadas/FS-123/FS-123__folha_final.pdf"
 
         def remove_active_name(self, name, *, expected_etag=None):
@@ -275,8 +561,11 @@ def test_archive_queue_exports_pdf_and_sends_mail_once(tmp_path):
 
     assert completed["status"] == "complete"
     assert replay["status"] == "complete"
-    assert [event[0] for event in events] == ["upload", "pdf", "remove", "mail"]
+    assert [event[0] for event in events] == ["upload", "graph_html_pdf", "remove", "mail"]
     assert events[-1][3] == "send:FS-123:stable"
+    assert events[-1][2].read_bytes() == b"%PDF-1.7\nqueue-html"
+
+
 def test_local_archive_queue_generates_pdf_and_sends_without_graph_storage(tmp_path):
     archive_dir = tmp_path / "Arquivadas" / "FS-LOCAL"
     archive_dir.mkdir(parents=True)
@@ -315,3 +604,327 @@ def test_local_archive_queue_generates_pdf_and_sends_without_graph_storage(tmp_p
     assert completed["result"]["uploaded_files"] == []
     assert completed["result"]["removed_active"] is False
     assert events[-1][2].suffix == ".pdf"
+
+
+def test_stale_running_mail_job_is_held_for_manual_retry(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("FS_MAIL_JOB_STALE_SECONDS", "90")
+    monkeypatch.setattr(GraphSyncQueue, "start", lambda _self: None)
+
+    class UnexpectedMail:
+        calls = 0
+
+        def send_prepared(self, *_args, **_kwargs):
+            self.calls += 1
+            raise AssertionError("Um trabalho stale não pode enviar automaticamente.")
+
+    mail = UnexpectedMail()
+    database = tmp_path / "stale-mail.sqlite3"
+    queue = GraphSyncQueue(None, database, mail_service=mail)
+    queued = queue.enqueue(
+        "archive_and_mail_local",
+        {
+            "archived_path": str(tmp_path / "FS-STALE.xlsx"),
+            "mail": {"to": "cliente@example.com"},
+        },
+        job_id="send:stale:manual",
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE graph_sync_jobs SET status='running', updated_at=? WHERE id=?",
+            (time.time() - 91, queued["id"]),
+        )
+
+    held = queue.status(queued["id"])
+
+    assert held["status"] == "failed"
+    assert held["will_retry"] is False
+    assert "repetição manual" in held["last_error"]
+    assert mail.calls == 0
+
+
+def test_stale_mail_job_with_accepted_checkpoint_is_completed(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("FS_MAIL_JOB_STALE_SECONDS", "90")
+    monkeypatch.setattr(GraphSyncQueue, "start", lambda _self: None)
+    database = tmp_path / "accepted-stale-mail.sqlite3"
+    queue = GraphSyncQueue(None, database, mail_service=object())
+    queued = queue.enqueue(
+        "archive_and_mail_local",
+        {
+            "archived_path": str(tmp_path / "FS-ACCEPTED.xlsx"),
+            "mail": {"to": "cliente@example.com"},
+        },
+        job_id="send:stale:accepted",
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            UPDATE graph_sync_jobs
+            SET status='running', updated_at=?, result_json=?
+            WHERE id=?
+            """,
+            (
+                time.time() - 91,
+                json.dumps({"phase": "mail_accepted", "mail": {"accepted": True}}),
+                queued["id"],
+            ),
+        )
+
+    reconciled = queue.status(queued["id"])
+
+    assert reconciled["status"] == "complete"
+    assert reconciled["result"]["mail"]["accepted"] is True
+
+
+def test_failure_to_write_retry_state_falls_back_to_terminal_hold(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(GraphSyncQueue, "start", lambda _self: None)
+    database = tmp_path / "state-fallback.sqlite3"
+    queue = GraphSyncQueue(None, database, mail_service=object())
+    queued = queue.enqueue(
+        "archive_and_mail_local",
+        {
+            "archived_path": str(tmp_path / "FS-STATE.xlsx"),
+            "mail": {"to": "cliente@example.com"},
+        },
+        job_id="send:state:fallback",
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE graph_sync_jobs SET status='running' WHERE id=?",
+            (queued["id"],),
+        )
+    job = queue.status(queued["id"])
+    monkeypatch.setattr(
+        queue,
+        "_mark_failed",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database is locked")
+        ),
+    )
+
+    queue._record_job_failure(job, RuntimeError("falha original"))
+    held = queue.status(queued["id"])
+
+    assert held["status"] == "failed"
+    assert held["will_retry"] is False
+    assert "Falha interna" in held["last_error"]
+
+
+def test_permanent_mail_failure_is_not_retried_automatically(tmp_path):
+    archive_dir = tmp_path / "Arquivadas" / "FS-AUTH"
+    archive_dir.mkdir(parents=True)
+    archived_excel = archive_dir / "FS-AUTH.xlsx"
+    archived_excel.write_bytes(b"excel")
+    calls = []
+
+    class FakeLocalPdf:
+        def export_archive_pdf(self, path):
+            pdf = Path(path).with_name("FS-AUTH__folha_final.pdf")
+            pdf.write_bytes(b"%PDF-1.7\nlocal")
+            return pdf
+
+    class RejectedMail:
+        def send_prepared(self, prepared, attachment_path, *, operation_id):
+            calls.append(operation_id)
+            raise GraphMailError("A autenticação do serviço de e-mail foi rejeitada.")
+
+    queue = GraphSyncQueue(
+        None,
+        tmp_path / "permanent-mail.sqlite3",
+        mail_service=RejectedMail(),
+        local_pdf_service=FakeLocalPdf(),
+    )
+    queued = queue.enqueue(
+        "archive_and_mail_local",
+        {
+            "archived_path": str(archived_excel),
+            "mail": {"to": "cliente@example.com", "technician_email": "tecnico@example.com"},
+        },
+        job_id="send:auth:permanent",
+    )
+
+    failed = queue.wait(queued["id"], timeout=3)
+
+    assert failed["status"] == "failed"
+    assert failed["will_retry"] is False
+    assert calls == ["send:auth:permanent"]
+
+
+def test_transient_mail_failure_stops_after_configured_attempt_limit(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("FS_MAIL_JOB_MAX_ATTEMPTS", "2")
+    monkeypatch.setenv("FS_GRAPH_JOB_RETRY_BASE_SECONDS", "0.01")
+    archive_dir = tmp_path / "Arquivadas" / "FS-TRANSIENT"
+    archive_dir.mkdir(parents=True)
+    archived_excel = archive_dir / "FS-TRANSIENT.xlsx"
+    archived_excel.write_bytes(b"excel")
+    calls = []
+
+    class FakeLocalPdf:
+        def export_archive_pdf(self, path):
+            pdf = Path(path).with_name("FS-TRANSIENT__folha_final.pdf")
+            pdf.write_bytes(b"%PDF-1.7\nlocal")
+            return pdf
+
+    class UnavailableMail:
+        def send_prepared(self, prepared, attachment_path, *, operation_id):
+            calls.append(operation_id)
+            raise GraphMailTransientError("O serviço de e-mail está temporariamente indisponível.")
+
+    queue = GraphSyncQueue(
+        None,
+        tmp_path / "transient-mail.sqlite3",
+        mail_service=UnavailableMail(),
+        local_pdf_service=FakeLocalPdf(),
+    )
+    queued = queue.enqueue(
+        "archive_and_mail_local",
+        {
+            "archived_path": str(archived_excel),
+            "mail": {"to": "cliente@example.com", "technician_email": "tecnico@example.com"},
+        },
+        job_id="send:transient:limited",
+    )
+
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        failed = queue.status(queued["id"])
+        if failed["status"] == "failed" and not failed["will_retry"]:
+            break
+        time.sleep(0.01)
+
+    assert failed["status"] == "failed"
+    assert failed["will_retry"] is False
+    assert failed["attempts"] == 2
+    assert failed["max_attempts"] == 2
+    assert calls == ["send:transient:limited", "send:transient:limited"]
+
+
+def test_terminal_mail_failure_only_runs_again_after_explicit_retry(tmp_path):
+    archive_dir = tmp_path / "Arquivadas" / "FS-MANUAL"
+    archive_dir.mkdir(parents=True)
+    archived_excel = archive_dir / "FS-MANUAL.xlsx"
+    archived_excel.write_bytes(b"excel")
+
+    class FakeLocalPdf:
+        def export_archive_pdf(self, path):
+            pdf = Path(path).with_name("FS-MANUAL__folha_final.pdf")
+            pdf.write_bytes(b"%PDF-1.7\nlocal")
+            return pdf
+
+    class RecoveringMail:
+        available = False
+        calls = 0
+
+        def send_prepared(self, prepared, attachment_path, *, operation_id):
+            self.calls += 1
+            if not self.available:
+                raise GraphMailError("A autenticação do serviço de e-mail foi rejeitada.")
+            return {"accepted": True}
+
+    mail = RecoveringMail()
+    queue = GraphSyncQueue(
+        None,
+        tmp_path / "manual-retry.sqlite3",
+        mail_service=mail,
+        local_pdf_service=FakeLocalPdf(),
+    )
+    queued = queue.enqueue(
+        "archive_and_mail_local",
+        {
+            "archived_path": str(archived_excel),
+            "mail": {"to": "cliente@example.com", "technician_email": "tecnico@example.com"},
+        },
+        job_id="send:manual:retry",
+    )
+    failed = queue.wait(queued["id"], timeout=3)
+    assert failed["status"] == "failed"
+    assert mail.calls == 1
+
+    mail.available = True
+    queue.retry(queued["id"])
+    completed = queue.wait(queued["id"], timeout=3)
+
+    assert completed["status"] == "complete"
+    assert completed["result"]["mail"]["accepted"] is True
+    assert mail.calls == 2
+
+
+def test_legacy_pending_mail_is_held_for_explicit_review_on_upgrade(tmp_path):
+    archive_dir = tmp_path / "Arquivadas" / "FS-LEGACY"
+    archive_dir.mkdir(parents=True)
+    archived_excel = archive_dir / "FS-LEGACY.xlsx"
+    archived_excel.write_bytes(b"excel")
+    database = tmp_path / "legacy.sqlite3"
+    now = time.time()
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE graph_sync_jobs (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at REAL NOT NULL,
+                last_error TEXT,
+                result_json TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO graph_sync_jobs (
+                id, kind, payload_json, status, attempts, next_attempt_at,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
+            """,
+            (
+                "send:legacy:pending",
+                "archive_and_mail_local",
+                json.dumps(
+                    {
+                        "archived_path": str(archived_excel),
+                        "mail": {"to": "cliente@example.com"},
+                    }
+                ),
+                now,
+                now,
+                now,
+            ),
+        )
+
+    class UnexpectedMail:
+        calls = 0
+
+        def send_prepared(self, prepared, attachment_path, *, operation_id):
+            self.calls += 1
+            return {"accepted": True}
+
+    mail = UnexpectedMail()
+    queue = GraphSyncQueue(
+        None,
+        database,
+        mail_service=mail,
+        local_pdf_service=object(),
+    )
+    time.sleep(0.1)
+
+    held = queue.status("send:legacy:pending")
+
+    assert held["status"] == "failed"
+    assert held["will_retry"] is False
+    assert "repetição manual" in held["last_error"]
+    assert mail.calls == 0

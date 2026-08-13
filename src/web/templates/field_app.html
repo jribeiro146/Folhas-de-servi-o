@@ -169,7 +169,7 @@
             {% if mail_test_recipient %}
             <section class="mail-test-banner" role="status" data-mail-test-recipient="{{ mail_test_recipient }}">
                 <strong>MODO DE TESTE</strong>
-                <span>O email indicado na ficha não será utilizado. Todos os envios vão para {{ mail_test_recipient }}.</span>
+                <span>Quando existe e-mail do cliente, o destinatário é substituído por {{ mail_test_recipient }}. Sem e-mail, a folha é apenas arquivada.</span>
             </section>
             {% endif %}
 
@@ -283,8 +283,8 @@
                                 <input id="nif-number" type="text" data-field="nif_number" data-mirror-field="vat_number" inputmode="numeric" maxlength="32">
                             </div>
                             <div class="form-field">
-                                <label for="customer-email">E-mail do cliente{% if mail_enabled %} *{% endif %}{% if mail_test_recipient %} (não utilizado no teste){% endif %}</label>
-                                <input id="customer-email" type="email" data-field="customer_email"{% if mail_enabled %} required{% endif %}>
+                                <label for="customer-email">E-mail do cliente (opcional){% if mail_test_recipient %} — destino substituído no teste{% endif %}</label>
+                                <input id="customer-email" type="email" data-field="customer_email">
                             </div>
                             <div class="form-field">
                                 <label for="customer-phone" data-i18n="phone">Telefone</label>
@@ -563,7 +563,7 @@
 
                     <section class="form-end-actions" aria-label="Ações da folha">
                         <div class="form-end-actions-left">
-                            <button id="btn-save-send" class="btn btn-success" type="button" data-i18n="save_send">Guardar e enviar</button>
+                            <button id="btn-save-send" class="btn btn-success" type="button" data-i18n="save_send">Finalizar folha</button>
                             <button id="btn-cancel-file" class="btn btn-danger" type="button" data-i18n="cancel_sheet">Cancelar folha</button>
                         </div>
                         <button id="btn-save-draft" class="btn btn-primary" type="button" data-i18n="save_draft">Guardar rascunho</button>
@@ -618,6 +618,7 @@
             bootstrapEnabled: true,
             mailEnabled: {{ mail_enabled | tojson }},
             mailTestRecipient: {{ mail_test_recipient | tojson }},
+            mailJobStaleSeconds: {{ mail_job_stale_seconds | tojson }},
             teamsEnabled: {{ teams_enabled | tojson }},
             requiredFields: {{ document_required_fields | tojson }},
             serviceTypeOptions: {{ service_type_options | tojson }},
@@ -633,6 +634,7 @@
             recoveryMaxAgeDays: 30
         };
     </script>
+    <script src="{{ url_for('static', filename='js/mail-job-monitor.js', v=asset_version) }}"></script>
     <script src="{{ url_for('static', filename='js/document-editor.js', v=asset_version) }}"></script>
     <script src="{{ url_for('static', filename='js/editing-coordinator.js', v=asset_version) }}"></script>
     <script src="{{ url_for('static', filename='js/pwa.js', v=asset_version) }}"></script>

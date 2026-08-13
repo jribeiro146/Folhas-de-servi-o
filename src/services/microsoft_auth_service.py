@@ -9,10 +9,10 @@ from typing import Any
 from urllib import error, parse, request
 
 from src.config import (
+    GRAPH_CLIENT_ID,
+    GRAPH_CLIENT_SECRET,
+    GRAPH_TENANT_ID,
     MICROSOFT_AUTH_ALLOWED_DOMAINS,
-    MICROSOFT_AUTH_CLIENT_ID,
-    MICROSOFT_AUTH_CLIENT_SECRET,
-    MICROSOFT_AUTH_TENANT_ID,
 )
 
 
@@ -42,9 +42,9 @@ class MicrosoftAuthService:
     def __init__(
         self,
         *,
-        tenant_id: str = MICROSOFT_AUTH_TENANT_ID,
-        client_id: str = MICROSOFT_AUTH_CLIENT_ID,
-        client_secret: str = MICROSOFT_AUTH_CLIENT_SECRET,
+        tenant_id: str = GRAPH_TENANT_ID,
+        client_id: str = GRAPH_CLIENT_ID,
+        client_secret: str = GRAPH_CLIENT_SECRET,
         allowed_domains: list[str] | None = None,
     ):
         self.tenant_id = tenant_id
@@ -55,11 +55,11 @@ class MicrosoftAuthService:
     def validate_config(self) -> None:
         missing = []
         if not self.tenant_id:
-            missing.append("MICROSOFT_AUTH_TENANT_ID")
+            missing.append("GRAPH_TENANT_ID")
         if not self.client_id:
-            missing.append("MICROSOFT_AUTH_CLIENT_ID")
+            missing.append("GRAPH_CLIENT_ID")
         if not self.client_secret:
-            missing.append("MICROSOFT_AUTH_CLIENT_SECRET")
+            missing.append("GRAPH_CLIENT_SECRET")
         if missing:
             raise MicrosoftAuthError("Configuração Microsoft Login incompleta: " + ", ".join(missing))
 

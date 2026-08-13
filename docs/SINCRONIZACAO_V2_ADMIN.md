@@ -4,7 +4,8 @@ Esta versão separa três responsabilidades: o formulário guarda imediatamente 
 
 ## Feasibility e limites suportados
 
-- Suportado: vários técnicos, vários browsers e vários workers WSGI no mesmo servidor, desde que todos usem o mesmo `FS_APP_DATA_DIR` num disco local persistente.
+- Suportado: vários técnicos e browsers. Vários processos no mesmo servidor podem partilhar a fila, desde que todos usem o mesmo `FS_APP_DATA_DIR` num disco local persistente.
+- Em Plesk/Passenger: definir `FS_GRAPH_QUEUE_IN_WEB=false` e executar `python -m src.queue_worker` numa tarefa agendada independente. Isto evita depender do ciclo de vida dos workers WSGI.
 - Suportado: indisponibilidade temporária do SharePoint. Os trabalhos ficam em `graph-sync.sqlite3` e são repetidos com backoff.
 - Não suportado nesta versão: várias réplicas da aplicação em hosts diferentes sobre NFS/SMB. Para esse cenário, substituir SQLite por PostgreSQL antes de escalar horizontalmente.
 - O SharePoint deixa de estar no caminho crítico de abrir, editar, guardar, finalizar ou cancelar. Essas ações concluem primeiro no servidor local e apresentam a publicação como pendente.
@@ -37,6 +38,7 @@ Ficheiros antigos `*.lock` deixam de ser usados. Depois de todos os processos an
 ## Operação e monitorização
 
 - `GET /api/graph/status`: estado do refresh da cache e contadores da fila (`pending`, `running`, `failed`, `complete`).
+- O worker externo imprime os mesmos contadores antes e depois de cada execução: `python -m src.queue_worker`.
 - `GET /api/graph/jobs/<job_id>`: detalhe de uma publicação devolvida por guardar, finalizar ou cancelar.
 - Um trabalho `failed` é mantido e repetido automaticamente. O campo `last_error` indica a causa mais recente.
 - Os snapshots em `graph-sync-assets` pertencem à fila. Não os apagar enquanto existirem trabalhos pendentes ou falhados.

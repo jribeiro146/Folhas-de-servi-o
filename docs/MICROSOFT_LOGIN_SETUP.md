@@ -52,13 +52,13 @@ No `.env`:
 
 ```env
 FS_AUTH_PROVIDER=microsoft
-MICROSOFT_AUTH_TENANT_ID=...
-MICROSOFT_AUTH_CLIENT_ID=...
-MICROSOFT_AUTH_CLIENT_SECRET=...
+GRAPH_TENANT_ID=...
+GRAPH_CLIENT_ID=...
+GRAPH_CLIENT_SECRET=...
 MICROSOFT_AUTH_REDIRECT_URI=http://localhost:5001/auth/microsoft/callback
 MICROSOFT_AUTH_ALLOWED_DOMAINS=sensorpoint.pt,sensorpoint.com
 ```
 
-Se `MICROSOFT_AUTH_TENANT_ID`, `MICROSOFT_AUTH_CLIENT_ID` e `MICROSOFT_AUTH_CLIENT_SECRET`
-nÃ£o forem definidos, a app usa os valores `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID` e
-`GRAPH_CLIENT_SECRET`.
+Estas mesmas credenciais `GRAPH_*` são usadas pelo login, SharePoint e envio de email.
+As antigas variáveis de credenciais `MICROSOFT_AUTH_*` são ignoradas; apenas o redirect
+URI e os domínios autorizados mantêm o prefixo `MICROSOFT_AUTH_`.

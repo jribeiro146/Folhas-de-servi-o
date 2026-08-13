@@ -50,7 +50,7 @@ class FieldDef:
         label: Label descritivo do campo
         field_type: Tipo de dado
         group: Grupo lógico para o formulário
-        required: Se o campo é obrigatório para Guardar e enviar
+        required: Se o campo é obrigatório para finalizar a folha
         read_only: Se o campo é apenas de leitura na interface
     """
     column: str

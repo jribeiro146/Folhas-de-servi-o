@@ -13,9 +13,9 @@ from typing import Any
 from urllib import error, parse, request
 
 from src.config import (
-    GRAPH_MAIL_CLIENT_ID,
-    GRAPH_MAIL_CLIENT_SECRET,
-    GRAPH_MAIL_TENANT_ID,
+    GRAPH_CLIENT_ID,
+    GRAPH_CLIENT_SECRET,
+    GRAPH_TENANT_ID,
     MAIL_SENDER,
     MAIL_TEST_RECIPIENT,
 )
@@ -30,6 +30,18 @@ MAX_SIMPLE_ATTACHMENT_BYTES = 3 * 1024 * 1024
 
 class GraphMailError(Exception):
     """Erro de validação ou comunicação no envio de e-mail."""
+
+    retryable = False
+
+
+class GraphMailTransientError(GraphMailError):
+    """Falha temporária que pode ser repetida automaticamente de forma limitada."""
+
+    retryable = True
+
+    def __init__(self, message: str, *, retry_after_seconds: int | None = None):
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
 
 
 class GraphMailConfigurationError(GraphMailError):
@@ -47,18 +59,18 @@ class GraphMailConfig:
     @classmethod
     def from_env(cls) -> "GraphMailConfig":
         return cls(
-            tenant_id=GRAPH_MAIL_TENANT_ID,
-            client_id=GRAPH_MAIL_CLIENT_ID,
-            client_secret=GRAPH_MAIL_CLIENT_SECRET,
+            tenant_id=GRAPH_TENANT_ID,
+            client_id=GRAPH_CLIENT_ID,
+            client_secret=GRAPH_CLIENT_SECRET,
             sender=MAIL_SENDER,
             test_recipient=MAIL_TEST_RECIPIENT,
         )
 
     def missing_fields(self) -> list[str]:
         fields = {
-            "GRAPH_MAIL_TENANT_ID (ou GRAPH_TENANT_ID)": self.tenant_id,
-            "GRAPH_MAIL_CLIENT_ID (ou GRAPH_CLIENT_ID)": self.client_id,
-            "GRAPH_MAIL_CLIENT_SECRET (ou GRAPH_CLIENT_SECRET)": self.client_secret,
+            "GRAPH_TENANT_ID": self.tenant_id,
+            "GRAPH_CLIENT_ID": self.client_id,
+            "GRAPH_CLIENT_SECRET": self.client_secret,
             "FS_MAIL_SENDER": self.sender,
         }
         return [name for name, value in fields.items() if not value]
@@ -93,6 +105,32 @@ class GraphMailService:
             "sender": self.config.sender or None,
             "test_mode": bool(self.config.test_recipient),
             "test_recipient": self.config.test_recipient or None,
+        }
+
+    def test_connection(self) -> dict[str, Any]:
+        """Valida credenciais e ``Mail.Send`` sem criar nem enviar uma mensagem."""
+        token = self._access_token_value()
+        try:
+            encoded_claims = token.split(".")[1]
+            encoded_claims += "=" * (-len(encoded_claims) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(encoded_claims).decode("utf-8"))
+        except (IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise GraphMailConfigurationError(
+                "A Microsoft devolveu um token de acesso inválido para o serviço de e-mail."
+            ) from exc
+
+        roles = {str(role) for role in claims.get("roles") or []}
+        if "Mail.Send" not in roles:
+            raise GraphMailConfigurationError(
+                "A aplicação Microsoft não possui a permissão de aplicação Mail.Send."
+            )
+
+        return {
+            "authenticated": True,
+            "mail_send_permission": True,
+            "sender": self.config.sender,
+            "application_id": str(claims.get("azp") or claims.get("appid") or ""),
+            "tenant_id": str(claims.get("tid") or ""),
         }
 
     @staticmethod
@@ -334,6 +372,27 @@ class GraphMailService:
                 return response.read()
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            if not authenticated and exc.code in {400, 401, 403}:
+                if "invalid_client" in detail or "AADSTS7000215" in detail:
+                    raise GraphMailConfigurationError(
+                        "A autenticação do serviço de e-mail falhou. Confirme que foi "
+                        "configurado o Valor do client secret ativo, e não o ID do secret."
+                    ) from exc
+                raise GraphMailConfigurationError(
+                    "A Microsoft rejeitou as credenciais configuradas para o serviço de e-mail."
+                ) from exc
+            if exc.code in {408, 425, 429} or 500 <= exc.code <= 599:
+                retry_after = None
+                try:
+                    retry_after = max(int(exc.headers.get("Retry-After", "")), 0)
+                except (AttributeError, TypeError, ValueError):
+                    pass
+                raise GraphMailTransientError(
+                    f"O Microsoft Graph está temporariamente indisponível (HTTP {exc.code}).",
+                    retry_after_seconds=retry_after,
+                ) from exc
             raise GraphMailError(f"Microsoft Graph Mail HTTP {exc.code}: {detail}") from exc
         except error.URLError as exc:
-            raise GraphMailError(f"Microsoft Graph Mail indisponível: {exc}") from exc
+            raise GraphMailTransientError(
+                "O Microsoft Graph está temporariamente indisponível por falha de rede."
+            ) from exc

@@ -6,6 +6,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const requiredFields = Array.isArray(filesApp.requiredFields) ? filesApp.requiredFields : [];
     const mailEnabled = Boolean(filesApp.mailEnabled);
     const mailTestRecipient = String(filesApp.mailTestRecipient || "").trim();
+    const mailJobStaleSeconds = Math.max(Number(filesApp.mailJobStaleSeconds) || 180, 90);
+    const mailJobMonitorTimeoutMs = (mailJobStaleSeconds + 60) * 1000;
     const teamsEnabled = Boolean(filesApp.teamsEnabled);
     const selectedFileName = filesApp.selectedFileName || null;
     const selectedFileIsDraft = filesApp.selectedFileIsDraft;
@@ -162,7 +164,7 @@ document.addEventListener("DOMContentLoaded", () => {
             customer_signer_name: "Primeiro e último nome",
             customer_signer_name_placeholder: "Primeiro e último nome",
             customer_signature_date: "Cliente - data",
-            save_send: "Guardar e enviar",
+            save_send: "Finalizar folha",
             cancel_sheet: "Cancelar folha",
             save_draft: "Guardar rascunho",
             select_technician: "Selecionar técnico",
@@ -257,7 +259,7 @@ document.addEventListener("DOMContentLoaded", () => {
             customer_signer_name: "First and last name",
             customer_signer_name_placeholder: "First and last name",
             customer_signature_date: "Customer - date",
-            save_send: "Save and send",
+            save_send: "Finalize sheet",
             cancel_sheet: "Cancel sheet",
             save_draft: "Save draft",
             select_technician: "Select technician",
@@ -1438,12 +1440,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const sendFile = async (payload) => {
         hideConfirm();
+        const willSendEmail = mailEnabled && Boolean(String(payload?.customer_email || "").trim());
         setBusy(
             true,
-            "A guardar e enviar",
-            mailEnabled
+            willSendEmail ? "A guardar e enviar" : "A guardar e arquivar",
+            willSendEmail
                 ? "Estamos a arquivar a folha e a preparar o envio por e-mail."
-                : "Estamos a mover a folha para Arquivadas."
+                : (
+                    mailEnabled
+                        ? "Estamos a arquivar a folha sem envio de e-mail."
+                        : "Estamos a mover a folha para Arquivadas."
+                )
         );
 
         try {
@@ -1467,12 +1474,80 @@ document.addEventListener("DOMContentLoaded", () => {
 
             commitPhotoState();
             await window.__EDITING_COORDINATOR__?.markCommitted(result, "send");
-            showToast(result.message || "Folha concluída com sucesso.", "success");
+            if (result.email_status === "pending") {
+                setBusy(
+                    true,
+                    "A confirmar o envio",
+                    "A folha já foi arquivada. Estamos a aguardar a confirmação do e-mail."
+                );
+                const monitor = window.SensorpointMailJobMonitor;
+                if (!monitor?.waitForMailJob) {
+                    throw new Error(
+                        "A folha foi arquivada, mas o monitor do envio de e-mail não está disponível."
+                    );
+                }
+                await monitor.waitForMailJob(result.graph_job_id, {
+                    timeoutMs: mailJobMonitorTimeoutMs
+                });
+                showToast(
+                    "Folha arquivada e e-mail aceite para envio pela Microsoft.",
+                    "success"
+                );
+            } else {
+                showToast(result.message || "Folha concluída com sucesso.", "success");
+            }
             window.setTimeout(() => {
                 window.location.href = "/";
             }, 1200);
         } catch (error) {
             showToast(error.message, "error");
+            if (error?.code === "mail_failed" && error.job?.id) {
+                const failedJobId = error.job.id;
+                showConfirm({
+                    eyebrow: "Envio não concluído",
+                    title: "E-mail não enviado",
+                    message: (
+                        `${error.message} A folha já está arquivada. `
+                        + "Pretende repetir apenas este envio?"
+                    ),
+                    confirmLabel: "Tentar novamente",
+                    confirmVariant: "primary",
+                    onAccept: async () => {
+                        hideConfirm();
+                        setBusy(
+                            true,
+                            "A repetir o envio",
+                            "Estamos a repetir apenas este e-mail."
+                        );
+                        try {
+                            const retryResponse = await fetch(
+                                `/api/graph/jobs/${encodeURIComponent(failedJobId)}/retry`,
+                                { method: "POST", headers: { "Accept": "application/json" } }
+                            );
+                            const retryResult = await retryResponse.json();
+                            if (!retryResponse.ok || !retryResult.success) {
+                                throw new Error(
+                                    retryResult.error || "Não foi possível repetir o envio."
+                                );
+                            }
+                            await window.SensorpointMailJobMonitor.waitForMailJob(failedJobId, {
+                                timeoutMs: mailJobMonitorTimeoutMs
+                            });
+                            showToast(
+                                "E-mail aceite para envio pela Microsoft.",
+                                "success"
+                            );
+                            window.setTimeout(() => {
+                                window.location.href = "/";
+                            }, 1200);
+                        } catch (retryError) {
+                            showToast(retryError.message, "error");
+                        } finally {
+                            setBusy(false);
+                        }
+                    }
+                });
+            }
         } finally {
             setBusy(false);
         }
@@ -1773,21 +1848,29 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
+        const willSendEmail = mailEnabled && Boolean(String(payload.customer_email || "").trim());
+        const finalizeTitle = willSendEmail ? "Guardar e enviar" : "Guardar e arquivar";
+        const finalizeMessage = willSendEmail
+            ? (
+                mailTestRecipient
+                    ? `MODO DE TESTE: o PDF será enviado para ${mailTestRecipient}. O email do cliente não será utilizado.`
+                    : (
+                        teamsEnabled
+                            ? "A folha será arquivada e enviada em PDF para o e-mail do cliente, com o técnico em CC. Depois será publicado um aviso no Teams."
+                            : "A folha será arquivada e enviada em PDF para o e-mail do cliente, com o técnico em CC."
+                    )
+            )
+            : (
+                mailEnabled
+                    ? "O e-mail do cliente não foi preenchido. A folha será arquivada sem envio de e-mail."
+                    : "A folha será guardada e movida para Arquivadas."
+            );
+
         showConfirm({
             eyebrow: "Finalizar folha",
-            title: "Guardar e enviar",
-            message: mailEnabled
-                ? (
-                    mailTestRecipient
-                        ? `MODO DE TESTE: o PDF será enviado para ${mailTestRecipient}. O email do cliente não será utilizado.`
-                        : (
-                            teamsEnabled
-                                ? "A folha será arquivada e enviada em PDF para o e-mail do cliente, com o técnico em CC. Depois será publicado um aviso no Teams."
-                                : "A folha será arquivada e enviada em PDF para o e-mail do cliente, com o técnico em CC."
-                        )
-                )
-                : "A folha será guardada e movida para Arquivadas.",
-            confirmLabel: "Guardar e enviar",
+            title: finalizeTitle,
+            message: finalizeMessage,
+            confirmLabel: finalizeTitle,
             confirmVariant: "success",
             showInternalNotes: true,
             onAccept: async () => {

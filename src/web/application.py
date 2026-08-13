@@ -16,6 +16,7 @@ from flask import Flask, g, jsonify, redirect, render_template, request, send_fr
 from src.config import (
     APP_DATA_DIR,
     AUTH_PROVIDER,
+    GRAPH_QUEUE_IN_WEB,
     GRAPH_SHAREPOINT_HOSTNAME,
     GRAPH_WORKS_CACHE_SECONDS,
     GRAPH_WORKS_PATH,
@@ -150,6 +151,7 @@ def create_app(
             mail_service=mail_service,
             local_pdf_service=local_pdf_service,
             teams_notification_service=teams_notification_service,
+            auto_start=GRAPH_QUEUE_IN_WEB,
         )
         if graph_service is not None or mail_service is not None else None
     )
@@ -161,6 +163,7 @@ def create_app(
             "/login",
             "/service-worker.js",
             "/static/js/field-app.js",
+            "/static/js/mail-job-monitor.js",
             "/static/js/document-editor.js",
             "/static/js/editing-coordinator.js",
             "/static/css/auth.css",
@@ -489,14 +492,31 @@ def create_app(
             photos.append(item)
         return photos
 
+    def normalize_document_for_file(
+        payload: dict[str, object] | None,
+        file_name: str | Path,
+    ) -> dict[str, object]:
+        """Fixa a identidade da folha pelo prefixo canónico do nome do ficheiro."""
+        document = normalize_document_payload(payload)
+        canonical_number = FileService.service_number_from_name(file_name)
+        if canonical_number:
+            document["service_number"] = canonical_number
+        return document
+
     def load_editor_state(path):
         excel_form_data = serialize_payload(ExcelService(path).read_link_as_form_data())
         document_data = serialize_payload(
-            document_from_excel_and_extra(
-                excel_form_data,
-                DocumentDataService(path).read(),
+            normalize_document_for_file(
+                document_from_excel_and_extra(
+                    excel_form_data,
+                    DocumentDataService(path).read(),
+                ),
+                path,
             )
         )
+        canonical_number = FileService.service_number_from_name(path)
+        if canonical_number:
+            excel_form_data["Folha nº"] = canonical_number
         if not document_data.get("work_number"):
             app.logger.warning(
                 "Número de obra ausente ou inválido em %s; ligação SharePoint desativada.",
@@ -527,7 +547,7 @@ def create_app(
         payload: dict[str, object],
         auto_print: bool = False,
     ) -> str:
-        document_data = normalize_document_payload(payload)
+        document_data = normalize_document_for_file(payload, file_name)
         responsible_technician = get_primary_technician_name(document_data)
         embedded_styles, logo_src = load_document_assets()
         return render_template(
@@ -581,16 +601,13 @@ def create_app(
             service_type_options=SERVICE_TYPE_OPTIONS,
             equipment_options=EQUIPMENT_OPTIONS,
             technician_options=TECHNICIAN_OPTIONS,
-            document_required_fields=[
-                *DOCUMENT_REQUIRED_FIELDS,
-                *(
-                    [{"key": "customer_email", "label": "E-mail do cliente"}]
-                    if mail_service is not None else []
-                ),
-            ],
+            document_required_fields=DOCUMENT_REQUIRED_FIELDS,
             mail_enabled=mail_service is not None,
             mail_test_recipient=(
                 mail_service.config.test_recipient if mail_service is not None else ""
+            ),
+            mail_job_stale_seconds=(
+                getattr(graph_sync_queue, "mail_job_stale_seconds", 180)
             ),
             teams_enabled=teams_notification_service is not None,
             current_user=g.current_user,
@@ -727,6 +744,20 @@ def create_app(
         except GraphStorageError as exc:
             return json_error(str(exc), 502)
 
+    @app.route("/api/mail/test")
+    def mail_test():
+        if mail_service is None:
+            return json_error("O envio de e-mail não está ativo.", 400)
+        try:
+            return jsonify({
+                "success": True,
+                "mail": mail_service.test_connection(),
+            })
+        except GraphMailConfigurationError as exc:
+            return json_error(str(exc), 503)
+        except GraphMailError as exc:
+            return json_error(str(exc), 502)
+
     @app.route("/api/graph/sync", methods=["POST"])
     def graph_sync():
         if graph_refresh_coordinator is None:
@@ -742,6 +773,18 @@ def create_app(
         if job is None:
             return json_error("Operação de sincronização não encontrada.", 404)
         return jsonify({"success": True, "job": job})
+
+    @app.route("/api/graph/jobs/<job_id>/retry", methods=["POST"])
+    def retry_graph_job(job_id: str):
+        if graph_sync_queue is None:
+            return json_error("A fila de operações não está ativa.", 400)
+        try:
+            job = graph_sync_queue.retry(job_id)
+        except KeyError:
+            return json_error("Operação de sincronização não encontrada.", 404)
+        except ValueError as exc:
+            return json_error(str(exc), 409)
+        return jsonify({"success": True, "job": job}), 202
 
     @app.route("/api/file/<name>/bootstrap")
     def bootstrap_file_editor(name: str):
@@ -760,7 +803,11 @@ def create_app(
                 editing = editing_state_service.acquire_private_workspace(
                     path, identity, client_id
                 )
-            effective_document = editing.get("server_document") or source_document
+            server_document = editing.get("server_document")
+            if isinstance(server_document, dict):
+                server_document = normalize_document_for_file(server_document, path)
+                editing = {**editing, "server_document": server_document}
+            effective_document = server_document or source_document
             return jsonify({
                 "success": True,
                 "file": name,
@@ -805,6 +852,12 @@ def create_app(
         try:
             form_data, document_data, signatures = load_editor_state(path)
             editing = editing_state_service.snapshot(path)
+            server_document = editing.get("server_document")
+            if isinstance(server_document, dict):
+                editing = {
+                    **editing,
+                    "server_document": normalize_document_for_file(server_document, path),
+                }
             if not file_service.is_draft_file(path):
                 editing = {
                     **editing,
@@ -917,7 +970,7 @@ def create_app(
             metadata = extract_edit_metadata(data)
             document_id = validate_document_identity(path, metadata)
             document = (
-                strip_signature_payload(normalize_document_payload(document_payload))
+                strip_signature_payload(normalize_document_for_file(document_payload, path))
                 if isinstance(document_payload, dict)
                 else None
             )
@@ -949,7 +1002,9 @@ def create_app(
             metadata = extract_edit_metadata(data)
             document_id = validate_document_identity(path, metadata)
             idempotency_key = str(metadata.get("idempotency_key") or secrets.token_urlsafe(18))
-            document = strip_signature_payload(normalize_document_payload(document_payload))
+            document = strip_signature_payload(
+                normalize_document_for_file(document_payload, path)
+            )
             editing = editing_state_service.save_autosave(
                 document_id=document_id,
                 identity=current_editor_identity(),
@@ -1059,7 +1114,7 @@ def create_app(
                     created_copy=created_copy,
                 )
 
-            document_data = normalize_document_payload(data)
+            document_data = normalize_document_for_file(data, draft_path)
             if document_data.get("client_not_present"):
                 data[CLIENT_SIGNATURE_LABEL] = ""
             excel_form_data = document_to_excel_form(document_data)
@@ -1068,6 +1123,7 @@ def create_app(
             ExcelService(draft_path).write_link_from_form(
                 excel_form_data,
                 signatures=resolved_signatures,
+                trusted_service_number=str(document_data.get("service_number") or ""),
             )
             DocumentDataService(draft_path).write(strip_signature_payload(document_data))
             signature_service.save_from_form_data(data)
@@ -1180,23 +1236,24 @@ def create_app(
                 validate_document_identity(path, metadata)
 
             internal_observations = pop_internal_observations(document_payload)
-            document_data = normalize_document_payload(document_payload)
+            document_data = normalize_document_for_file(
+                document_payload,
+                archived_path or path or name,
+            )
+            service_number = str(document_data.get("service_number") or name)
             missing_fields = document_missing_required_fields(document_data)
             invalid_fields = document_invalid_fields(document_data)
             mail_payload = None
             teams_payload = None
-            if mail_service is not None:
-                customer_email = str(document_data.get("customer_email") or "").strip()
-                if not customer_email:
-                    missing_fields.append("E-mail do cliente")
-                else:
-                    try:
-                        mail_service.validate_address(
-                            customer_email,
-                            label="e-mail do cliente",
-                        )
-                    except GraphMailError:
-                        invalid_fields.append("E-mail do cliente")
+            customer_email = str(document_data.get("customer_email") or "").strip()
+            if mail_service is not None and customer_email:
+                try:
+                    mail_service.validate_address(
+                        customer_email,
+                        label="e-mail do cliente",
+                    )
+                except GraphMailError:
+                    invalid_fields.append("E-mail do cliente")
             if document_data.get("client_not_present"):
                 document_payload[CLIENT_SIGNATURE_LABEL] = ""
             validation_path = archived_path or path
@@ -1225,7 +1282,7 @@ def create_app(
                     "invalid_fields": invalid_fields,
                 }), 400
 
-            if mail_service is not None:
+            if mail_service is not None and customer_email:
                 if graph_sync_queue is None:
                     return json_error(
                         "O envio de e-mail requer o backend Microsoft Graph ativo.",
@@ -1240,10 +1297,10 @@ def create_app(
                     )
                 try:
                     mail_payload = mail_service.prepare_service_email(
-                        customer_email=str(document_data["customer_email"]),
+                        customer_email=customer_email,
                         technician_email=technician_email,
                         customer_name=str(document_data.get("customer_name") or ""),
-                        service_number=str(document_data.get("service_number") or name),
+                        service_number=service_number,
                         document_language=str(document_data.get("document_language") or "pt"),
                     )
                 except GraphMailConfigurationError as exc:
@@ -1251,13 +1308,18 @@ def create_app(
                 except GraphMailError as exc:
                     return json_error(str(exc), 400)
 
+                try:
+                    mail_service.test_connection()
+                except GraphMailConfigurationError as exc:
+                    return json_error(str(exc), 503)
+                except GraphMailError as exc:
+                    return json_error(str(exc), 502)
+
                 if teams_notification_service is not None:
                     try:
                         teams_payload = (
                             teams_notification_service.prepare_service_sent_notification(
-                                service_number=str(
-                                    document_data.get("service_number") or name
-                                ),
+                                service_number=service_number,
                             )
                         )
                     except TeamsNotificationConfigurationError as exc:
@@ -1305,6 +1367,7 @@ def create_app(
                 excel_form_data,
                 signatures=resolved_signatures,
                 final=True,
+                trusted_service_number=service_number,
             )
             DocumentDataService(archived_path).write(strip_signature_payload(document_data))
             SignatureService(archived_path).save_from_form_data(document_payload)

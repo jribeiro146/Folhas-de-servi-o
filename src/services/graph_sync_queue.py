@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -19,6 +20,15 @@ from src.services.local_pdf_service import LocalPdfService
 from src.services.teams_notification_service import TeamsNotificationService
 
 
+LOGGER = logging.getLogger(__name__)
+
+
+class GraphJobNoLongerActiveError(RuntimeError):
+    """Impede que um worker órfão continue até um envio externo."""
+
+    retryable = False
+
+
 class GraphSyncQueue:
     """Persist Graph work before executing it and retry transient failures."""
 
@@ -30,6 +40,7 @@ class GraphSyncQueue:
         mail_service: GraphMailService | None = None,
         local_pdf_service: LocalPdfService | None = None,
         teams_notification_service: TeamsNotificationService | None = None,
+        auto_start: bool = True,
     ):
         self.graph_service = graph_service
         self.mail_service = mail_service
@@ -40,10 +51,23 @@ class GraphSyncQueue:
         self.asset_root = self.database_path.parent / "graph-sync-assets"
         self.asset_root.mkdir(parents=True, exist_ok=True)
         self.busy_timeout_ms = max(int(os.environ.get("FS_STATE_DB_BUSY_MS", "10000")), 1000)
+        self.mail_job_max_attempts = max(
+            int(os.environ.get("FS_MAIL_JOB_MAX_ATTEMPTS", "3")),
+            1,
+        )
+        self.mail_job_stale_seconds = max(
+            int(os.environ.get("FS_MAIL_JOB_STALE_SECONDS", "900")),
+            90,
+        )
+        self.retry_base_seconds = max(
+            float(os.environ.get("FS_GRAPH_JOB_RETRY_BASE_SECONDS", "2")),
+            0.01,
+        )
+        self.auto_start = bool(auto_start)
         self._worker_lock = threading.Lock()
         self._worker_running = False
         self._initialize()
-        self.start()
+        self._start_if_enabled()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(
@@ -71,6 +95,8 @@ class GraphSyncQueue:
                             status TEXT NOT NULL,
                             attempts INTEGER NOT NULL DEFAULT 0,
                             next_attempt_at REAL NOT NULL,
+                            retryable INTEGER NOT NULL DEFAULT 0,
+                            max_attempts INTEGER,
                             last_error TEXT,
                             result_json TEXT,
                             created_at REAL NOT NULL,
@@ -78,11 +104,67 @@ class GraphSyncQueue:
                         )
                         """
                     )
+                    columns = {
+                        str(row[1])
+                        for row in connection.execute("PRAGMA table_info(graph_sync_jobs)")
+                    }
+                    legacy_queue = "retryable" not in columns
+                    if legacy_queue:
+                        connection.execute(
+                            "ALTER TABLE graph_sync_jobs "
+                            "ADD COLUMN retryable INTEGER NOT NULL DEFAULT 0"
+                        )
+                    if "max_attempts" not in columns:
+                        connection.execute(
+                            "ALTER TABLE graph_sync_jobs ADD COLUMN max_attempts INTEGER"
+                        )
+                    if legacy_queue:
+                        self._hold_legacy_mail_jobs(connection)
                 return
             except sqlite3.OperationalError as exc:
                 if "locked" not in str(exc).casefold() or time.monotonic() >= deadline:
                     raise
                 time.sleep(0.025)
+
+    def _hold_legacy_mail_jobs(self, connection: sqlite3.Connection) -> None:
+        hold_message = (
+            "Envio criado por uma versão anterior; requer repetição manual antes de continuar."
+        )
+        rows = connection.execute(
+            """
+            SELECT id, kind, payload_json, status, last_error
+            FROM graph_sync_jobs
+            WHERE status IN ('pending', 'running', 'failed')
+            """
+        ).fetchall()
+        now = time.time()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"])
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            has_mail = row["kind"] == "archive_and_mail_local" or bool(payload.get("mail"))
+            if not has_mail:
+                continue
+            previous_error = str(row["last_error"] or "").strip()
+            visible_error = (
+                f"{previous_error} {hold_message}" if previous_error else hold_message
+            )
+            connection.execute(
+                """
+                UPDATE graph_sync_jobs
+                SET status = 'failed', retryable = 0, max_attempts = ?,
+                    next_attempt_at = ?, last_error = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    self.mail_job_max_attempts,
+                    now,
+                    visible_error[:2000],
+                    now,
+                    row["id"],
+                ),
+            )
 
     def enqueue(
         self,
@@ -93,6 +175,7 @@ class GraphSyncQueue:
     ) -> dict[str, Any]:
         identifier = job_id or str(uuid.uuid4())
         now = time.time()
+        max_attempts = self._job_max_attempts(kind, payload)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
@@ -104,8 +187,8 @@ class GraphSyncQueue:
                     """
                     INSERT INTO graph_sync_jobs (
                         id, kind, payload_json, status, attempts,
-                        next_attempt_at, created_at, updated_at
-                    ) VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
+                        next_attempt_at, max_attempts, created_at, updated_at
+                    ) VALUES (?, ?, ?, 'pending', 0, ?, ?, ?, ?)
                     """,
                     (
                         identifier,
@@ -116,27 +199,81 @@ class GraphSyncQueue:
                             separators=(",", ":"),
                         ),
                         now,
+                        max_attempts,
                         now,
                         now,
                     ),
                 )
             connection.commit()
-        self.start()
+        self._start_if_enabled()
         return self.status(identifier) or {"id": identifier, "status": "pending"}
 
-    def start(self) -> None:
+    def _start_if_enabled(self) -> None:
+        if self.auto_start:
+            self.start()
+
+    def start(self) -> bool:
+        """Arranca o worker interno, quando a aplicacao gere a propria fila."""
         with self._worker_lock:
             if self._worker_running:
-                return
+                return False
             self._worker_running = True
         threading.Thread(target=self._worker, daemon=True, name="graph-sync-outbox").start()
+        return True
+
+    def run_until_idle(self) -> bool:
+        """Processa sincronamente todos os trabalhos prontos e termina.
+
+        Este modo destina-se a workers externos (por exemplo, uma tarefa agendada
+        no Plesk), para que o trabalho nao dependa da vida do processo WSGI.
+        """
+        with self._worker_lock:
+            if self._worker_running:
+                return False
+            self._worker_running = True
+        self._worker(schedule_follow_up=False)
+        return True
+
+    def _job_max_attempts(self, kind: str, payload: dict[str, Any]) -> int | None:
+        has_mail = kind == "archive_and_mail_local" or bool(payload.get("mail"))
+        return self.mail_job_max_attempts if has_mail else None
 
     def status(self, job_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
+            self._hold_stale_mail_jobs(connection, now=time.time())
             row = connection.execute(
                 "SELECT * FROM graph_sync_jobs WHERE id = ?", (job_id,)
             ).fetchone()
         return self._serialize(row) if row else None
+
+    def retry(self, job_id: str) -> dict[str, Any]:
+        """Repete explicitamente um único trabalho que ficou terminalmente falhado."""
+        now = time.time()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM graph_sync_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise KeyError(job_id)
+            current = self._serialize(row)
+            if current["status"] != "failed" or current["will_retry"]:
+                connection.rollback()
+                raise ValueError("Apenas trabalhos falhados e parados podem ser repetidos.")
+            connection.execute(
+                """
+                UPDATE graph_sync_jobs
+                SET status = 'pending', attempts = 0, next_attempt_at = ?,
+                    retryable = 0, last_error = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, now, job_id),
+            )
+            connection.commit()
+        self._start_if_enabled()
+        return self.status(job_id) or {"id": job_id, "status": "pending"}
 
     def summary(self) -> dict[str, int]:
         result = {"pending": 0, "running": 0, "failed": 0, "complete": 0}
@@ -157,12 +294,14 @@ class GraphSyncQueue:
             time.sleep(0.025)
         return self.status(job_id)
 
-    def _worker(self) -> None:
+    def _worker(self, *, schedule_follow_up: bool = True) -> None:
+        current_job = None
         try:
             while True:
                 job = self._claim_next()
                 if job is None:
                     return
+                current_job = job
                 try:
                     result = self._execute(
                         job["kind"],
@@ -171,24 +310,36 @@ class GraphSyncQueue:
                         job_id=job["id"],
                         prior_result=job.get("result"),
                     )
-                except Exception as exc:
-                    self._mark_failed(job, str(exc))
+                except BaseException as exc:
+                    self._record_job_failure(job, exc)
                 else:
-                    self._mark_complete(job, result)
+                    try:
+                        self._mark_complete(job, result)
+                    except BaseException as exc:
+                        self._record_job_failure(job, exc)
+                current_job = None
         finally:
+            if current_job is not None:
+                self._hold_job_terminally(
+                    current_job,
+                    "O worker terminou inesperadamente; o envio requer repetição manual.",
+                )
             with self._worker_lock:
                 self._worker_running = False
-            if self._has_active_job():
-                delay = 0.25
-            elif self._has_due_jobs():
-                self.start()
-                return
-            else:
-                delay = self._next_retry_delay()
-            if delay is not None:
-                timer = threading.Timer(delay, self.start)
-                timer.daemon = True
-                timer.start()
+            if schedule_follow_up:
+                if self._has_active_job():
+                    # Outro worker pode estar a tratar o trabalho. Evita criar quatro
+                    # threads por segundo enquanto se aguarda pela reconciliacao stale.
+                    delay = 5.0
+                elif self._has_due_jobs():
+                    self.start()
+                    return
+                else:
+                    delay = self._next_retry_delay()
+                if delay is not None:
+                    timer = threading.Timer(delay, self.start)
+                    timer.daemon = True
+                    timer.start()
 
     def _claim_next(self) -> dict[str, Any] | None:
         now = time.time()
@@ -198,6 +349,7 @@ class GraphSyncQueue:
         )
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._hold_stale_mail_jobs(connection, now=now)
             active = connection.execute(
                 """
                 SELECT 1 FROM graph_sync_jobs
@@ -214,7 +366,8 @@ class GraphSyncQueue:
                 """
                 SELECT * FROM graph_sync_jobs
                 WHERE (
-                    status IN ('pending', 'failed') AND next_attempt_at <= ?
+                    status = 'pending'
+                    OR (status = 'failed' AND retryable = 1 AND next_attempt_at <= ?)
                 ) OR (
                     status = 'running' AND updated_at <= ?
                 )
@@ -266,7 +419,12 @@ class GraphSyncQueue:
             if mail_payload:
                 if self.mail_service is None:
                     raise RuntimeError("O serviço de e-mail não está disponível para este trabalho.")
+                self._checkpoint_result(job_id, {"phase": "generating_pdf"})
                 pdf_path, remote_pdf = self.graph_service.export_archive_pdf(archived_path)
+                self._checkpoint_result(
+                    job_id,
+                    {"phase": "pdf_ready", "local_pdf": str(pdf_path)},
+                )
                 uploaded.append(remote_pdf)
             removed = self.graph_service.remove_active_name(
                 str(payload["source_name"]),
@@ -299,7 +457,12 @@ class GraphSyncQueue:
             mail_payload = dict(payload.get("mail") or {})
             if not mail_payload:
                 raise RuntimeError("Os destinatários do e-mail não foram guardados no trabalho.")
+            self._checkpoint_result(job_id, {"phase": "generating_pdf"})
             pdf_path = self.local_pdf_service.export_archive_pdf(archived_path)
+            self._checkpoint_result(
+                job_id,
+                {"phase": "pdf_ready", "local_pdf": str(pdf_path)},
+            )
             mail_result = self._send_mail_once(
                 mail_payload,
                 pdf_path,
@@ -350,13 +513,29 @@ class GraphSyncQueue:
             return previous_mail
         if self.mail_service is None:
             raise RuntimeError("O serviço de e-mail não está disponível para este trabalho.")
+        self._assert_job_running(job_id)
+        self._checkpoint_result(job_id, {"phase": "sending_mail"})
         mail_result = self.mail_service.send_prepared(
             mail_payload,
             pdf_path,
             operation_id=job_id,
         )
-        self._checkpoint_result(job_id, {"mail": mail_result})
+        self._checkpoint_result(
+            job_id,
+            {"phase": "mail_accepted", "mail": mail_result},
+        )
         return mail_result
+
+    def _assert_job_running(self, job_id: str) -> None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT status FROM graph_sync_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+        if row is None or str(row["status"]) != "running":
+            raise GraphJobNoLongerActiveError(
+                "O trabalho deixou de estar ativo antes do envio; requer repetição manual."
+            )
 
     def _enqueue_teams_notification(
         self,
@@ -405,19 +584,119 @@ class GraphSyncQueue:
 
         self._cleanup_staging(job["payload"])
 
-    def _mark_failed(self, job: dict[str, Any], error: str) -> None:
+    def _mark_failed(self, job: dict[str, Any], error: Exception) -> None:
         attempts = int(job.get("attempts") or 1)
-        delay = min(300, 2 ** min(attempts, 8))
+        delay = min(300.0, self.retry_base_seconds * (2 ** min(attempts - 1, 8)))
+        retry_after = getattr(error, "retry_after_seconds", None)
+        if retry_after is not None:
+            delay = min(300.0, max(delay, float(retry_after)))
         now = time.time()
+        max_attempts = job.get("max_attempts")
+        below_limit = max_attempts is None or attempts < int(max_attempts)
+        retryable = bool(getattr(error, "retryable", True)) and below_limit
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE graph_sync_jobs
-                SET status = 'failed', attempts = ?, next_attempt_at = ?,
+                SET status = 'failed', attempts = ?, next_attempt_at = ?, retryable = ?,
                     last_error = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (attempts, now + delay, error[:2000], now, job["id"]),
+                (
+                    attempts,
+                    now + delay,
+                    1 if retryable else 0,
+                    str(error)[:2000],
+                    now,
+                    job["id"],
+                ),
+            )
+
+    def _record_job_failure(self, job: dict[str, Any], error: BaseException) -> None:
+        try:
+            self._mark_failed(job, error)
+        except BaseException as state_error:
+            LOGGER.exception(
+                "Falha ao registar o erro do trabalho Graph %s: %s",
+                job.get("id"),
+                state_error,
+            )
+            self._hold_job_terminally(
+                job,
+                f"Falha interna ao atualizar o estado: {error}",
+            )
+
+    def _hold_job_terminally(self, job: dict[str, Any], message: str) -> None:
+        now = time.time()
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    UPDATE graph_sync_jobs
+                    SET status = 'failed', retryable = 0, next_attempt_at = ?,
+                        last_error = ?, updated_at = ?
+                    WHERE id = ? AND status = 'running'
+                    """,
+                    (now, str(message)[:2000], now, job["id"]),
+                )
+        except BaseException:
+            LOGGER.exception(
+                "Não foi possível colocar em pausa o trabalho Graph %s.",
+                job.get("id"),
+            )
+
+    def _hold_stale_mail_jobs(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        now: float,
+    ) -> None:
+        stale_before = now - self.mail_job_stale_seconds
+        rows = connection.execute(
+            """
+            SELECT id, kind, payload_json, result_json
+            FROM graph_sync_jobs
+            WHERE status = 'running' AND updated_at <= ?
+            """,
+            (stale_before,),
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            has_mail = row["kind"] == "archive_and_mail_local" or bool(payload.get("mail"))
+            if not has_mail:
+                continue
+            try:
+                result = json.loads(row["result_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                result = {}
+            if dict(result.get("mail") or {}).get("accepted"):
+                connection.execute(
+                    """
+                    UPDATE graph_sync_jobs
+                    SET status = 'complete', retryable = 0, last_error = NULL,
+                        updated_at = ?
+                    WHERE id = ? AND status = 'running'
+                    """,
+                    (now, row["id"]),
+                )
+                continue
+            connection.execute(
+                """
+                UPDATE graph_sync_jobs
+                SET status = 'failed', retryable = 0, next_attempt_at = ?,
+                    last_error = ?, updated_at = ?
+                WHERE id = ? AND status = 'running'
+                """,
+                (
+                    now,
+                    "O processamento ficou sem atividade; o envio não foi confirmado "
+                    "e requer repetição manual.",
+                    now,
+                    row["id"],
+                ),
             )
 
     def _has_due_jobs(self) -> bool:
@@ -425,7 +704,8 @@ class GraphSyncQueue:
             row = connection.execute(
                 """
                 SELECT 1 FROM graph_sync_jobs
-                WHERE status = 'pending' OR (status = 'failed' AND next_attempt_at <= ?)
+                WHERE status = 'pending'
+                   OR (status = 'failed' AND retryable = 1 AND next_attempt_at <= ?)
                 LIMIT 1
                 """,
                 (time.time(),),
@@ -448,7 +728,8 @@ class GraphSyncQueue:
     def _next_retry_delay(self) -> float | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT MIN(next_attempt_at) AS due_at FROM graph_sync_jobs WHERE status = 'failed'"
+                "SELECT MIN(next_attempt_at) AS due_at FROM graph_sync_jobs "
+                "WHERE status = 'failed' AND retryable = 1"
             ).fetchone()
         due_at = row["due_at"] if row else None
         if due_at is None:
@@ -540,12 +821,18 @@ class GraphSyncQueue:
         shutil.rmtree(candidate, ignore_errors=True)
     @staticmethod
     def _serialize(row: sqlite3.Row) -> dict[str, Any]:
+        status = str(row["status"])
+        will_retry = status == "failed" and bool(row["retryable"])
         return {
             "id": str(row["id"]),
             "kind": str(row["kind"]),
             "payload": json.loads(row["payload_json"]),
-            "status": str(row["status"]),
+            "status": status,
+            "will_retry": will_retry,
             "attempts": int(row["attempts"]),
+            "max_attempts": (
+                int(row["max_attempts"]) if row["max_attempts"] is not None else None
+            ),
             "next_attempt_at": float(row["next_attempt_at"]),
             "last_error": row["last_error"],
             "result": json.loads(row["result_json"]) if row["result_json"] else None,

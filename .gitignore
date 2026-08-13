@@ -15,3 +15,6 @@ tests/.tmp*/
 Excel/
 PDF/
 data/
+.qa-runtime/
+output/
+/Registo dos serviços - Sensorpointz.xlsm

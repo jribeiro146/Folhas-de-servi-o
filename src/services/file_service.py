@@ -22,6 +22,7 @@ from src.services.signature_service import SignatureService
 
 
 DRAFT_NAME_RE = re.compile(r"^.+_\d{4}-\d{2}-\d{2}_.+$")
+SERVICE_NUMBER_NAME_RE = re.compile(r"^(\d{4}_\d{4})(?:_|$)")
 ARCHIVED_MARKER_NAME = ".fs_archived"
 ARCHIVED_SINGLE_SUFFIX = ".fs_archived"
 
@@ -151,6 +152,12 @@ class FileService:
 
     def is_draft_file(self, file_path: Path) -> bool:
         return bool(DRAFT_NAME_RE.match(file_path.stem))
+
+    @staticmethod
+    def service_number_from_name(name: str | Path) -> str:
+        """Extrai o número canónico de uma folha ou de um rascunho pelo nome."""
+        match = SERVICE_NUMBER_NAME_RE.match(Path(str(name)).stem)
+        return match.group(1) if match else ""
 
     def create_draft_copy(self, file_path: Path, technician_name: str | None) -> Path:
         if not file_path.exists() or not file_path.is_file():

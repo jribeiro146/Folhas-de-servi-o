@@ -238,25 +238,33 @@ class GraphStorageService:
         return uploaded
 
     def export_archive_pdf(self, archived_excel_path: Path) -> tuple[Path, str]:
-        """Converte o Excel remoto em PDF e guarda/publica o artefacto final."""
+        """Converte o HTML final remoto em PDF e publica o mesmo artefacto."""
         self.validate_config()
         if not archived_excel_path.exists():
             raise GraphStorageError(f"Ficheiro arquivado não encontrado: {archived_excel_path}")
+
+        html_path = archived_excel_path.with_name(
+            f"{archived_excel_path.stem}__folha_final.html"
+        )
+        if not html_path.exists() or not html_path.is_file():
+            raise GraphStorageError(f"HTML final da folha não encontrado: {html_path}")
 
         archive_folder = self._join_graph_path(
             self.config.archive_path,
             archived_excel_path.parent.name,
         )
-        remote_excel = self._join_graph_path(archive_folder, archived_excel_path.name)
+        remote_html = self._join_graph_path(archive_folder, html_path.name)
         pdf_bytes = self._graph_bytes(
             "GET",
             (
                 f"/drives/{self.config.drive_id}/root:/"
-                f"{self._quote_path(remote_excel)}:/content?format=pdf"
+                f"{self._quote_path(remote_html)}:/content?format=pdf"
             ),
         )
         if not pdf_bytes.startswith(b"%PDF-"):
-            raise GraphStorageError("O Microsoft Graph não devolveu um PDF válido para a folha.")
+            raise GraphStorageError(
+                "O Microsoft Graph não devolveu um PDF válido para o HTML final."
+            )
 
         pdf_path = archived_excel_path.with_name(
             f"{archived_excel_path.stem}__folha_final.pdf"

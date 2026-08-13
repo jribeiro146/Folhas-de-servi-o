@@ -4,6 +4,26 @@ Registo das principais alteracoes por versao da aplicacao Folhas de Servico.
 
 As versoes sem tag formal usam o commit Git como referencia. A versao marcada para servidor continua a ser `v1.0.0-servidor`, salvo indicacao posterior.
 
+## Em desenvolvimento - confirmação e segurança do envio de e-mail
+
+- O Plesk/Passenger pode deixar o trabalho pesado fora dos processos WSGI: `FS_GRAPH_QUEUE_IN_WEB=false` e `python -m src.queue_worker` processam a mesma fila SQLite persistente numa tarefa independente.
+- SharePoint, conversão PDF, login e email passam a usar obrigatoriamente a única credencial `GRAPH_*`; overrides antigos `GRAPH_MAIL_*` e credenciais `MICROSOFT_AUTH_*` deixam de ser lidos, eliminando a possibilidade de o email usar um secret local ou expirado diferente do servidor.
+- O tempo de reconciliação recomendado para emails em produção passou para 900 segundos, evitando marcar como parado um arquivo grande ainda em conversão ou upload.
+- Em Graph/Plesk, o PDF passa a ser convertido exclusivamente a partir do HTML final pelo Microsoft Graph; foi removida a conversão do `.xlsx`. O modo local mantém Chrome/Edge.
+- O mesmo PDF validado e publicado em `Arquivadas` e o ficheiro anexado ao email.
+- A interface aguarda pela aceitação do e-mail pelo Microsoft Graph em vez de tratar um trabalho pendente como sucesso.
+- Os erros finais da criação do PDF, autenticação, permissões e Graph ficam visíveis ao utilizador.
+- Falhas temporárias respeitam `Retry-After` e têm um máximo de três tentativas por defeito.
+- Trabalhos que esgotem as tentativas ou tenham uma falha permanente ficam parados; só podem ser repetidos individualmente e após confirmação explícita.
+- Trabalhos de e-mail criados por versões anteriores ficam retidos para revisão na primeira atualização, evitando envios acumulados inesperados.
+- Foi adicionado um diagnóstico de credenciais e da permissão `Mail.Send` que não envia mensagens.
+- O e-mail do cliente é opcional: sem endereço, a folha é arquivada sem consultar o Graph, sem criar um envio e sem publicar o aviso de envio no Teams.
+- A conversão local para PDF deixa de prender a fila em pipes de subprocessos Chromium; toda a árvore headless fica isolada e é terminada em timeout, interrupção ou reinício do servidor.
+- O Chromium produz o PDF numa pasta temporária local e só publica o ficheiro validado no arquivo local/SharePoint, reduzindo bloqueios durante a impressão.
+- A fila regista as fases `generating_pdf`, `pdf_ready`, `sending_mail` e `mail_accepted`; um trabalho sem atividade deixa de ser repetido automaticamente e fica disponível apenas para repetição manual.
+- A interface acompanha o envio por mais tempo do que o limiar de inatividade configurado, permitindo apresentar a repetição manual em vez de terminar cedo com um erro genérico.
+- Secrets temporários continuam exclusivamente no `.env` local ignorado pelo Git.
+
 ## v1.3.0 - Fotografias, entrega digital e número de obra
 
 Data: 2026-08-07
@@ -18,7 +38,7 @@ Commit: incluído nesta versão
 - Resolvedor independente do backend de armazenamento para procurar a pasta em `07-Obras/Obras a realizar`, com cache, paginação Graph e correspondência exata pelo prefixo de quatro dígitos.
 - Endpoint autenticado `GET /work-folder/<numero>` para validar o código e redirecionar apenas para URLs HTTPS de `sensorpointpt.sharepoint.com`.
 - Envio da folha final em PDF por Microsoft Graph, com o cliente em Para e o técnico autenticado em CC.
-- Conversão local do HTML final para PDF através de Chrome ou Edge quando o armazenamento é local.
+- Conversão do HTML final para PDF: Microsoft Graph no servidor/Plesk e Chrome ou Edge apenas no armazenamento local.
 - Notificação opcional no Teams por Workflow webhook, executada depois de o Graph aceitar o email.
 - Primeiro e último nome de quem assinou e data da assinatura no formulário e no relatório final.
 - Documentação de configuração do envio Graph em `docs/EMAIL_GRAPH_SETUP.md`.
@@ -31,7 +51,7 @@ Commit: incluído nesta versão
 - A fila assíncrona passou a encadear arquivo, PDF, email e aviso Teams de forma persistente e repetível.
 - Ao finalizar, o relatório HTML e o PDF são produzidos antes do envio ao cliente.
 - O Excel final abre a folha `FS` e mantém a folha técnica `LINK` oculta.
-- O email do cliente só é obrigatório quando o envio de email está ativo; o modo de teste apresenta um aviso visível.
+- O e-mail do cliente é opcional; quando preenchido ativa o envio, e o modo de teste apresenta um aviso visível sobre a substituição do destinatário.
 - O corpo português do email passou a indicar que a folha segue num único endereço e pode ser reencaminhada internamente.
 - O valor Excel do número de obra tem prioridade; rascunhos antigos continuam compatíveis através do metadado JSON.
 - Valores como `22` são apresentados como `0022`; valores com letras, negativos ou mais de quatro dígitos são rejeitados.
@@ -61,11 +81,11 @@ Commit: incluído nesta versão
 
 ### Configuração e deploy
 
-- Novas variáveis: `GRAPH_WORKS_PATH`, `GRAPH_WORKS_CACHE_SECONDS`, `GRAPH_SHAREPOINT_HOSTNAME`, `FS_MAIL_ENABLED`, `FS_MAIL_SENDER`, `FS_MAIL_TEST_RECIPIENT`, `GRAPH_MAIL_*`, `FS_PDF_BROWSER_PATH`, `FS_PDF_TEMP_DIR`, `FS_TEAMS_NOTIFICATIONS_ENABLED` e `FS_TEAMS_WEBHOOK_URL`.
+- Novas variáveis desta versão original: `GRAPH_WORKS_PATH`, `GRAPH_WORKS_CACHE_SECONDS`, `GRAPH_SHAREPOINT_HOSTNAME`, `FS_MAIL_ENABLED`, `FS_MAIL_SENDER`, `FS_MAIL_TEST_RECIPIENT`, `FS_PDF_BROWSER_PATH`, `FS_PDF_TEMP_DIR`, `FS_TEAMS_NOTIFICATIONS_ENABLED` e `FS_TEAMS_WEBHOOK_URL`. As credenciais separadas `GRAPH_MAIL_*` foram entretanto descontinuadas.
 - A aplicação Microsoft Graph usada no envio necessita da permissão de aplicação `Mail.Send` com consentimento de administrador.
 - O webhook Teams deve ser HTTPS e é considerado um segredo de produção.
-- Chrome ou Edge tem de estar disponível no servidor quando a conversão local para PDF estiver ativa.
-- `FS_PDF_TEMP_DIR` deve ficar vazio para usar os temporários do sistema ou apontar para disco local gravável fora do OneDrive.
+- Chrome ou Edge só tem de estar disponível quando o backend de armazenamento for local; o backend Graph/Plesk não depende de browser no servidor.
+- Em modo local, `FS_PDF_TEMP_DIR` deve ficar vazio para usar os temporários do sistema ou apontar para disco local gravável fora do OneDrive.
 - Recomenda-se uma atualização forçada do browser depois do deploy para substituir o service worker e os assets anteriores.
 
 ### Validação
