@@ -92,6 +92,29 @@ def _default_app_data_dir() -> Path:
 APP_DATA_DIR: Path = Path(os.environ.get("FS_APP_DATA_DIR", str(_default_app_data_dir())))
 
 # ---------------------------------------------------------------------------
+# Logging operacional
+# ---------------------------------------------------------------------------
+
+# Os logs ficam no disco local persistente da aplicacao, nunca no document root.
+# Todos os processos usam exatamente os mesmos limites para uma rotacao segura.
+LOG_ENABLED: bool = _env_flag("FS_LOG_ENABLED", True)
+LOG_LEVEL: str = os.environ.get("FS_LOG_LEVEL", "INFO").strip().upper() or "INFO"
+_LOG_DIR_VALUE = os.environ.get("FS_LOG_DIR", "").strip()
+LOG_DIR: Path = Path(_LOG_DIR_VALUE) if _LOG_DIR_VALUE else APP_DATA_DIR / "logs"
+LOG_FILE_NAME: str = (
+    os.environ.get("FS_LOG_FILE_NAME", "folhas-servico.jsonl").strip()
+    or "folhas-servico.jsonl"
+)
+LOG_MAX_BYTES: int = _env_int(
+    "FS_LOG_MAX_BYTES",
+    10 * 1024 * 1024,
+    minimum=64 * 1024,
+)
+LOG_BACKUP_COUNT: int = _env_int("FS_LOG_BACKUP_COUNT", 10, minimum=1)
+LOG_STDERR: bool = _env_flag("FS_LOG_STDERR", True)
+LOG_REQUESTS: bool = _env_flag("FS_LOG_REQUESTS", True)
+
+# ---------------------------------------------------------------------------
 # Identidade única da App Registration Microsoft Graph / Entra
 # ---------------------------------------------------------------------------
 

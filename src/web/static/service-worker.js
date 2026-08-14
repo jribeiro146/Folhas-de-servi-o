@@ -1,4 +1,4 @@
-const BUILD_VERSION = "20260721-sync-v2";
+const BUILD_VERSION = "20260813-edit-session-v3";
 const CACHE_PREFIX = "sensorpoint-service-static-";
 const CACHE_NAME = `${CACHE_PREFIX}${BUILD_VERSION}`;
 const VERSION_QUERY = `?v=${encodeURIComponent(BUILD_VERSION)}`;
@@ -47,7 +47,10 @@ const cachedVersion = async (request) => {
     const requestUrl = new URL(request.url);
     const cache = await caches.open(CACHE_NAME);
     const keys = await cache.keys();
-    const candidate = keys.find((key) => new URL(key.url).pathname === requestUrl.pathname);
+    const candidates = keys.filter(
+        (key) => new URL(key.url).pathname === requestUrl.pathname
+    );
+    const candidate = candidates[candidates.length - 1];
     return candidate ? cache.match(candidate) : undefined;
 };
 

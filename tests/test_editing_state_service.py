@@ -478,8 +478,12 @@ def test_feature_five_assets_and_api_are_not_http_cached(tmp_path):
     assert "const MAX_RETRY_DELAY = 30000" in coordinator
     assert "comparablePayload" in coordinator
     assert 'window.addEventListener("pagehide"' in coordinator
-    assert 'window.addEventListener("beforeunload"' in coordinator
+    assert 'window.addEventListener("beforeunload", releaseOnPageExit)' not in coordinator
     assert 'document.addEventListener("freeze"' in coordinator
+    assert 'window.addEventListener("pageshow"' in coordinator
+    assert 'document.addEventListener("resume"' in coordinator
+    assert "prepareOperation" in coordinator
+    assert "requireOperationMetadata" in document_editor
     assert 'document.addEventListener("visibilitychange", () =>' in coordinator
     assert "/editing/close" in coordinator
     assert "/bootstrap?client_id=" in coordinator
@@ -489,4 +493,6 @@ def test_feature_five_assets_and_api_are_not_http_cached(tmp_path):
     assert "window.history.pushState" not in document_editor
     assert "const loadFileData" not in document_editor
     assert "window.location.reload()" in document_editor
-    assert 'BUILD_VERSION = "20260721-sync-v2"' in service_worker
+    assert 'id="btn-save-send"' in html and 'data-i18n="save_send" disabled' in html
+    assert 'id="btn-save-draft"' in html and 'data-i18n="save_draft" disabled' in html
+    assert 'BUILD_VERSION = "20260813-edit-session-v3"' in service_worker

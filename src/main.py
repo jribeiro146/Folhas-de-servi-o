@@ -7,6 +7,7 @@ Flask local, abrindo o browser por defeito na interface da webapp.
 
 from __future__ import annotations
 
+import logging
 import os
 import socket
 import sys
@@ -20,7 +21,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from src.config import ensure_directories
-from src.web.application import app
+from src.logging_config import configure_logging, log_event
 
 DEFAULT_HOST = os.environ.get("FS_HOST", "localhost")
 DEFAULT_PORT = int(os.environ.get("FS_PORT", "5001"))
@@ -50,7 +51,11 @@ def open_browser(url: str) -> None:
 
 def main() -> None:
     """Arranque principal do servidor local e da interface web."""
+    configure_logging("local-web")
+    logger = logging.getLogger(__name__)
     try:
+        from src.web.application import app
+
         ensure_directories()
         probe_host = "127.0.0.1" if DEFAULT_HOST == "0.0.0.0" else DEFAULT_HOST
         display_host = "localhost" if DEFAULT_HOST == "0.0.0.0" else DEFAULT_HOST
@@ -59,10 +64,23 @@ def main() -> None:
 
         threading.Thread(target=open_browser, args=(url,), daemon=True).start()
 
-        print(f"Servidor web local ativo em {url}")
+        log_event(
+            logger,
+            logging.INFO,
+            "Servidor web local pronto.",
+            event="local_server_ready",
+            host=display_host,
+            port=port,
+        )
         app.run(host=DEFAULT_HOST, port=port, debug=False, use_reloader=False)
-    except Exception as exc:
-        print(f"Erro crítico ao arrancar a aplicação: {exc}")
+    except Exception:
+        log_event(
+            logger,
+            logging.CRITICAL,
+            "Erro crítico ao arrancar a aplicação.",
+            event="local_server_start_failed",
+            exc_info=True,
+        )
         sys.exit(1)
 
 

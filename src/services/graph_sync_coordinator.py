@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
 
+from src.logging_config import log_event
 from src.services.graph_storage_service import GraphStorageService
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class GraphRefreshCoordinator:
@@ -49,6 +54,13 @@ class GraphRefreshCoordinator:
             self._last_started_at = now
             self._last_error = None
 
+        log_event(
+            LOGGER,
+            logging.INFO,
+            "Atualização da cache Graph iniciada.",
+            event="graph_refresh_started",
+            forced=force,
+        )
         threading.Thread(target=self._run, daemon=True, name="graph-active-refresh").start()
         return self.status()
 
@@ -66,6 +78,7 @@ class GraphRefreshCoordinator:
         }
 
     def _run(self) -> None:
+        started_at = time.perf_counter()
         error: str | None = None
         synced_files: list[str] = []
         try:
@@ -75,6 +88,23 @@ class GraphRefreshCoordinator:
                 self.on_complete()
         except Exception as exc:  # the status endpoint exposes a safe summary
             error = str(exc)
+            log_event(
+                LOGGER,
+                logging.ERROR,
+                "Atualização da cache Graph falhou.",
+                event="graph_refresh_failed",
+                duration_ms=round((time.perf_counter() - started_at) * 1000, 2),
+                exc_info=True,
+            )
+        else:
+            log_event(
+                LOGGER,
+                logging.INFO,
+                "Atualização da cache Graph concluída.",
+                event="graph_refresh_completed",
+                synced_file_count=len(synced_files),
+                duration_ms=round((time.perf_counter() - started_at) * 1000, 2),
+            )
         finally:
             with self._lock:
                 self._in_progress = False

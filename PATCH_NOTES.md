@@ -6,6 +6,19 @@ As versoes sem tag formal usam o commit Git como referencia. A versao marcada pa
 
 ## Em desenvolvimento - confirmação e segurança do envio de e-mail
 
+- Foi adicionado logging operacional JSON Lines para web, servidor local e worker,
+  com timestamps UTC, níveis, eventos estruturados, stack traces e correlação por
+  `X-Request-ID`.
+- O log fica por defeito em `FS_APP_DATA_DIR/logs`, usa rotação multiprocesso por
+  tamanho, mantém dez cópias comprimidas e é espelhado em stderr.
+- Query strings, payloads, cookies, autorização, assinaturas, fotografias e
+  destinatários não entram nos eventos; campos e padrões sensíveis recebem redação.
+- A localização, permissões, configuração, consulta, rotação e checklist de deploy
+  estão documentadas em `docs/LOGGING.md`.
+- A validação inclui 189 testes Python, 6 testes JavaScript e um ensaio de arranque
+  WSGI que confirmou o ficheiro, os eventos JSON e o `X-Request-ID`.
+- A sessão de edição é retomada automaticamente quando o telemóvel ou a PWA regressa de suspensão; a interface deixa de enviar pedidos sem `lease_token` e já não apresenta ao utilizador o erro interno de metadados.
+- Os botões de guardar, finalizar e cancelar começam bloqueados até a sessão estar pronta, e a cache PWA foi renovada para distribuir a correção aos dispositivos instalados.
 - O Plesk/Passenger pode deixar o trabalho pesado fora dos processos WSGI: `FS_GRAPH_QUEUE_IN_WEB=false` e `python -m src.queue_worker` processam a mesma fila SQLite persistente numa tarefa independente.
 - SharePoint, conversão PDF, login e email passam a usar obrigatoriamente a única credencial `GRAPH_*`; overrides antigos `GRAPH_MAIL_*` e credenciais `MICROSOFT_AUTH_*` deixam de ser lidos, eliminando a possibilidade de o email usar um secret local ou expirado diferente do servidor.
 - O tempo de reconciliação recomendado para emails em produção passou para 900 segundos, evitando marcar como parado um arquivo grande ainda em conversão ou upload.

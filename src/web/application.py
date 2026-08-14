@@ -5,10 +5,12 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import json
+import logging
 import os
 import re
 import secrets
-import traceback
+import time
+import uuid
 from pathlib import Path
 
 from flask import Flask, g, jsonify, redirect, render_template, request, send_from_directory, session, url_for
@@ -22,6 +24,7 @@ from src.config import (
     GRAPH_WORKS_PATH,
     MAIL_ENABLED,
     MICROSOFT_AUTH_REDIRECT_URI,
+    LOG_REQUESTS,
     TEAMS_NOTIFICATIONS_ENABLED,
     STORAGE_BACKEND,
 )
@@ -40,11 +43,17 @@ from src.document_schema import (
     strip_signature_payload,
 )
 from src.field_map import FIELD_MAP, FIELDS_BY_GROUP
+from src.logging_config import (
+    bind_request_context,
+    log_event,
+    reset_request_context,
+)
 from src.services.archive_service import ArchiveService
 from src.services.document_artifact_service import DocumentArtifactService
 from src.services.document_data_service import DocumentDataService
 from src.services.editing_state_service import (
     EditingStateError,
+    EditingSessionMetadataError,
     EditingStateService,
     EditorIdentity,
     LeaseConflictError,
@@ -83,6 +92,13 @@ from src.services.work_folder_service import (
 ACTIVE_AUTH_PROVIDER = "microsoft" if AUTH_PROVIDER == "microsoft" else "none"
 AUTH_ENABLED = ACTIVE_AUTH_PROVIDER == "microsoft"
 INTERNAL_OBSERVATIONS_KEY = "_internal_observations"
+QUIET_HTTP_ENDPOINTS = {
+    "acquire_file_lease",
+    "autosave_file",
+    "graph_job_status",
+    "graph_status",
+    "heartbeat_file_lease",
+}
 
 
 def _load_secret_key() -> str:
@@ -156,6 +172,57 @@ def create_app(
         if graph_service is not None or mail_service is not None else None
     )
 
+    @app.before_request
+    def begin_request_logging():
+        supplied_request_id = str(request.headers.get("X-Request-ID") or "").strip()
+        request_id = (
+            supplied_request_id
+            if re.fullmatch(r"[A-Za-z0-9._:-]{1,64}", supplied_request_id)
+            else uuid.uuid4().hex
+        )
+        g.request_started_at = time.perf_counter()
+        g.request_log_tokens = bind_request_context(
+            request_id,
+            request.method,
+            request.url_rule.rule if request.url_rule is not None else "<unmatched>",
+        )
+        g.request_id = request_id
+
+    @app.after_request
+    def complete_request_logging(response):
+        request_id = str(g.get("request_id") or "")
+        if request_id:
+            response.headers["X-Request-ID"] = request_id
+        if LOG_REQUESTS and request.endpoint != "static":
+            started_at = float(g.get("request_started_at") or time.perf_counter())
+            duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+            status_code = int(response.status_code)
+            endpoint = request.endpoint or "unknown"
+            if status_code >= 500:
+                level = logging.ERROR
+            elif status_code >= 400:
+                level = (
+                    logging.DEBUG
+                    if endpoint == "acquire_file_lease" and status_code == 409
+                    else logging.WARNING
+                )
+            else:
+                level = logging.DEBUG if endpoint in QUIET_HTTP_ENDPOINTS else logging.INFO
+            log_event(
+                app.logger,
+                level,
+                "Pedido HTTP concluído.",
+                event="http_request_completed",
+                endpoint=endpoint,
+                status_code=status_code,
+                duration_ms=duration_ms,
+            )
+        return response
+
+    @app.teardown_request
+    def clear_request_logging(_error):
+        reset_request_context(g.pop("request_log_tokens", None))
+
     @app.after_request
     def apply_cache_headers(response):
         if request.path.startswith(("/api/", "/work-folder/")) or request.path in {
@@ -200,6 +267,19 @@ def create_app(
         return EditorIdentity(id=f"local:{anonymous_id}", display_name="Técnico local")
 
     def editing_error_response(error: Exception):
+        if isinstance(error, EditingSessionMetadataError):
+            log_event(
+                app.logger,
+                logging.WARNING,
+                "Pedido sem metadados da sessão de edição.",
+                event="editing_session_metadata_missing",
+                missing_fields=error.missing,
+            )
+            return jsonify({
+                "success": False,
+                "error": str(error),
+                "code": "editing_session_required",
+            }), 409
         if isinstance(error, LeaseConflictError):
             return jsonify({
                 "success": False,
@@ -241,9 +321,7 @@ def create_app(
         if require_idempotency and not str(metadata.get("idempotency_key") or "").strip():
             missing.append("idempotency_key")
         if missing:
-            raise EditingStateError(
-                "Metadados de edição em falta: " + ", ".join(sorted(set(missing)))
-            )
+            raise EditingSessionMetadataError(missing)
         try:
             metadata["base_revision"] = int(metadata["base_revision"])
         except (TypeError, ValueError) as exc:
@@ -352,6 +430,13 @@ def create_app(
             try:
                 graph_service.test_connection()
             except GraphStorageError as exc:
+                log_event(
+                    app.logger,
+                    logging.ERROR,
+                    "Pré-validação Graph do login Microsoft falhou.",
+                    event="auth_graph_preflight_failed",
+                    exc_info=True,
+                )
                 return redirect(url_for("login", error=friendly_graph_login_error(exc)))
 
         state = secrets.token_urlsafe(32)
@@ -367,6 +452,13 @@ def create_app(
                 nonce=nonce,
             )
         except MicrosoftAuthError as exc:
+            log_event(
+                app.logger,
+                logging.ERROR,
+                "Não foi possível construir o pedido de login Microsoft.",
+                event="auth_start_failed",
+                error_type=type(exc).__name__,
+            )
             return redirect(url_for("login", error=str(exc)))
 
         return redirect(authorization_url)
@@ -378,6 +470,13 @@ def create_app(
 
         error = request.args.get("error_description") or request.args.get("error")
         if error:
+            log_event(
+                app.logger,
+                logging.WARNING,
+                "O fornecedor Microsoft recusou o login.",
+                event="auth_provider_rejected",
+                provider_error_code=request.args.get("error"),
+            )
             return redirect(url_for("login", error=error))
 
         state = request.args.get("state")
@@ -387,6 +486,12 @@ def create_app(
         next_url = safe_next_url(session.pop("microsoft_auth_next", None))
 
         if not state or state != expected_state or not code or not nonce:
+            log_event(
+                app.logger,
+                logging.WARNING,
+                "Callback Microsoft sem estado de sessão válido.",
+                event="auth_callback_invalid_state",
+            )
             return redirect(url_for("login", error="Sessão Microsoft inválida. Tente novamente."))
 
         try:
@@ -396,6 +501,13 @@ def create_app(
                 nonce=nonce,
             )
         except MicrosoftAuthError as exc:
+            log_event(
+                app.logger,
+                logging.ERROR,
+                "Autenticação Microsoft falhou.",
+                event="auth_callback_failed",
+                error_type=type(exc).__name__,
+            )
             return redirect(url_for("login", error=str(exc)))
 
         session.clear()
@@ -518,9 +630,11 @@ def create_app(
         if canonical_number:
             excel_form_data["Folha nº"] = canonical_number
         if not document_data.get("work_number"):
-            app.logger.warning(
-                "Número de obra ausente ou inválido em %s; ligação SharePoint desativada.",
-                Path(path).name,
+            log_event(
+                app.logger,
+                logging.WARNING,
+                "Número de obra ausente ou inválido; ligação SharePoint desativada.",
+                event="work_number_missing",
             )
 
         signatures = SignatureService(path).read_as_data_urls()
@@ -644,8 +758,14 @@ def create_app(
                 "Número de obra inválido",
                 "O número de obra tem de conter exatamente quatro algarismos.",
             )
-        except WorkFolderNotFoundError as exc:
-            app.logger.warning("Pasta da obra %s não encontrada: %s", work_number, exc)
+        except WorkFolderNotFoundError:
+            log_event(
+                app.logger,
+                logging.WARNING,
+                "Pasta da obra não encontrada.",
+                event="work_folder_not_found",
+                work_number=work_number,
+            )
             return render_work_folder_error(
                 404,
                 "Pasta de obra não encontrada",
@@ -654,8 +774,14 @@ def create_app(
                     f"{GRAPH_WORKS_PATH.replace('/', ' / ')}."
                 ),
             )
-        except WorkFolderAmbiguousError as exc:
-            app.logger.error("Número de obra duplicado no SharePoint: %s", exc)
+        except WorkFolderAmbiguousError:
+            log_event(
+                app.logger,
+                logging.ERROR,
+                "Número de obra duplicado no SharePoint.",
+                event="work_folder_ambiguous",
+                work_number=work_number,
+            )
             return render_work_folder_error(
                 409,
                 "Número de obra duplicado",
@@ -664,15 +790,28 @@ def create_app(
                     "A ligação foi bloqueada para evitar abrir a pasta errada."
                 ),
             )
-        except WorkFolderUnsafeUrlError as exc:
-            app.logger.error("URL SharePoint rejeitado para a obra %s: %s", work_number, exc)
+        except WorkFolderUnsafeUrlError:
+            log_event(
+                app.logger,
+                logging.ERROR,
+                "Destino SharePoint inseguro rejeitado.",
+                event="work_folder_unsafe_url",
+                work_number=work_number,
+            )
             return render_work_folder_error(
                 502,
                 "Destino SharePoint inválido",
                 "O SharePoint devolveu um destino que a aplicação não pode abrir em segurança.",
             )
-        except GraphStorageError as exc:
-            app.logger.error("Falha Graph ao resolver a obra %s: %s", work_number, exc)
+        except GraphStorageError:
+            log_event(
+                app.logger,
+                logging.ERROR,
+                "Falha Graph ao resolver a pasta da obra.",
+                event="work_folder_graph_failed",
+                work_number=work_number,
+                exc_info=True,
+            )
             return render_work_folder_error(
                 502,
                 "SharePoint temporariamente indisponível",
@@ -742,6 +881,13 @@ def create_app(
                 "graph": graph_service.test_connection(),
             })
         except GraphStorageError as exc:
+            log_event(
+                app.logger,
+                logging.ERROR,
+                "Diagnóstico Graph falhou.",
+                event="graph_diagnostic_failed",
+                exc_info=True,
+            )
             return json_error(str(exc), 502)
 
     @app.route("/api/mail/test")
@@ -754,8 +900,22 @@ def create_app(
                 "mail": mail_service.test_connection(),
             })
         except GraphMailConfigurationError as exc:
+            log_event(
+                app.logger,
+                logging.ERROR,
+                "Diagnóstico de e-mail encontrou configuração inválida.",
+                event="mail_diagnostic_configuration_failed",
+                error_type=type(exc).__name__,
+            )
             return json_error(str(exc), 503)
         except GraphMailError as exc:
+            log_event(
+                app.logger,
+                logging.ERROR,
+                "Diagnóstico de e-mail falhou.",
+                event="mail_diagnostic_failed",
+                exc_info=True,
+            )
             return json_error(str(exc), 502)
 
     @app.route("/api/graph/sync", methods=["POST"])
@@ -840,7 +1000,13 @@ def create_app(
         except ExcelValidationError as exc:
             return json_error(str(exc), 400)
         except Exception as exc:
-            traceback.print_exc()
+            log_event(
+                app.logger,
+                logging.ERROR,
+                "Falha inesperada ao inicializar o editor.",
+                event="editor_bootstrap_failed",
+                exc_info=True,
+            )
             return json_error(str(exc), 500)
 
     @app.route("/api/file/<name>")
@@ -877,7 +1043,13 @@ def create_app(
         except ExcelValidationError as exc:
             return json_error(str(exc), 400)
         except Exception as exc:
-            traceback.print_exc()
+            log_event(
+                app.logger,
+                logging.ERROR,
+                "Falha inesperada ao ler a folha.",
+                event="file_read_failed",
+                exc_info=True,
+            )
             return json_error(str(exc), 500)
     @app.route("/api/file/<name>/photos/<photo_id>")
     def get_file_photo(name: str, photo_id: str):
@@ -1061,7 +1233,13 @@ def create_app(
             )
             return jsonify({"success": True, "html": html})
         except Exception as exc:
-            traceback.print_exc()
+            log_event(
+                app.logger,
+                logging.ERROR,
+                "Falha inesperada ao gerar a pré-visualização.",
+                event="document_preview_failed",
+                exc_info=True,
+            )
             return json_error(str(exc), 500)
 
     @app.route("/api/file/<name>/draft", methods=["POST"])
@@ -1178,6 +1356,15 @@ def create_app(
                     ),
                 },
             )
+            log_event(
+                app.logger,
+                logging.INFO,
+                "Rascunho guardado.",
+                event="draft_saved",
+                document_id=document_id,
+                created_copy=created_copy,
+                publication_queued=graph_sync_job is not None,
+            )
             return jsonify(result)
         except PhotoAttachmentError as exc:
             if document_id and idempotency_key:
@@ -1201,7 +1388,14 @@ def create_app(
         except Exception as exc:
             if document_id and idempotency_key:
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
-            traceback.print_exc()
+            log_event(
+                app.logger,
+                logging.ERROR,
+                "Falha inesperada ao guardar o rascunho.",
+                event="draft_save_failed",
+                document_id=document_id or None,
+                exc_info=True,
+            )
             return json_error(str(exc), 500)
 
     @app.route("/api/file/<name>/send", methods=["POST"])
@@ -1461,6 +1655,16 @@ def create_app(
                     ),
                 },
             )
+            log_event(
+                app.logger,
+                logging.INFO,
+                "Folha finalizada.",
+                event="document_finalized",
+                document_id=document_id,
+                publication_queued=graph_sync_job is not None,
+                email_queued=mail_payload is not None,
+                teams_queued=teams_payload is not None,
+            )
             return jsonify(result)
         except PhotoAttachmentError as exc:
             if document_id and idempotency_key:
@@ -1484,7 +1688,14 @@ def create_app(
         except Exception as exc:
             if document_id and idempotency_key:
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
-            traceback.print_exc()
+            log_event(
+                app.logger,
+                logging.ERROR,
+                "Falha inesperada ao finalizar a folha.",
+                event="document_send_failed",
+                document_id=document_id or None,
+                exc_info=True,
+            )
             return json_error(str(exc), 500)
 
     @app.route("/api/file/<name>/cancel", methods=["POST"])
@@ -1577,6 +1788,14 @@ def create_app(
                     ),
                 },
             )
+            log_event(
+                app.logger,
+                logging.INFO,
+                "Folha cancelada.",
+                event="document_canceled",
+                document_id=document_id,
+                publication_queued=graph_sync_job is not None,
+            )
             return jsonify(result)
         except EditingStateError as exc:
             return editing_error_response(exc)
@@ -1592,7 +1811,14 @@ def create_app(
         except Exception as exc:
             if document_id and idempotency_key:
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
-            traceback.print_exc()
+            log_event(
+                app.logger,
+                logging.ERROR,
+                "Falha inesperada ao cancelar a folha.",
+                event="document_cancel_failed",
+                document_id=document_id or None,
+                exc_info=True,
+            )
             return json_error(str(exc), 500)
 
     return app

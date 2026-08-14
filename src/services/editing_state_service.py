@@ -25,6 +25,16 @@ class EditingStateError(Exception):
     """Base error for editing-state operations."""
 
 
+class EditingSessionMetadataError(EditingStateError):
+    """Raised when a browser write is missing its editing-session contract."""
+
+    def __init__(self, missing: list[str]):
+        self.missing = tuple(sorted(set(missing)))
+        super().__init__(
+            "A sessão de edição não está pronta. Aguarde alguns segundos e tente novamente."
+        )
+
+
 class LeaseConflictError(EditingStateError):
     """Raised when another editor owns the active lease."""
 

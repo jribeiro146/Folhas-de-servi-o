@@ -80,6 +80,8 @@ const startEditingCoordinator = () => {
     let sourceSignatures = {};
     let sourcePhotos = [];
     let otherTabActive = false;
+    let resumeConflictPending = false;
+    let resumePromise = null;
     const operationKeys = new Map();
 
     const showToast = (message, variant = "info") => editor.showToast?.(message, variant);
@@ -270,6 +272,31 @@ const startEditingCoordinator = () => {
         idempotency_key: idempotencyKey,
     });
 
+    const hasActiveSession = () => Boolean(
+        initialized
+        && !readOnly
+        && !otherTabActive
+        && !resumeConflictPending
+        && editing.document_id
+        && clientId
+        && sessionToken
+    );
+
+    const syncCommitActions = () => {
+        setCommitActionsEnabled(hasActiveSession() && navigator.onLine);
+    };
+
+    const operationMetadata = (kind) => {
+        if (!hasActiveSession()) {
+            syncCommitActions();
+            throw new Error(
+                "A sessão de edição ainda não está pronta. Aguarde alguns segundos e tente novamente."
+            );
+        }
+        if (!operationKeys.has(kind)) operationKeys.set(kind, makeId());
+        return editMetadata(operationKeys.get(kind));
+    };
+
     const hideRecoveryPanel = () => {
         pendingPanelAction = null;
         if (recoveryPanel) {
@@ -291,6 +318,13 @@ const startEditingCoordinator = () => {
     };
 
     const handleConflict = (result) => {
+        if (["editing_session_required", "lease_required"].includes(result?.code)) {
+            editing = { ...editing, ...(result.editing || {}) };
+            sessionToken = "";
+            syncCommitActions();
+            resumeEditingSession();
+            return true;
+        }
         if (!result || !["revision_conflict", "graph_conflict"].includes(result.code)) return false;
         editing = { ...editing, ...(result.editing || {}) };
         serverPayload = result.editing?.server_document || serverPayload;
@@ -300,6 +334,8 @@ const startEditingCoordinator = () => {
             baseRevision: Number(editing.revision || 1),
         };
         dirty = true;
+        resumeConflictPending = true;
+        syncCommitActions();
         persistLocalRecovery({ force: true });
         setAutosaveStatus("Conflito — escolha a versão a manter", "conflict");
         showConflictPanel(localRecord, serverPayload, "A folha foi alterada noutra sessão");
@@ -462,6 +498,86 @@ const startEditingCoordinator = () => {
         return result;
     };
 
+    const resumeEditingSession = async () => {
+        if (hasActiveSession()) return true;
+        if (
+            !initialized
+            || otherTabActive
+            || resumeConflictPending
+            || !navigator.onLine
+        ) return false;
+        if (resumePromise) return resumePromise;
+
+        const previousRevision = Number(editing.revision || 1);
+        const localPayload = editor.collectFormData();
+        setFormReadOnly(true);
+        setCommitActionsEnabled(false);
+        setAutosaveStatus("A retomar a sessão de edição…", "saving");
+
+        resumePromise = (async () => {
+            try {
+                const result = await loadBootstrap();
+                const resumedEditing = { ...(result.editing || {}) };
+                const remotePayload = result.document || result.source_document || {};
+                const revisionChanged = Number(resumedEditing.revision || 1) !== previousRevision;
+                const contentChanged = comparablePayload(remotePayload) !== comparablePayload(localPayload);
+
+                editing = { ...editing, ...resumedEditing };
+                sessionToken = resumedEditing.lease?.token || "";
+                serverPayload = resumedEditing.server_document || remotePayload;
+                sourceSignatures = result.signatures || sourceSignatures;
+                sourcePhotos = result.photos || sourcePhotos;
+
+                if (!sessionToken || !editing.document_id) {
+                    throw new Error("Não foi possível retomar a sessão de edição.");
+                }
+
+                setFormReadOnly(false);
+                if (revisionChanged && contentChanged) {
+                    resumeConflictPending = true;
+                    dirty = true;
+                    await persistLocalRecovery({ force: true });
+                    showConflictPanel(
+                        {
+                            payload: localPayload,
+                            updatedAt: Date.now(),
+                            baseRevision: previousRevision,
+                        },
+                        remotePayload,
+                        "A folha foi alterada enquanto esta página esteve suspensa",
+                    );
+                    syncCommitActions();
+                    setAutosaveStatus("Conflito — escolha a versão a manter", "conflict");
+                    return false;
+                }
+
+                resumeConflictPending = false;
+                syncCommitActions();
+                setAutosaveStatus("Sessão de edição retomada", "saved");
+                if (dirty) await runAutosave();
+                return hasActiveSession();
+            } catch (error) {
+                const result = error.result || {};
+                editing = { ...editing, ...(result.editing || {}) };
+                sessionToken = "";
+                if (error.status === 423) {
+                    setFormReadOnly(true, result.editing?.owner?.owner_name);
+                    setAutosaveStatus("Modo de consulta — rascunho aberto noutra sessão", "conflict");
+                } else {
+                    setFormReadOnly(false);
+                    setAutosaveStatus("Não foi possível retomar a sessão — tente novamente", "offline");
+                }
+                setCommitActionsEnabled(false);
+                showToast(error.message, "error");
+                return false;
+            } finally {
+                resumePromise = null;
+            }
+        })();
+
+        return resumePromise;
+    };
+
     const initialize = async () => {
         setBooting(true);
         setFormReadOnly(true);
@@ -504,6 +620,7 @@ const startEditingCoordinator = () => {
                     result.editing?.server_document
                     && Number(localRecovery.baseRevision || 1) < Number(editing.revision || 1)
                 ) {
+                    resumeConflictPending = true;
                     showConflictPanel(localRecovery, initialPayload);
                 } else {
                     initialPayload = localRecovery.payload;
@@ -513,9 +630,9 @@ const startEditingCoordinator = () => {
             }
 
             applyPayload(initialPayload, initialSignatures, { shouldSave });
-            setFormReadOnly(otherTabActive, otherTabActive ? "outra aba deste técnico" : "");
-            setCommitActionsEnabled(!otherTabActive && navigator.onLine);
             initialized = true;
+            setFormReadOnly(otherTabActive, otherTabActive ? "outra aba deste técnico" : "");
+            syncCommitActions();
             setBooting(false);
             if (otherTabActive) {
                 setAutosaveStatus("Modo de consulta — rascunho aberto noutra aba", "conflict");
@@ -561,8 +678,10 @@ const startEditingCoordinator = () => {
         if (action.kind === "conflict") {
             if (action.remotePayload) applyPayload(action.remotePayload, sourceSignatures);
             dirty = false;
+            resumeConflictPending = false;
             await deleteRecovery(action.localRecord?.key).catch(() => {});
             hideRecoveryPanel();
+            syncCommitActions();
             setAutosaveStatus("Versão do servidor carregada", "saved");
         }
     });
@@ -571,6 +690,7 @@ const startEditingCoordinator = () => {
         const action = pendingPanelAction;
         if (!action) return hideRecoveryPanel();
         if (action.kind === "conflict" && action.localRecord?.payload) {
+            resumeConflictPending = false;
             applyPayload(action.localRecord.payload, action.localRecord.payload, { shouldSave: true });
             hideRecoveryPanel();
             await persistLocalRecovery({ force: true });
@@ -593,6 +713,7 @@ const startEditingCoordinator = () => {
         if (!sessionToken || !editing.document_id) return;
         const token = sessionToken;
         sessionToken = "";
+        setCommitActionsEnabled(false);
         const payload = JSON.stringify({
             document: dirty ? {
                 ...editor.collectFormData(),
@@ -666,13 +787,18 @@ const startEditingCoordinator = () => {
         window.clearTimeout(localSaveTimer);
         window.clearTimeout(serverSaveTimer);
         window.clearTimeout(retryTimer);
+        setCommitActionsEnabled(false);
         if (dirty) persistLocalRecovery({ force: true });
         releaseSession({ background: true });
     };
 
     window.addEventListener("pagehide", releaseOnPageExit);
-    window.addEventListener("beforeunload", releaseOnPageExit);
     document.addEventListener("freeze", releaseOnPageExit);
+    const resumeAfterPageRestore = () => {
+        if (initialized && !sessionToken && !otherTabActive) resumeEditingSession();
+    };
+    window.addEventListener("pageshow", resumeAfterPageRestore);
+    document.addEventListener("resume", resumeAfterPageRestore);
     document.addEventListener("visibilitychange", () => {
         if (document.hidden && dirty) persistLocalRecovery({ force: true });
     });
@@ -680,9 +806,10 @@ const startEditingCoordinator = () => {
         setCommitActionsEnabled(false);
         if (dirty) setAutosaveStatus("Sem ligação — alterações protegidas neste dispositivo", "offline");
     });
-    window.addEventListener("online", () => {
+    window.addEventListener("online", async () => {
         retryAttempt = 0;
-        setCommitActionsEnabled(!readOnly && !otherTabActive);
+        if (!sessionToken) await resumeEditingSession();
+        syncCommitActions();
         if (dirty && !readOnly && !otherTabActive) runAutosave();
     });
 
@@ -712,7 +839,7 @@ const startEditingCoordinator = () => {
             if (message.type === "closing" && otherTabActive && sessionToken) {
                 otherTabActive = false;
                 setFormReadOnly(false);
-                setCommitActionsEnabled(navigator.onLine);
+                syncCommitActions();
                 setAutosaveStatus("Rascunho pronto — esta aba pode editar", "saved");
                 if (dirty && navigator.onLine) runAutosave();
             }
@@ -720,10 +847,19 @@ const startEditingCoordinator = () => {
     }
 
     window.__EDITING_COORDINATOR__ = {
-        operationMetadata(kind) {
-            if (!operationKeys.has(kind)) operationKeys.set(kind, makeId());
-            return editMetadata(operationKeys.get(kind));
+        operationMetadata,
+        async prepareOperation(kind) {
+            if (!hasActiveSession()) {
+                const resumed = await resumeEditingSession();
+                if (!resumed) {
+                    throw new Error(
+                        "A sessão de edição ainda não está pronta. Aguarde alguns segundos e tente novamente."
+                    );
+                }
+            }
+            return operationMetadata(kind);
         },
+        syncActionState: syncCommitActions,
         async markCommitted(result, kind) {
             const committedKey = recoveryKey();
             editing = { ...editing, ...result };
@@ -738,7 +874,9 @@ const startEditingCoordinator = () => {
             } else {
                 setAutosaveStatus("Alterações consolidadas", "saved");
             }
+            resumeConflictPending = false;
             if (["send", "cancel"].includes(kind) || result.created_copy) sessionToken = "";
+            syncCommitActions();
         },
         handleConflict,
         markDirty,

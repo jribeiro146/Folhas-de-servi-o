@@ -872,15 +872,71 @@ document.addEventListener("DOMContentLoaded", () => {
             confirmAccept
         ].forEach((button) => {
             if (button) {
-                button.disabled = busy;
+                if (busy) {
+                    if (!button.hasAttribute("data-busy-was-disabled")) {
+                        button.dataset.busyWasDisabled = button.disabled ? "true" : "false";
+                    }
+                    button.disabled = true;
+                } else if (button.hasAttribute("data-busy-was-disabled")) {
+                    button.disabled = button.dataset.busyWasDisabled === "true";
+                    delete button.dataset.busyWasDisabled;
+                }
             }
         });
+
+        if (!busy) {
+            const coordinator = window.__EDITING_COORDINATOR__;
+            if (coordinator?.syncActionState) {
+                coordinator.syncActionState();
+            } else {
+                [btnSaveDraft, btnSaveSend, btnCancelFile].forEach((button) => {
+                    if (button) button.disabled = true;
+                });
+            }
+        }
 
         if (busyPanel) {
             busyTitle.textContent = title;
             busyMessage.textContent = message;
             busyPanel.hidden = !busy;
         }
+    };
+
+    const requireOperationMetadata = async (kind) => {
+        const coordinator = window.__EDITING_COORDINATOR__;
+        if (!coordinator?.operationMetadata) {
+            [btnSaveDraft, btnSaveSend, btnCancelFile].forEach((button) => {
+                if (button) button.disabled = true;
+            });
+            throw new Error(
+                "Não foi possível iniciar a sessão de edição. Recarregue a folha e tente novamente."
+            );
+        }
+
+        const metadata = coordinator.prepareOperation
+            ? await coordinator.prepareOperation(kind)
+            : coordinator.operationMetadata(kind);
+        const required = [
+            "document_id",
+            "client_id",
+            "lease_token",
+            "base_revision",
+            "idempotency_key",
+        ];
+        const missing = required.filter((key) => (
+            metadata?.[key] === undefined
+            || metadata?.[key] === null
+            || String(metadata[key]).trim() === ""
+        ));
+        if (missing.length > 0) {
+            [btnSaveDraft, btnSaveSend, btnCancelFile].forEach((button) => {
+                if (button) button.disabled = true;
+            });
+            throw new Error(
+                "A sessão de edição ainda não está pronta. Aguarde alguns segundos e tente novamente."
+            );
+        }
+        return metadata;
     };
 
     const setSidebarOpen = (open) => {
@@ -1407,7 +1463,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         try {
             const payload = collectFormData();
-            payload._edit = window.__EDITING_COORDINATOR__?.operationMetadata("draft") || {};
+            payload._edit = await requireOperationMetadata("draft");
             const requestOptions = buildCommitRequest(payload);
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/draft`, {
                 method: "POST",
@@ -1454,7 +1510,7 @@ document.addEventListener("DOMContentLoaded", () => {
         );
 
         try {
-            payload._edit = window.__EDITING_COORDINATOR__?.operationMetadata("send") || {};
+            payload._edit = await requireOperationMetadata("send");
             const requestOptions = buildCommitRequest(payload);
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/send`, {
                 method: "POST",
@@ -1558,11 +1614,12 @@ document.addEventListener("DOMContentLoaded", () => {
         setBusy(true, "A cancelar a folha", "Estamos a mover a folha para Canceladas.");
 
         try {
+            const metadata = await requireOperationMetadata("cancel");
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/cancel`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    _edit: window.__EDITING_COORDINATOR__?.operationMetadata("cancel") || {}
+                    _edit: metadata
                 })
             });
             const result = await response.json();

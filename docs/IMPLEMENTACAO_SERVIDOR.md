@@ -47,6 +47,8 @@ Notas:
 - Em Linux/Plesk, usar `requirements-server.txt`, porque `pywin32` nao instala em Linux.
 - A app web atual nao precisa de Microsoft Excel instalado no servidor.
 - A escrita em Excel e feita com `openpyxl`.
+- `concurrent-log-handler` coordena a escrita e rotacao do mesmo log entre os
+  processos WSGI e o worker no mesmo host.
 - Em `FS_STORAGE_BACKEND=graph`, o Graph converte o HTML final em PDF. O Plesk nao
   precisa de Microsoft Excel, Chrome ou Chromium para criar o PDF.
 
@@ -111,12 +113,12 @@ cd /var/www/vhosts/service.sensorpoint.pt/httpdocs && FS_ENV_FILE=/var/www/vhost
 ```
 
 A app WSGI e o worker precisam exatamente das mesmas variaveis, incluindo
-`FS_APP_DATA_DIR`, credenciais Graph e configuracao de email. Se for usado
+`FS_APP_DATA_DIR`, configuracao de logging, credenciais Graph e configuracao de email. Se for usado
 `FS_ENV_FILE`, guardar esse ficheiro fora do document root, legivel apenas pelo
 utilizador da subscricao, e definir a mesma variavel na app Python do Plesk.
 
 Usar `Run Now` no Plesk para confirmar que o comando termina com codigo zero e
-imprime um resumo JSON. Em alojamentos onde as tarefas correm numa shell chroot,
+emite o evento `queue_worker_cycle_completed` no log. Em alojamentos onde as tarefas correm numa shell chroot,
 os caminhos do comando devem ser os caminhos visiveis dentro dessa subscricao.
 
 Referencias no codigo:
@@ -150,6 +152,14 @@ FS_AUTH_PROVIDER=microsoft
 FS_SECRET_KEY=<gerar-chave-aleatoria-longa>
 
 FS_APP_DATA_DIR=/var/www/vhosts/service.sensorpoint.pt/private/folhas-servico
+FS_LOG_ENABLED=true
+FS_LOG_LEVEL=INFO
+FS_LOG_DIR=/var/www/vhosts/service.sensorpoint.pt/private/folhas-servico/logs
+FS_LOG_FILE_NAME=folhas-servico.jsonl
+FS_LOG_MAX_BYTES=10485760
+FS_LOG_BACKUP_COUNT=10
+FS_LOG_STDERR=true
+FS_LOG_REQUESTS=true
 GRAPH_CACHE_DIR=/var/www/vhosts/service.sensorpoint.pt/private/folhas-servico/graph-cache
 FS_EDIT_SESSION_SECONDS=2592000
 FS_STATE_DB_BUSY_MS=10000
@@ -345,6 +355,7 @@ graph-cache/
 graph-sync-assets/
 graph-sync.sqlite3
 editing-state.sqlite3
+logs/folhas-servico.jsonl e copias .gz
 secret.key, se FS_SECRET_KEY nao estiver definido
 ```
 
@@ -376,7 +387,7 @@ CPU: 2 vCPU minimo, 4 vCPU recomendado
 RAM: 4 GB minimo, 8 GB recomendado
 Disco: 20 GB minimo, SSD recomendado
 Rede: acesso HTTPS outbound para Microsoft Graph e login.microsoftonline.com
-Backup: diario da pasta de configuracao e logs
+Backup: diario da configuracao/dados; retencao de logs segundo docs/LOGGING.md
 ```
 
 O servidor deve permitir:
@@ -387,7 +398,7 @@ O servidor deve permitir:
 - acesso outbound a `https://graph.microsoft.com`;
 - acesso outbound a `https://login.microsoftonline.com`;
 - variaveis de ambiente para guardar secrets;
-- logs de stdout/stderr da app.
+- um diretorio privado em disco local para o log e logs de stderr da app.
 
 ## Checklist de deploy
 
@@ -397,7 +408,7 @@ O servidor deve permitir:
 4. Apontar startup file para `passenger_wsgi.py`.
 5. Apontar entry point para `application`.
 6. Instalar dependencias com `requirements-server.txt`.
-7. Criar pasta privada gravavel para `FS_APP_DATA_DIR` e `GRAPH_CACHE_DIR`.
+7. Criar pastas privadas gravaveis para `FS_APP_DATA_DIR`, `GRAPH_CACHE_DIR` e `FS_LOG_DIR`.
 8. Configurar variaveis de ambiente no Plesk.
 9. Atualizar Redirect URI no Entra para o URL final HTTPS.
 10. Confirmar permissoes Graph e admin consent.
@@ -414,6 +425,8 @@ O servidor deve permitir:
 21. Esvaziar `FS_MAIL_TEST_RECIPIENT` antes de abrir aos utilizadores.
 22. Validar a migracao e a fila persistente seguindo `docs/SINCRONIZACAO_V2_ADMIN.md`.
 23. Confirmar que apenas um host usa os ficheiros SQLite; varios workers no mesmo host sao suportados.
+24. Confirmar `logging_configured`, `web_application_ready` e um pedido com
+    `X-Request-ID`, seguindo `docs/LOGGING.md`.
 
 ## Testes funcionais apos deploy
 
@@ -473,7 +486,7 @@ Teste 6 - Sobrevivencia da fila:
 Parar/reiniciar apenas a app WSGI
 Executar Run Now na tarefa src.queue_worker
 Confirmar em /api/graph/status que nao ficam trabalhos pending/running antigos
-Confirmar nos logs que o worker terminou com codigo zero
+Confirmar no log o evento queue_worker_cycle_completed
 ```
 
 ## Pontos a nao esquecer antes de producao
@@ -483,7 +496,7 @@ Confirmar nos logs que o worker terminou com codigo zero
 - Garantir que o redirect URI no Entra usa HTTPS final.
 - Confirmar que `MICROSOFT_AUTH_ALLOWED_DOMAINS` so contem dominios Sensorpoint.
 - Confirmar que a pasta privada de cache nao e publica.
-- Confirmar backups e logs.
+- Confirmar rotacao, retencao, monitorizacao e permissoes segundo `docs/LOGGING.md`.
 - Confirmar que o servidor tem hora correta/NTP ativo.
 - Confirmar que o subdominio usa HTTPS valido.
 - Confirmar que a app nao esta a correr pelo servidor Flask local de `src/main.py`.
@@ -516,6 +529,12 @@ Executar a fila persistente uma vez:
 
 ```bash
 python -m src.queue_worker
+```
+
+Seguir o log ativo:
+
+```bash
+tail -F /var/www/vhosts/service.sensorpoint.pt/private/folhas-servico/logs/folhas-servico.jsonl
 ```
 
 Verificar configuracao Graph pela app, depois de login:

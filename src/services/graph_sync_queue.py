@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from src.logging_config import log_event
 from src.services.graph_mail_service import GraphMailService
 from src.services.graph_storage_service import GraphStorageService
 from src.services.local_pdf_service import LocalPdfService
@@ -150,7 +151,7 @@ class GraphSyncQueue:
             visible_error = (
                 f"{previous_error} {hold_message}" if previous_error else hold_message
             )
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE graph_sync_jobs
                 SET status = 'failed', retryable = 0, max_attempts = ?,
@@ -165,6 +166,15 @@ class GraphSyncQueue:
                     row["id"],
                 ),
             )
+            if cursor.rowcount:
+                log_event(
+                    LOGGER,
+                    logging.WARNING,
+                    "Trabalho de uma versão anterior retido para revisão manual.",
+                    event="graph_job_legacy_held",
+                    job_id=row["id"],
+                    job_kind=row["kind"],
+                )
 
     def enqueue(
         self,
@@ -176,12 +186,14 @@ class GraphSyncQueue:
         identifier = job_id or str(uuid.uuid4())
         now = time.time()
         max_attempts = self._job_max_attempts(kind, payload)
+        created = False
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 "SELECT * FROM graph_sync_jobs WHERE id = ?", (identifier,)
             ).fetchone()
             if existing is None:
+                created = True
                 prepared_payload = self._stage_payload(identifier, kind, payload)
                 connection.execute(
                     """
@@ -205,6 +217,16 @@ class GraphSyncQueue:
                     ),
                 )
             connection.commit()
+        if created:
+            log_event(
+                LOGGER,
+                logging.INFO,
+                "Trabalho colocado na fila persistente.",
+                event="graph_job_enqueued",
+                job_id=identifier,
+                job_kind=kind,
+                max_attempts=max_attempts,
+            )
         self._start_if_enabled()
         return self.status(identifier) or {"id": identifier, "status": "pending"}
 
@@ -272,6 +294,14 @@ class GraphSyncQueue:
                 (now, now, job_id),
             )
             connection.commit()
+        log_event(
+            LOGGER,
+            logging.WARNING,
+            "Repetição manual de trabalho solicitada.",
+            event="graph_job_manual_retry_requested",
+            job_id=job_id,
+            job_kind=current["kind"],
+        )
         self._start_if_enabled()
         return self.status(job_id) or {"id": job_id, "status": "pending"}
 
@@ -302,6 +332,15 @@ class GraphSyncQueue:
                 if job is None:
                     return
                 current_job = job
+                log_event(
+                    LOGGER,
+                    logging.INFO,
+                    "Processamento de trabalho iniciado.",
+                    event="graph_job_started",
+                    job_id=job["id"],
+                    job_kind=job["kind"],
+                    attempt=job["attempts"],
+                )
                 try:
                     result = self._execute(
                         job["kind"],
@@ -583,8 +622,17 @@ class GraphSyncQueue:
             )
 
         self._cleanup_staging(job["payload"])
+        log_event(
+            LOGGER,
+            logging.INFO,
+            "Trabalho concluído.",
+            event="graph_job_completed",
+            job_id=job_id,
+            job_kind=job["kind"],
+            attempt=job.get("attempts"),
+        )
 
-    def _mark_failed(self, job: dict[str, Any], error: Exception) -> None:
+    def _mark_failed(self, job: dict[str, Any], error: BaseException) -> bool:
         attempts = int(job.get("attempts") or 1)
         delay = min(300.0, self.retry_base_seconds * (2 ** min(attempts - 1, 8)))
         retry_after = getattr(error, "retry_after_seconds", None)
@@ -611,15 +659,31 @@ class GraphSyncQueue:
                     job["id"],
                 ),
             )
+        return retryable
 
     def _record_job_failure(self, job: dict[str, Any], error: BaseException) -> None:
         try:
-            self._mark_failed(job, error)
+            will_retry = self._mark_failed(job, error)
+            log_event(
+                LOGGER,
+                logging.ERROR,
+                "Trabalho falhou durante o processamento.",
+                event="graph_job_failed",
+                job_id=job.get("id"),
+                job_kind=job.get("kind"),
+                attempt=job.get("attempts"),
+                will_retry=will_retry,
+                exc_info=(type(error), error, error.__traceback__),
+            )
         except BaseException as state_error:
-            LOGGER.exception(
-                "Falha ao registar o erro do trabalho Graph %s: %s",
-                job.get("id"),
-                state_error,
+            log_event(
+                LOGGER,
+                logging.CRITICAL,
+                "Falha ao atualizar o estado de um trabalho com erro.",
+                event="graph_job_failure_state_update_failed",
+                job_id=job.get("id"),
+                job_kind=job.get("kind"),
+                exc_info=(type(state_error), state_error, state_error.__traceback__),
             )
             self._hold_job_terminally(
                 job,
@@ -639,10 +703,15 @@ class GraphSyncQueue:
                     """,
                     (now, str(message)[:2000], now, job["id"]),
                 )
-        except BaseException:
-            LOGGER.exception(
-                "Não foi possível colocar em pausa o trabalho Graph %s.",
-                job.get("id"),
+        except BaseException as state_error:
+            log_event(
+                LOGGER,
+                logging.CRITICAL,
+                "Não foi possível colocar um trabalho em pausa.",
+                event="graph_job_terminal_hold_failed",
+                job_id=job.get("id"),
+                job_kind=job.get("kind"),
+                exc_info=(type(state_error), state_error, state_error.__traceback__),
             )
 
     def _hold_stale_mail_jobs(
@@ -673,7 +742,7 @@ class GraphSyncQueue:
             except (TypeError, json.JSONDecodeError):
                 result = {}
             if dict(result.get("mail") or {}).get("accepted"):
-                connection.execute(
+                cursor = connection.execute(
                     """
                     UPDATE graph_sync_jobs
                     SET status = 'complete', retryable = 0, last_error = NULL,
@@ -682,8 +751,17 @@ class GraphSyncQueue:
                     """,
                     (now, row["id"]),
                 )
+                if cursor.rowcount:
+                    log_event(
+                        LOGGER,
+                        logging.INFO,
+                        "Trabalho inativo reconciliado como concluído.",
+                        event="graph_job_stale_reconciled",
+                        job_id=row["id"],
+                        job_kind=row["kind"],
+                    )
                 continue
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE graph_sync_jobs
                 SET status = 'failed', retryable = 0, next_attempt_at = ?,
@@ -698,6 +776,15 @@ class GraphSyncQueue:
                     row["id"],
                 ),
             )
+            if cursor.rowcount:
+                log_event(
+                    LOGGER,
+                    logging.WARNING,
+                    "Trabalho inativo retido para revisão manual.",
+                    event="graph_job_stale_held",
+                    job_id=row["id"],
+                    job_kind=row["kind"],
+                )
 
     def _has_due_jobs(self) -> bool:
         with self._connect() as connection:

@@ -12,6 +12,9 @@ dist/
 .pytest_cache/
 tests/.tmp*/
 *.log
+*.jsonl
+*.jsonl.*
+.__*.lock
 Excel/
 PDF/
 data/

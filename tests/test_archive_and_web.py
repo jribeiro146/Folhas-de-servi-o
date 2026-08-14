@@ -155,6 +155,33 @@ def test_editor_prefers_service_number_from_filename_over_stale_excel(isolated_d
     assert payload["document"]["service_number"] == "2026_4577"
 
 
+def test_send_reports_a_recoverable_editing_session_error_when_metadata_is_missing(
+    isolated_dirs,
+):
+    app = create_app(
+        file_service=FileService(isolated_dirs["active"]),
+        archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(isolated_dirs["editing"]),
+    )
+    client = app.test_client()
+
+    response = client.post(
+        "/api/file/2026_4577/send",
+        json={"customer_name": "Cliente Teste"},
+    )
+    payload = response.get_json()
+
+    assert response.status_code == 409
+    assert payload == {
+        "success": False,
+        "error": (
+            "A sessão de edição não está pronta. "
+            "Aguarde alguns segundos e tente novamente."
+        ),
+        "code": "editing_session_required",
+    }
+
+
 def test_web_api_flow_send_and_cancel(isolated_dirs):
     active_dir = isolated_dirs["active"]
     copy_sample(active_dir, "2026_4572.xlsx")

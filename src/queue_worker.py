@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import json
+import logging
 import time
 
 from src.config import (
@@ -12,11 +12,15 @@ from src.config import (
     STORAGE_BACKEND,
     TEAMS_NOTIFICATIONS_ENABLED,
 )
+from src.logging_config import configure_logging, log_event
 from src.services.graph_mail_service import GraphMailService
 from src.services.graph_storage_service import GraphStorageService
 from src.services.graph_sync_queue import GraphSyncQueue
 from src.services.local_pdf_service import LocalPdfService
 from src.services.teams_notification_service import TeamsNotificationService
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def build_queue() -> GraphSyncQueue:
@@ -68,12 +72,47 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    queue = build_queue()
-    while True:
-        print(json.dumps(process_once(queue), ensure_ascii=False), flush=True)
-        if not args.watch:
-            return 0
-        time.sleep(max(args.interval, 1.0))
+    configure_logging("worker")
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "Worker da fila iniciado.",
+        event="queue_worker_started",
+        watch=args.watch,
+        interval_seconds=max(args.interval, 1.0),
+    )
+    try:
+        queue = build_queue()
+        while True:
+            result = process_once(queue)
+            has_activity = (
+                result["before"] != result["after"]
+                or any(
+                    int(result["before"].get(status, 0)) > 0
+                    for status in ("pending", "running")
+                )
+            )
+            log_event(
+                LOGGER,
+                logging.INFO if has_activity or not args.watch else logging.DEBUG,
+                "Ciclo do worker concluído.",
+                event="queue_worker_cycle_completed",
+                worker_acquired=result["worker_acquired"],
+                before=result["before"],
+                after=result["after"],
+            )
+            if not args.watch:
+                return 0
+            time.sleep(max(args.interval, 1.0))
+    except Exception:
+        log_event(
+            LOGGER,
+            logging.CRITICAL,
+            "O worker terminou com um erro não tratado.",
+            event="queue_worker_failed",
+            exc_info=True,
+        )
+        return 1
 
 
 if __name__ == "__main__":

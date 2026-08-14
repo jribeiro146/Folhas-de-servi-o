@@ -4,6 +4,7 @@ Versao recomendada para servidor: `v1.0.0-servidor`.
 
 Para deploy em Plesk/Docker, usar a tag acima e seguir `docs/IMPLEMENTACAO_SERVIDOR.md`.
 Para a migracao do sincronismo transacional, seguir tambem `docs/SINCRONIZACAO_V2_ADMIN.md`.
+Para localizacao, rotacao e operacao dos logs, seguir `docs/LOGGING.md`.
 
 Estrutura principal do projeto:
 
@@ -35,3 +36,4 @@ Notas de consistencia:
 - `src/web/` e a unica webapp ativa do projeto.
 - Dados locais, `.env`, Excels operacionais, releases geradas e caches nao fazem parte da versao limpa.
 - Para servidor Linux/Plesk/Docker usar `requirements-server.txt`.
+- Os logs operacionais ficam em `FS_APP_DATA_DIR/logs`, fora do codigo e do document root.
