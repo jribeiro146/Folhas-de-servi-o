@@ -24,6 +24,8 @@ from src.config import (
     GRAPH_TENANT_ID,
 )
 from src.services.photo_attachment_service import PHOTO_FOLDER_NAME, PhotoAttachmentService
+from src.services.active_file_index import ACTIVE_INDEX_NAME
+from src.services.file_mutex import file_mutex
 
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
@@ -112,26 +114,48 @@ class GraphStorageService:
 
     def sync_active_files(self, local_active_dir: Path) -> list[Path]:
         """Download active Excel files and draft bundles into the local cache."""
+        with file_mutex(local_active_dir / ".fs-locks" / "active-refresh"):
+            return self._sync_active_files_unlocked(local_active_dir)
+
+
+    def _sync_active_files_unlocked(self, local_active_dir: Path) -> list[Path]:
         self.validate_config()
         local_active_dir.mkdir(parents=True, exist_ok=True)
         downloaded: list[Path] = []
-        remote_names: set[str] = set()
-        self._repair_active_cache(local_active_dir)
+        items = self.list_active_items()
+        remote_files: list[str] = []
+        bundle_children: dict[str, list[dict[str, Any]]] = {}
+        # Complete every listing before changing the cache or publishing the index.
+        for item in items:
+            name = self._safe_file_name(str(item.get("name") or ""))
+            if self._is_excel_item(item):
+                remote_files.append(name)
+            elif item.get("folder"):
+                children = self._list_children(str(item["id"]))
+                bundle_children[str(item["id"])] = children
+                remote_files.extend(
+                    f"{name}/{self._safe_file_name(str(child.get('name') or ''))}"
+                    for child in children if self._is_excel_item(child)
+                )
 
-        for item in self.list_active_items():
-            item_name = self._safe_file_name(str(item.get("name") or ""))
-            remote_names.add(item_name)
+        for item in items:
 
             if self._is_excel_item(item):
                 downloaded.append(self._sync_active_workbook(item, local_active_dir))
                 continue
 
             if item.get("folder"):
-                bundle_path = self._sync_active_bundle(item, local_active_dir)
+                bundle_path = self._sync_active_bundle(
+                    item, local_active_dir, children=bundle_children[str(item["id"])]
+                )
                 if bundle_path is not None:
                     downloaded.append(bundle_path)
 
-        self._remove_stale_active_cache(local_active_dir, remote_names)
+        # Visibility follows the remote index; preserve local files and pending work.
+        self._atomic_write_json(
+            local_active_dir / ACTIVE_INDEX_NAME,
+            {"version": 1, "files": sorted(remote_files)},
+        )
 
         return downloaded
 
@@ -143,15 +167,34 @@ class GraphStorageService:
 
     def list_active_items(self) -> list[dict[str, Any]]:
         self.validate_config()
-        response = self._graph_json(
-            "GET",
+        return self._all_pages(
             (
                 f"/drives/{self.config.drive_id}/root:/"
                 f"{self._quote_path(self.config.active_path)}:/children"
                 "?$select=id,name,size,lastModifiedDateTime,eTag,file,folder"
             ),
         )
-        return list(response.get("value") or [])
+
+
+    def _all_pages(self, path: str) -> list[dict[str, Any]]:
+        response = self._graph_json("GET", path)
+        items: list[dict[str, Any]] = []
+        visited: set[str] = set()
+        while True:
+            page = response.get("value")
+            if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
+                raise GraphStorageError("Listagem Graph incompleta ou inválida; cache preservada.")
+            items.extend(page)
+            next_url = response.get("@odata.nextLink")
+            if not next_url:
+                return items
+            parsed = parse.urlsplit(str(next_url))
+            root = parse.urlsplit(GRAPH_ROOT)
+            if (parsed.scheme != "https" or parsed.netloc.casefold() != root.netloc.casefold()
+                    or not parsed.path.startswith(root.path + "/") or str(next_url) in visited):
+                raise GraphStorageError("Paginação Graph inválida; cache preservada.")
+            visited.add(str(next_url))
+            response = self._request_json(str(next_url), method="GET", headers={"Accept": "application/json"})
 
     def list_folder_children(self, folder_path: str) -> list[dict[str, Any]]:
         """Lista todos os filhos diretos de uma pasta, incluindo todas as páginas Graph."""
@@ -455,9 +498,13 @@ class GraphStorageService:
         self._write_item_meta(meta_path, item)
         return local_path
 
-    def _sync_active_bundle(self, folder_item: dict[str, Any], local_active_dir: Path) -> Path | None:
+    def _sync_active_bundle(
+        self, folder_item: dict[str, Any], local_active_dir: Path,
+        *, children: list[dict[str, Any]] | None = None,
+    ) -> Path | None:
         folder_name = self._safe_file_name(str(folder_item.get("name") or ""))
-        children = self._list_children(str(folder_item["id"]))
+        if children is None:
+            children = self._list_children(str(folder_item["id"]))
         excel_items = [item for item in children if self._is_excel_item(item)]
         if not excel_items:
             return None
@@ -491,12 +538,10 @@ class GraphStorageService:
         return downloaded_excel
 
     def _list_children(self, item_id: str) -> list[dict[str, Any]]:
-        response = self._graph_json(
-            "GET",
+        return self._all_pages(
             f"/drives/{self.config.drive_id}/items/{item_id}/children"
             "?$select=id,name,size,lastModifiedDateTime,eTag,file,folder",
         )
-        return list(response.get("value") or [])
 
     def _access_token_value(self) -> str:
         self.validate_config()

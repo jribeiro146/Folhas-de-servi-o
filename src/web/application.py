@@ -703,6 +703,7 @@ def create_app(
         return render_template(
             "field_app.html",
             files=file_service.list_valid_files(),
+            graph_enabled=graph_refresh_coordinator is not None,
             fields_by_group=FIELDS_BY_GROUP,
             field_map=FIELD_MAP,
             selected_file_name=selected_file_name,
@@ -830,12 +831,15 @@ def create_app(
 
     @app.route("/api/files")
     def get_files():
-        if request.args.get("refresh") in {"1", "true", "yes"}:
-            schedule_graph_refresh(force=True)
-        files_data = [serialize_file_entry(entry) for entry in file_service.list_valid_files()]
+        refresh_mode = request.args.get("refresh")
+        if refresh_mode != "0":
+            schedule_graph_refresh(force=refresh_mode in {"1", "true", "yes"})
+        entries = file_service.list_valid_files()
+        files_data = [serialize_file_entry(entry) for entry in entries]
         return jsonify({
             "success": True,
             "files": files_data,
+            "html": render_template("partials/active_file_list.html", files=entries),
             "refresh": graph_refresh_coordinator.status() if graph_refresh_coordinator else None,
         })
 

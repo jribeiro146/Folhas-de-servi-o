@@ -49,54 +49,7 @@
             </div>
 
             <ul class="file-list" id="file-list">
-                {% if not files %}
-                    <li class="empty-state">Nenhuma folha encontrada.</li>
-                {% else %}
-                    {% for file in files %}
-                        {% if file.status in ['ready', 'in_progress'] %}
-                        <li class="file-card {{ file.status }} {% if selected_file_name == file.name %}active{% endif %}" data-search="{{ (file.name ~ ' ' ~ (file.summary.customer_name or '') ~ ' ' ~ (file.summary.local_store or '') ~ ' ' ~ (file.summary.contact_name or '') ~ ' ' ~ (file.summary.address or '') ~ ' ' ~ (file.summary.phone or ''))|lower }}">
-                            <a class="file-card-link" href="{{ url_for('index', file=file.name) }}" data-name="{{ file.name }}">
-                                <div class="file-card-main">
-                                    <strong>{{ file.name }}</strong>
-                                    <span class="status-pill {% if file.status == 'in_progress' %}progress{% else %}ok{% endif %}">
-                                        {% if file.status == 'in_progress' %}Em execução{% else %}Pronta{% endif %}
-                                    </span>
-                                </div>
-                                <div class="file-card-lines">
-                                    {% if file.summary.customer_name %}
-                                    <p>{{ file.summary.customer_name }}</p>
-                                    {% endif %}
-                                    {% if file.summary.local_store %}
-                                    <p>{{ file.summary.local_store }}</p>
-                                    {% endif %}
-                                    {% if file.summary.contact_name %}
-                                    <p>{{ file.summary.contact_name }}</p>
-                                    {% endif %}
-                                    {% if file.summary.address %}
-                                    <p>{{ file.summary.address }}</p>
-                                    {% endif %}
-                                    {% if file.summary.phone %}
-                                    <p>{{ file.summary.phone }}</p>
-                                    {% endif %}
-                                    {% if not file.summary.customer_name and not file.summary.local_store and not file.summary.contact_name and not file.summary.address and not file.summary.phone %}
-                                    <p class="file-card-empty-meta">Sem dados adicionais.</p>
-                                    {% endif %}
-                                </div>
-                            </a>
-                        </li>
-                        {% else %}
-                        <li class="file-card {{ file.status }}" data-search="{{ (file.name ~ ' ' ~ (file.summary.customer_name or '') ~ ' ' ~ (file.summary.local_store or '') ~ ' ' ~ (file.summary.contact_name or '') ~ ' ' ~ (file.summary.address or '') ~ ' ' ~ (file.summary.phone or ''))|lower }}">
-                            <div class="file-card-main">
-                                <strong>{{ file.name }}</strong>
-                                <span class="status-pill {% if file.status == 'locked' %}locked{% else %}error{% endif %}">
-                                    {% if file.status == 'locked' %}Em uso{% else %}Inválida{% endif %}
-                                </span>
-                            </div>
-                            <p>{{ file.error }}</p>
-                        </li>
-                        {% endif %}
-                    {% endfor %}
-                {% endif %}
+                {% include "partials/active_file_list.html" %}
             </ul>
         </aside>
         <button
@@ -623,6 +576,7 @@
             requiredFields: {{ document_required_fields | tojson }},
             serviceTypeOptions: {{ service_type_options | tojson }},
             equipmentOptions: {{ equipment_options | tojson }},
+            graphEnabled: {{ (graph_enabled | default(false)) | tojson }},
             selectedFileName: {{ selected_file_name | tojson }},
             selectedFileIsDraft: {{ selected_file_is_draft | tojson }},
             selectedFileData: {{ selected_file_data | tojson }},

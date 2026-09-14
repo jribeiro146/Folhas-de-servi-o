@@ -15,7 +15,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const selectedSignatures = filesApp.selectedSignatures || {};
     const selectedFileError = filesApp.selectedFileError || null;
 
-    const fileCards = Array.from(document.querySelectorAll(".file-card-link[data-name]"));
     const fileList = document.getElementById("file-list");
     const fileSearch = document.getElementById("file-search");
     const fileCounter = document.getElementById("file-counter");
@@ -971,7 +970,7 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     const setActiveCard = (fileName) => {
-        fileCards.forEach((link) => {
+        document.querySelectorAll(".file-card-link[data-name]").forEach((link) => {
             const card = link.closest(".file-card");
             if (!card) {
                 return;
@@ -1698,17 +1697,18 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
 
-    const refreshFileList = async () => {
+    const refreshFileList = async ({ silent = false } = {}) => {
         if (!refreshBtn || refreshBtn.disabled) return;
         refreshBtn.disabled = true;
-        showToast("A atualizar a lista em segundo plano…", "info");
+        if (!silent) showToast("A atualizar a lista em segundo plano…", "info");
         try {
-            const response = await fetch("/api/files?refresh=1", {
+            const response = await fetch(silent ? "/api/files" : "/api/files?refresh=1", {
                 headers: { "Accept": "application/json" },
+                cache: "no-store",
             });
             const result = await response.json();
             if (!response.ok || !result.success) {
-                throw new Error(result.error || "N??o foi poss??vel atualizar a lista.");
+                throw new Error(result.error || "Não foi possível atualizar a lista.");
             }
             if (result.refresh) {
                 let refresh = result.refresh;
@@ -1718,23 +1718,42 @@ document.addEventListener("DOMContentLoaded", () => {
                         headers: { "Accept": "application/json" },
                     });
                     const statusResult = await statusResponse.json();
+                    if (!statusResponse.ok || !statusResult.success) {
+                        throw new Error("Não foi possível confirmar a atualização.");
+                    }
                     refresh = statusResult.refresh;
                 }
                 if (refresh?.last_error) throw new Error(refresh.last_error);
+                if (refresh?.in_progress) throw new Error("A atualização ainda está em curso. Tente novamente dentro de momentos.");
             }
-            if (activeFileName) {
-                showToast("Lista atualizada. A edição atual foi mantida.", "success");
-            } else {
-                window.location.reload();
+            const latestResponse = await fetch("/api/files?refresh=0", {
+                headers: { "Accept": "application/json" }, cache: "no-store",
+            });
+            const latest = await latestResponse.json();
+            if (!latestResponse.ok || !latest.success || typeof latest.html !== "string") {
+                throw new Error("Não foi possível carregar a lista atualizada.");
             }
+            fileList.innerHTML = latest.html;
+            setActiveCard(activeFileName);
+            fileSearch?.dispatchEvent(new Event("input"));
+            if (!silent) showToast("Lista atualizada.", "success");
         } catch (error) {
-            showToast(error.message, "error");
+            if (!silent) showToast(error.message, "error");
         } finally {
             refreshBtn.disabled = false;
         }
     };
 
     refreshBtn?.addEventListener("click", refreshFileList);
+    if (filesApp.graphEnabled) {
+        refreshFileList({ silent: true });
+        window.setInterval(() => {
+            if (!document.hidden) refreshFileList({ silent: true });
+        }, 30000);
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden) refreshFileList({ silent: true });
+        });
+    }
     toggleSidebarBtn?.addEventListener("click", () => {
         setSidebarOpen(!sidebar?.classList.contains("is-open"));
     });

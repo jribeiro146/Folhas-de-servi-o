@@ -4,6 +4,34 @@ Registo das principais alteracoes por versao da aplicacao Folhas de Servico.
 
 As versoes sem tag formal usam o commit Git como referencia. A versao marcada para servidor continua a ser `v1.0.0-servidor`, salvo indicacao posterior.
 
+## 2026-09-14 — Lista de folhas ativas conforme o SharePoint
+
+Base: `eaa9e6b` (a versão de logging da branch `main`).
+Branch: `codex/folhas-ativas-sharepoint-20260914`.
+
+- A lista passa a apresentar apenas os Excel confirmados na última consulta completa
+  à pasta de folhas ativas do SharePoint, incluindo os Excel dentro dos rascunhos.
+- Retirar o Excel base faz a folha desaparecer da lista na próxima atualização,
+  mesmo quando a cópia local antiga já não tem o auxiliar `.graph.json`.
+- As cópias locais ausentes no SharePoint ficam fora da lista sem serem apagadas
+  pela atualização. Não é necessário limpar a cache manualmente.
+- Os rascunhos novos aparecem na lista depois de publicados e confirmados no
+  SharePoint. A remoção do Excel base não oculta rascunhos que continuam lá.
+- A lista atualiza em segundo plano, com verificações a cada 30 segundos enquanto
+  a página está visível, e o botão Atualizar mantém a consulta manual.
+- A atualização preserva o formulário aberto e o filtro de pesquisa.
+- O inventário é publicado atomicamente, após leitura de todas as páginas e
+  conclusão da sincronização; falhas mantêm a última lista confirmada. Sem um
+  primeiro inventário válido, a lista não apresenta cópias locais não confirmadas.
+- Consultas concorrentes da cache são protegidas por um bloqueio entre processos.
+- Esta atualização não altera envios, filas, finalização, configuração, dependências
+  Python nem ficheiros Docker. Não inclui a atualização local de 8 de setembro.
+- Validação nesta base: 201 testes Python e 10 testes JavaScript passaram, com
+  dados fictícios e transportes simulados.
+
+Instalação, ficheiros, testes e recuperação:
+[Atualização de 14 de setembro](docs/ATUALIZACAO_2026-09-14.md).
+
 ## Em desenvolvimento - confirmação e segurança do envio de e-mail
 
 - Foi adicionado logging operacional JSON Lines para web, servidor local e worker,
