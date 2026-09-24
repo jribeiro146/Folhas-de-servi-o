@@ -15,6 +15,7 @@ from typing import Any, Iterator
 
 from src.config import APP_DATA_DIR
 from src.services.editing_state_repository import SqliteStateRepository
+from src.services.file_mutex import FileMutexBusy, file_mutex
 
 
 EDIT_METADATA_NAME = ".fs_edit.json"
@@ -306,6 +307,7 @@ class EditingStateService:
         now = time.time()
         with self._state_transaction(document_id) as state:
             self._assert_session(state, identity, client_id, lease_token, now)
+            self._assert_no_pending_operation(state)
             existing = state.get("autosave") or {}
             if existing.get("idempotency_key") == idempotency_key:
                 return self._public_snapshot(
@@ -343,7 +345,7 @@ class EditingStateService:
             autosaved = False
             revision_conflict = False
 
-            if document is not None:
+            if document is not None and not self._has_pending_operation(state):
                 existing = state.get("autosave") or {}
                 if existing.get("idempotency_key") == idempotency_key:
                     autosaved = True
@@ -381,6 +383,7 @@ class EditingStateService:
         now = time.time()
         with self._state_transaction(document_id) as state:
             self._assert_session(state, identity, client_id, lease_token, now)
+            self._assert_no_pending_operation(state)
             self._assert_revision(state, base_revision, now)
             state["autosave"] = None
             state["revision"] = int(state.get("revision") or 1) + 1
@@ -416,6 +419,9 @@ class EditingStateService:
                     raise OperationInProgressError("A operação já está em curso.")
 
             self._assert_session(state, identity, client_id, lease_token, now)
+            self._assert_no_pending_operation(state, except_key=idempotency_key)
+            if state.get("closed_by_operation"):
+                raise EditingStateError("Esta folha já foi finalizada ou cancelada.")
             self._assert_revision(state, base_revision, now)
             operation = dict(existing or {})
             operation.update({
@@ -435,6 +441,16 @@ class EditingStateService:
             operation = (state.get("operations") or {}).get(idempotency_key)
             return dict(operation) if operation else None
 
+    def finalizations_to_retire(self):
+        with self.repository._connect() as connection:
+            rows = connection.execute("SELECT document_id, state_json FROM editing_states").fetchall()
+        for row in rows:
+            state = json.loads(row["state_json"])
+            for key, operation in state.get("operations", {}).items():
+                context = operation.get("context") or {}
+                if operation.get("kind") == "send" and operation.get("status") == "complete" and context.get("source_path") and not context.get("source_retired"):
+                    yield str(row["document_id"]), key, context
+
     def update_operation_context(
         self,
         document_id: str,
@@ -451,7 +467,7 @@ class EditingStateService:
     def fail_operation(self, document_id: str, idempotency_key: str, message: str) -> None:
         with self._state_transaction(document_id) as state:
             operation = (state.setdefault("operations", {})).get(idempotency_key)
-            if not operation:
+            if not operation or operation.get("status") != "pending":
                 return
             operation["status"] = "failed"
             operation["error"] = message
@@ -468,6 +484,13 @@ class EditingStateService:
         result_editing: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self._state_transaction(document_id) as state:
+            operation = state.setdefault("operations", {}).get(idempotency_key)
+            if operation is None or operation.get("status") not in {"pending", "complete"}:
+                raise EditingStateError("Operação não está ativa para conclusão.")
+            if operation.get("status") == "complete":
+                return dict(operation["response"])
+            self._assert_no_pending_operation(state, except_key=idempotency_key)
+            self._assert_revision(state, int(operation["base_revision"]), time.time())
             state["revision"] = int(state.get("revision") or 1) + 1
             state["autosave"] = None
             if path is not None:
@@ -501,6 +524,8 @@ class EditingStateService:
                 "response": result,
                 "updated_at": time.time(),
             })
+            if operation.get("kind") in {"send", "cancel"}:
+                state["closed_by_operation"] = idempotency_key
             self._prune_operations(state)
             return result
 
@@ -546,6 +571,8 @@ class EditingStateService:
         }
 
     def _sync_fingerprint(self, state: dict[str, Any], path: Path) -> None:
+        if self._has_pending_operation(state):
+            return
         fingerprint = self._fingerprint(path)
         previous = str(state.get("fingerprint") or "")
         if previous and fingerprint and previous != fingerprint:
@@ -579,6 +606,35 @@ class EditingStateService:
     def _assert_revision(self, state: dict[str, Any], base_revision: int, now: float) -> None:
         if int(base_revision) != int(state.get("revision") or 1):
             raise RevisionConflictError(self._public_snapshot(state, now=now))
+
+    @staticmethod
+    def _has_pending_operation(state: dict[str, Any], except_key: str = "") -> bool:
+        return any(
+            key != except_key and operation.get("status") == "pending"
+            for key, operation in state.get("operations", {}).items()
+        )
+
+    def _assert_no_pending_operation(self, state: dict[str, Any], except_key: str = "") -> None:
+        if self._has_pending_operation(state, except_key):
+            raise OperationInProgressError("Outra operação sobre esta folha está em curso.")
+
+    @contextmanager
+    def operation_guard(self, document_id: str, identity: EditorIdentity):
+        lock_id = hashlib.sha256(document_id.encode("utf-8")).hexdigest()
+        try:
+            with file_mutex(self.root / "operation-locks" / lock_id):
+                # Holding the OS lock proves a previous endpoint is no longer
+                # writing, even if its process died before updating SQLite.
+                with self._state_transaction(document_id) as state:
+                    owner = state.get("owner") or {}
+                    if owner.get("owner_id") not in {None, identity.id}:
+                        raise LeaseConflictError(self._public_snapshot(state))
+                    for operation in state.get("operations", {}).values():
+                        if operation.get("status") == "pending":
+                            operation.update(status="failed", error="Operação interrompida; pode ser recuperada.")
+                yield
+        except FileMutexBusy as exc:
+            raise OperationInProgressError("Outra operação sobre esta folha está em curso.") from exc
 
     @staticmethod
     def _session_matches(

@@ -3,6 +3,7 @@
 Versao recomendada para servidor: `v1.0.0-servidor`.
 
 Para deploy em Plesk/Docker, usar a tag acima e seguir `docs/IMPLEMENTACAO_SERVIDOR.md`.
+A demo SADI e os seus limites de produção estão descritos em [RELEASE_NOTES_SADI_DEMO_2026-09-24.md](docs/RELEASE_NOTES_SADI_DEMO_2026-09-24.md).
 Para a migracao do sincronismo transacional, seguir tambem `docs/SINCRONIZACAO_V2_ADMIN.md`.
 Para localizacao, rotacao e operacao dos logs, seguir `docs/LOGGING.md`.
 

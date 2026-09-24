@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="pt">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SADI — {{ site.location }}</title>
+    <style>{{ embedded_styles | safe }}</style>
+</head>
+<body>
+{% macro checks(title, questions, answers, equipment='Sistema') %}
+<section class="panel checks-panel">
+    <table class="grid-table checklist-table">
+        <colgroup><col><col class="result-col"></colgroup>
+        <thead>
+            <tr><th colspan="2" class="checklist-heading"><div><span>{{ equipment }} · {{ title }}</span><span class="table-context">{{ document.customer_name }} · {{ site.location }} · FS {{ document.service_number }}</span></div></th></tr>
+            <tr><th>Verificação</th><th class="center">Resultado</th></tr>
+        </thead>
+        <tbody>
+        {% for key,label in questions %}
+            <tr>
+                <td>{{ label.removesuffix(' (*)') }}{% if answers[key].answer == 'NC' %}<div class="nc-reason"><b>Justificação:</b> {{ answers[key].justification or 'Por preencher' }}</div>{% endif %}</td>
+                <td class="center"><span class="result {{ 'result-nc' if answers[key].answer == 'NC' else '' }}">{{ answers[key].answer or 'Por responder' }}</span></td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endmacro %}
+{% macro observations(title, text) %}
+{% if text %}<section class="panel observation-panel"><div class="panel-title">{{ title }}</div><div class="lined-area">{{ text }}</div></section>{% endif %}
+{% endmacro %}
+<div class="print-actions">
+    <button type="button" onclick="window.print()">Imprimir / Guardar em PDF</button>
+    <button type="button" onclick="window.close()">Fechar</button>
+</div>
+<main class="sheet-page maintenance-sheet">
+        <div class="document-running-header">
+            {% with sheet_kicker="Checklist de manutenção · SADI", sheet_title="Manutenção preventiva — SADI",
+                    sheet_number_label="N.º da folha", sheet_date=site.date %}
+            {% include "partials/document_header.html" %}
+            {% endwith %}
+            <div class="running-context">{{ document.customer_name or 'Cliente por preencher' }} · {{ site.location or 'Local por preencher' }}</div>
+        </div>
+        <div class="document-content">
+            <section class="panel maintenance-identification">
+                <div class="panel-title">Dados da manutenção</div>
+                <table class="grid-table info-table"><tbody>
+                    <tr><th>Cliente</th><td colspan="5">{{ document.customer_name or 'Por preencher' }}</td></tr>
+                    <tr><th>Local</th><td colspan="3">{{ site.location or 'Por preencher' }}</td><th>Data</th><td>{{ site.date or 'Por preencher' }}</td></tr>
+                    <tr><th>Técnico</th><td colspan="3">{{ site.technician or 'Por preencher' }}</td><th>Periodicidade</th><td>{{ definition.periods.get(site.period, 'Por preencher') }}</td></tr>
+                    {% if site.period == 'other' %}<tr><th>Descrição</th><td colspan="5">{{ site.period_other or 'Por preencher' }}</td></tr>{% endif %}
+                </tbody></table>
+            </section>
+            <p class="result-legend"><b>OK</b> — Cumpre função <span>·</span> <b>NC</b> — Não Conforme <span>·</span> <b>NA</b> — Não Aplicável</p>
+            <h2 class="maintenance-section-title">1. Sistema</h2>
+            {{ checks('Verificações gerais', definition.general, site.general) }}
+            {{ observations('Sistema · Observações', site.observations) }}
+
+            {% for kind,title in definition.groups.items() %}
+                {% if loop.first %}<h2 class="maintenance-section-title">2. Centrais</h2>{% endif %}
+                {% if kind == 'repeater' %}<h2 class="maintenance-section-title">3. Repetidores</h2>{% endif %}
+                {% if site.configuration[kind] is sameas false %}<p class="equipment-absent">{{ title }}: não existente neste local.</p>{% endif %}
+                {% if draft_preview and (site.configuration[kind] is none or (site.configuration[kind] and not site[kind])) %}
+                <p class="draft-note">{{ title }} — configuração por preencher.</p>
+                {% endif %}
+                {% if site.configuration[kind] %}{% for unit in site[kind] %}
+                    {% set equipment = title ~ ' ' ~ loop.index %}
+                    <section class="equipment-identification">
+                        <h2 class="unit-heading">{{ equipment }}{% if unit.location %}<span>{{ unit.location }}</span>{% endif %}</h2>
+                        <div class="panel"><table class="grid-table info-table equipment-table"><tbody>
+                            {% for row in definition.fields[kind] | batch(3) %}<tr>
+                                {% for key,label,type in row %}<th>{{ label }}</th><td>{{ unit[key] or 'Por preencher' }}</td>{% endfor %}
+                                {% for _ in range(3 - row | length) %}<th></th><td></td>{% endfor %}
+                            </tr>{% endfor %}
+                        </tbody></table></div>
+                    </section>
+                    {{ checks('Testes e estado geral', definition[kind], unit.checks, equipment) }}
+                    {{ observations(equipment ~ ' · Observações', unit.observations) }}
+                {% endfor %}{% endif %}
+            {% endfor %}
+
+            <section class="peripherals-section">
+                <h2 class="maintenance-section-title">4. Periféricos e ensaios</h2>
+                {{ checks('Estado geral', definition.peripherals, site.peripherals, 'Periféricos') }}
+                {{ checks('Ensaios', definition.trials, site.trials, 'Periféricos') }}
+                <section class="panel coverage-panel">
+                    <div class="panel-title">Periféricos · Cobertura dos ensaios do local</div>
+                    <table class="grid-table info-table"><tbody><tr><th>Elementos testados</th><td>{{ (site.coverage_percent ~ '%') if site.coverage_percent else '—' }}</td><th>Áreas testadas</th><td colspan="3" class="preserve-lines">{{ site.coverage_areas or '—' }}</td></tr></tbody></table>
+                </section>
+                {{ observations('Periféricos e ensaios · Observações', site.peripheral_observations) }}
+            </section>
+
+            {% if site.photos %}
+            <section class="maintenance-photos">
+                <h2 class="maintenance-section-title">Fotografias</h2>
+                {% for photo in site.photos %}
+                <figure class="maintenance-photo panel">
+                    <div class="panel-title">Fotografia {{ loop.index }} · {{ site.location }}</div>
+                    {% if photo.image and not photo.error %}<img src="{{ photo.image }}" alt="Fotografia {{ loop.index }} do local">{% else %}<p class="draft-note">Fotografia inválida — adicione novamente.</p>{% endif %}
+                    {% if photo.caption %}<figcaption>{{ photo.caption }}</figcaption>{% endif %}
+                </figure>
+                {% endfor %}
+            </section>
+            {% endif %}
+            {% if site.final_observations %}
+            <h2 class="maintenance-section-title">Observações finais</h2>
+            {{ observations('Observações finais · ' ~ site.location, site.final_observations) }}
+            {% endif %}
+            <section class="completion-section">
+                <section class="panel"><table class="grid-table info-table"><tbody><tr><th>Responsável SCIE</th><td colspan="5">{{ site.scie or '—' }}</td></tr></tbody></table></section>
+                <div class="signature-strip">
+                {% for role,label in [('technician','Assinatura do técnico'),('customer','Assinatura do cliente')] %}
+                    {% set signature = site.signatures.get(role) %}
+                    <article class="signature-panel">
+                        <div class="panel-title">{{ label }}</div>
+                        <div class="signature-image {{ 'has-signature' if signature else 'is-empty' }}">
+                            {% if signature %}<img src="{{ signature.image }}" alt="{{ label }}">{% else %}<span>Assinatura por recolher</span>{% endif %}
+                        </div>
+                        <div class="signature-meta signature-meta-customer">
+                            <div class="signature-signer-name"><span>Primeiro e último nome</span><strong>{{ signature.name if signature else '—' }}</strong></div>
+                            <span>Data: {{ signature.date if signature else '—' }}</span>
+                        </div>
+                    </article>
+                {% endfor %}
+                </div>
+            <footer class="maintenance-footer">DEMO · Dados de teste · {{ site.version }} · {{ site.location }} · FS {{ document.service_number }}</footer>
+            </section>
+        </div>
+</main>
+{% if auto_print %}<script>window.addEventListener("load", () => window.setTimeout(() => window.print(), 250));</script>{% endif %}
+</body>
+</html>

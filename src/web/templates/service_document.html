@@ -30,23 +30,12 @@
     </div>
 
     <main class="sheet-page readable-sheet">
-        <header class="sheet-header">
-            <div class="brand-block">
-                {% if logo_src %}
-                <img class="sheet-logo" src="{{ logo_src }}" alt="Sensorpoint">
-                {% endif %}
-                <div class="brand-copy">
-                    <p class="sheet-kicker">{{ "Service Sheet" if doc_lang == "en" else "Folha de Serviço" }}</p>
-                    <h1>{{ "Service Report" if doc_lang == "en" else "Relatório de Intervenção" }}</h1>
-                </div>
-            </div>
-
-            <div class="sheet-id-card">
-                <span class="id-label">{{ "Sheet no." if doc_lang == "en" else "N.º da folha" }}</span>
-                <strong>{{ document.service_number or file_name }}</strong>
-                <small>{{ document.request_date or "-" }}</small>
-            </div>
-        </header>
+        {% with sheet_kicker="Service Sheet" if doc_lang == "en" else "Folha de Serviço",
+                sheet_title="Service Report" if doc_lang == "en" else "Relatório de Intervenção",
+                sheet_number_label="Sheet no." if doc_lang == "en" else "N.º da folha",
+                sheet_date=document.request_date %}
+        {% include "partials/document_header.html" %}
+        {% endwith %}
 
         <section class="summary-grid">
             <article class="panel">
