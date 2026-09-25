@@ -110,20 +110,24 @@
                 <section class="panel"><table class="grid-table info-table"><tbody><tr><th>Responsável SCIE</th><td colspan="5">{{ site.scie or '—' }}</td></tr></tbody></table></section>
                 <div class="signature-strip">
                 {% for role,label in [('technician','Assinatura do técnico'),('customer','Assinatura do cliente')] %}
+                    {% set exception = definition.signature_exceptions[role] %}
+                    {% set waived = site.get(exception.field) is sameas true %}
                     {% set signature = site.signatures.get(role) %}
                     <article class="signature-panel">
                         <div class="panel-title">{{ label }}</div>
-                        <div class="signature-image {{ 'has-signature' if signature else 'is-empty' }}">
-                            {% if signature %}<img src="{{ signature.image }}" alt="{{ label }}">{% else %}<span>Assinatura por recolher</span>{% endif %}
+                        <div class="signature-image {{ 'is-exempt' if waived else 'has-signature' if signature else 'is-empty' }}">
+                            {% if waived %}<span class="signature-exemption"><strong>{{ exception.label }}</strong><small>Assinatura dispensada.</small></span>{% elif signature %}<img src="{{ signature.image }}" alt="{{ label }}">{% else %}<span>Assinatura por recolher</span>{% endif %}
                         </div>
+                        {% if not waived %}
                         <div class="signature-meta signature-meta-customer">
                             <div class="signature-signer-name"><span>Primeiro e último nome</span><strong>{{ signature.name if signature else '—' }}</strong></div>
                             <span>Data: {{ signature.date if signature else '—' }}</span>
                         </div>
+                        {% endif %}
                     </article>
                 {% endfor %}
                 </div>
-            <footer class="maintenance-footer">DEMO · Dados de teste · {{ site.version }} · {{ site.location }} · FS {{ document.service_number }}</footer>
+            <footer class="maintenance-footer">{% if config.SYNTHETIC_TEST_VERSION %}DEMO · Dados de teste · {% endif %}{{ site.version }} · {{ site.location }} · FS {{ document.service_number }}</footer>
             </section>
         </div>
 </main>

@@ -85,6 +85,8 @@ def complete_document():
 def sign_document(document, secret):
     for site in document["maintenance_checklists"]:
         for role in ("technician", "customer"):
+            if m.signature_waived(site, role):
+                continue
             site["signatures"][role] = m.make_signature(secret, document, site, role, "Pessoa fictícia", "2026-09-17", signature_image())
 
 
@@ -188,6 +190,8 @@ def test_optional_empty_fields_preserve_existing_sadi2_signatures():
     for site in document["maintenance_checklists"]:
         site.pop("photos"); site.pop("final_observations")
         site.pop("signature_drafts")
+        for exception in m.SIGNATURE_EXCEPTIONS.values():
+            site.pop(exception["field"])
     sign_document(document, "secret")
     loaded = normalize_document_payload(document)
     assert m.document_errors(loaded, "secret") == []
@@ -219,6 +223,83 @@ def test_unsigned_capture_rejects_external_or_invalid_images():
     site["signature_drafts"] = {"customer":{"name":"Teste","date":"","image":"https://example.invalid/signature.png"}}
     normalized = m.normalize_sites([site])[0]
     assert normalized["signature_drafts"]["customer"]["image"] == ""
+
+
+@pytest.mark.parametrize("roles", [("customer",), ("technician",), ("customer", "technician")])
+def test_checklist_signature_exceptions_save_reopen_render_and_finalize(demo, roles):
+    app, client, draft, metadata, renders, _root = demo
+    document = complete_document()
+    site = document["maintenance_checklists"][0]
+    for role in roles:
+        site[m.SIGNATURE_EXCEPTIONS[role]["field"]] = True
+    sign_document(document, app.secret_key)
+    saved = client.post(f"/api/file/{draft.stem}/draft", json={**document, "_edit": metadata})
+    assert saved.status_code == 200, saved.get_json()
+    loaded = client.get(f"/api/file/{draft.stem}").get_json()["document"]
+    assert loaded["maintenance_checklists"][0] == site
+    checked = client.post(f"/api/file/{draft.stem}/maintenance/validate", json={"document": loaded}).get_json()
+    assert checked["errors"] == []
+    assert checked["sites"][0]["waived"] == {role: role in roles for role in ("customer", "technician")}
+    assert checked["sites"][1]["waived"] == {"customer": False, "technician": False}
+    html = client.post(f"/api/file/{draft.stem}/document-preview", json={**loaded,
+        "_maintenance_site_id": site["id"], "_auto_print": True}).get_json()["html"]
+    assert html.count('class="signature-image has-signature"') == 2 - len(roles)
+    assert "Assinatura por recolher" not in html
+    assert "Técnico não presente" not in html
+    for role, exception in m.SIGNATURE_EXCEPTIONS.items():
+        assert (exception["label"] in html) is (role in roles)
+    editing = client.post(f"/api/file/{draft.stem}/lease", json={"client_id": "qa"}).get_json()["editing"]
+    metadata = {**metadata, "base_revision": editing["revision"], "lease_token": editing["lease"]["token"], "idempotency_key": uuid.uuid4().hex}
+    finalized = client.post(f"/api/file/{draft.stem}/send", json={**loaded, "_edit": metadata})
+    assert finalized.status_code == 200, finalized.get_json()
+    assert len(renders) == 3
+
+
+@pytest.mark.parametrize("role", ["customer", "technician"])
+def test_signature_exception_invalidates_signatures_only_for_its_local_and_cannot_be_signed(role):
+    document = complete_document()
+    sign_document(document, "secret")
+    site = document["maintenance_checklists"][0]
+    field = m.SIGNATURE_EXCEPTIONS[role]["field"]
+    site[field] = True
+    m.clear_invalid_signatures(document, "secret")
+    assert site["signatures"] == {}
+    assert all(m.signature_valid("secret", document, document["maintenance_checklists"][1], other)
+               for other in ("customer", "technician"))
+    other = "technician" if role == "customer" else "customer"
+    site["signatures"][other] = m.make_signature("secret", document, site, other, "Pessoa fictícia", "2026-09-17", signature_image())
+    assert m.document_errors(document, "secret") == []
+    with pytest.raises(ValueError, match="Desmarque a exceção"):
+        m.make_signature("secret", document, site, role, "Pessoa fictícia", "2026-09-17", signature_image())
+    site[field] = False
+    assert len(m.document_errors(document, "secret")) == 2
+
+
+@pytest.mark.parametrize("value", ["false", "true", 1, None])
+def test_checklist_signature_exceptions_require_explicit_booleans(value):
+    document = complete_document()
+    site = document["maintenance_checklists"][0]
+    for exception in m.SIGNATURE_EXCEPTIONS.values():
+        site[exception["field"]] = value
+    loaded = normalize_document_payload(document)
+    assert len(m.document_errors(loaded, "secret")) == 4
+
+
+@pytest.mark.parametrize("pending", ["technician", "nc"])
+def test_signature_exceptions_do_not_waive_checklist_fields(demo, pending):
+    app, client, draft, metadata, renders, _root = demo
+    document = complete_document()
+    site = document["maintenance_checklists"][0]
+    site["customer_not_present"] = site["technician_signature_not_collected"] = True
+    if pending == "technician":
+        site["technician"] = ""
+    else:
+        site["general"]["B22"] = {"answer": "NC", "justification": ""}
+    sign_document(document, app.secret_key)
+    result = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
+    assert result.status_code == 400 and draft.exists() and not renders
+    errors = result.get_json()["missing_fields"]
+    assert errors and all("assinatura" not in message for message in errors)
 
 
 @pytest.mark.parametrize("bad", ["https://example.invalid/photo.jpg", "data:image/svg+xml;base64,PHN2Zz4=", "data:image/jpeg;base64,eA=="])

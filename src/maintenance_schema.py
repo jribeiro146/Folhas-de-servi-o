@@ -65,12 +65,17 @@ END_WARNING = 'Repor todos os sistemas em situação normal de funcionamento. N�
 TRIAL_WARNING = "(*) Para esta operação poderão ter de ser desativados alguns módulos de dispositivos de proteção."
 COVERAGE_WARNING = "Quando o procedimento seja mensal, trimestral ou semestral indicar em observações a % de elementos testados ou preferencialmente as áreas do edifício onde os elementos foram testados de forma que ao longo do ano 100% dos dispositivos e todas as zonas sejam testados."
 PERIODS = {"monthly": "Mensal", "quarterly": "Trimestral", "half_yearly": "Semestral", "annual": "Anual", "other": "Outra"}
+SIGNATURE_EXCEPTIONS = {
+    "customer": {"field": "customer_not_present", "label": "Cliente não presente na obra"},
+    "technician": {"field": "technician_signature_not_collected", "label": "Técnico presente, sem assinatura"},
+}
 FIELDS = {
     "conventional": [("brand", "Marca", "text"), ("model", "Modelo", "text"), ("location", "Local da central", "text"), ("total", "N.º zonas total", "number"), ("used", "N.º zonas em uso", "number"), ("detectors", "N.º de detetores", "number"), ("buttons", "N.º de botoneiras", "number"), ("sirens", "N.º de sirenes", "number")],
     "addressable": [("brand", "Marca", "text"), ("model", "Modelo", "text"), ("location", "Local da central", "text"), ("total", "N.º loops central", "number"), ("used", "N.º loops em uso", "number")],
     "repeater": [("brand", "Marca", "text"), ("model", "Modelo", "text"), ("location", "Local do repetidor", "text")],
 }
 DEFINITION = dict(version=VERSION, groups=GROUPS, fields=FIELDS, periods=PERIODS,
+                  signature_exceptions=SIGNATURE_EXCEPTIONS,
                   general=GENERAL, conventional=CONVENTIONAL, addressable=ADDRESSABLE,
                   repeater=REPEATER, peripherals=PERIPHERALS, trials=TRIALS,
                   start_warning=START_WARNING, end_warning=END_WARNING,
@@ -144,6 +149,8 @@ def normalize_sites(value):
         raw = raw if isinstance(raw, dict) else {}
         raw = _upgrade_site(raw)
         site = {key: text(raw.get(key)) for key in SITE_FIELDS}
+        for exception in SIGNATURE_EXCEPTIONS.values():
+            site[exception["field"]] = raw.get(exception["field"]) is True
         site["photos"] = _photos(raw.get("photos"))
         site["general"] = _answers(raw.get("general"), GENERAL)
         site["peripherals"] = _answers(raw.get("peripherals"), PERIPHERALS)
@@ -165,7 +172,7 @@ def normalize_sites(value):
         site["signatures"] = {}
         for role in ("technician", "customer"):
             sig = signatures.get(role)
-            if isinstance(sig, dict):
+            if isinstance(sig, dict) and not signature_waived(site, role):
                 site["signatures"][role] = {key: text(sig.get(key)) for key in ("name", "date", "image", "token")}
         # Unsigned captures survive draft saves but never count as a signature or appear in PDFs.
         drafts = raw.get("signature_drafts")
@@ -173,7 +180,7 @@ def normalize_sites(value):
         if isinstance(drafts, dict):
             for role in ("technician", "customer"):
                 draft = drafts.get(role)
-                if isinstance(draft, dict):
+                if isinstance(draft, dict) and not signature_waived(site, role):
                     item = {key: text(draft.get(key)) for key in ("name", "date", "image")}
                     if not item["image"].startswith("data:image/png;base64,") or not valid_photo_image(item["image"]):
                         item["image"] = ""
@@ -322,7 +329,7 @@ def signature_content(document, site):
     content.pop("signatures", None)
     content.pop("signature_drafts", None)
     # Empty optional additions do not invalidate an existing sadi-2 signature.
-    for key in ("photos", "final_observations"):
+    for key in ("photos", "final_observations", *(item["field"] for item in SIGNATURE_EXCEPTIONS.values())):
         if not content.get(key):
             content.pop(key, None)
     for kind in GROUPS:
@@ -339,7 +346,14 @@ def signature_token(secret, document, site, role, signature):
     return hmac.new(str(secret).encode(), raw, hashlib.sha256).hexdigest()
 
 
+def signature_waived(site, role):
+    field = SIGNATURE_EXCEPTIONS.get(role, {}).get("field")
+    return field is not None and site.get(field) is True
+
+
 def signature_valid(secret, document, site, role):
+    if signature_waived(site, role):
+        return False
     signature = site["signatures"].get(role, {})
     token = signature.get("token", "")
     return bool(token and hmac.compare_digest(token, signature_token(secret, document, site, role, signature)))
@@ -349,6 +363,8 @@ def make_signature(secret, document, site, role, name, signed_date, image):
     """Bind a signature to the current draft; completion is checked at finalization."""
     if role not in {"technician", "customer"} or not text(name) or not _valid_date(text(signed_date)):
         raise ValueError("Indique o signatário e uma data válida.")
+    if signature_waived(site, role):
+        raise ValueError("Desmarque a exceção antes de recolher esta assinatura.")
     if not _valid_id(site["id"]) or site["version"] != VERSION:
         raise ValueError("Checklist inválida para recolher a assinatura.")
     if not isinstance(image, str) or not image.startswith("data:image/png;base64,") or len(image) > 1_000_000:
@@ -393,6 +409,6 @@ def document_errors(document, secret, signatures=True):
         errors.extend(f"{prefix}: {message}" for message in site_errors(site))
         if signatures:
             for role, label in (("technician", "técnico"), ("customer", "cliente")):
-                if not signature_valid(secret, document, site, role):
+                if not signature_waived(site, role) and not signature_valid(secret, document, site, role):
                     errors.append(f"{prefix}: assinatura do {label}")
     return errors

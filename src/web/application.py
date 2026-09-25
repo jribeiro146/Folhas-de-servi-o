@@ -795,6 +795,8 @@ def create_app(
         document = normalize_document_for_file(received.get("document"), path)
         return jsonify(success=True, errors=maintenance.document_errors(document, app.secret_key),
                        sites=[{"id": site["id"], "errors": maintenance.site_errors(site),
+                               "waived": {role: maintenance.signature_waived(site, role)
+                                          for role in ("technician", "customer")},
                                "signed": {role: maintenance.signature_valid(app.secret_key, document, site, role)
                                           for role in ("technician", "customer")}}
                               for site in document["maintenance_checklists"]])

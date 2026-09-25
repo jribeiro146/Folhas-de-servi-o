@@ -2,6 +2,10 @@
     "use strict";
     const present = value => value !== undefined && value !== null && String(value).trim() !== "";
     const applicable = doc => Boolean(doc.service_types?.manutencao && doc.equipments?.sadi);
+    const signatureWaived = (site, role, definition) => site[definition.signature_exceptions?.[role]?.field] === true;
+    const signatureErrors = (site, definition) => ["technician", "customer"]
+        .filter(role => !signatureWaived(site, role, definition) && !site.signatures?.[role]?.token)
+        .map(role => `Assinatura do ${role === 'technician' ? 'técnico' : 'cliente'}`);
     function validateSite(site, definition) {
         const errors = [];
         const photos = site.photos || [], photoIds = new Set();
@@ -50,9 +54,9 @@
             return site.period || Object.values(site.general || {}).some(value => value.answer)
                 || Object.values(site.configuration || {}).some(value => typeof value === "boolean") ? "Em preenchimento" : "Por preencher";
         }
-        return site.signatures?.technician?.token && site.signatures?.customer?.token ? "Completa" : "Por assinar";
+        return signatureErrors(site, definition).length ? "Por assinar" : "Completa";
     }
-    const api = { applicable, validateSite, status };
+    const api = { applicable, validateSite, status, signatureWaived, signatureErrors };
     if (typeof module !== "undefined" && module.exports) module.exports = api;
     else root.MaintenanceModel = api;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -10,11 +10,12 @@ Esta versão acrescenta as checklists de manutenção SADI do modelo Excel à de
 - A pré-visualização apresenta a folha e cada checklist em separadores. A finalização gera um PDF da folha e um por local. Uma falha de geração preserva o rascunho.
 - O email ao cliente inclui **só o PDF da folha de serviço**. Na demo, os PDFs das checklists ficam no conjunto arquivado; em produção ficam na pasta privada da app, disponíveis apenas para as contas autorizadas. A simulação da demo não envia comunicação.
 - O modelo visual da checklist acompanha o da folha de serviço. As orientações de preenchimento aparecem no formulário, sem poluir o relatório final.
+- Cada local permite registar «Cliente não presente na obra» e «Técnico presente, sem assinatura». Cada opção dispensa só a assinatura correspondente, fica identificada no PDF e é independente da folha de serviço e dos outros locais. A identificação do técnico e as restantes validações continuam obrigatórias. Alterar uma destas opções invalida as assinaturas anteriores desse local.
 
 ## Verificação isolada
 
 - `python -B -m pytest -q`: suite Python aprovada, incluindo testes SADI e de acesso em produção com serviços simulados.
-- Suite JavaScript (`node --test` em todos os ficheiros `tests/js/*.test.cjs`): 17 testes aprovados, incluindo 6 SADI.
+- Suite JavaScript (`node --test` em todos os ficheiros `tests/js/*.test.cjs`): 19 testes aprovados, incluindo 8 SADI.
 - `python -B tools/run_test_version.py --check`: `CHECK_OK`, com dados fictícios, rede de saída bloqueada e email, Teams e workers desligados.
 - `python -B tools/verify_sadi_pdf_demo.py`: três PDFs gerados; simulação com um anexo (folha de serviço) e duas checklists guardadas, sem comunicação externa.
 - O pacote foi montado sobre a `main` local num worktree separado. Inclui apenas a SADI e os pré-requisitos de validação, edição e finalização atómica; alterações pendentes de administração, desempenho, registos, relatórios e artefactos temporários ficaram fora.

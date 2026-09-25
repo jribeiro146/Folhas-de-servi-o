@@ -19,4 +19,5 @@
 #maintenance-panel .signature-card h3{margin:0 0 4px;font-size:1rem}
 .mc-signature-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;flex-wrap:wrap}
 .mc-signature-actions button[hidden]{display:none}
+#maintenance-panel [data-mc-sign-clear][hidden]{display:none}
 #maintenance-panel .signature-canvas[aria-disabled=true]{cursor:default;opacity:.65}

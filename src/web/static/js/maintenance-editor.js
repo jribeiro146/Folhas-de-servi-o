@@ -120,7 +120,7 @@
     }
     function syncReadOnly() {
         if (!panel) return;
-        panel.querySelectorAll("input,select,textarea,button").forEach(el => { el.disabled = el.dataset.mcBusy === 'true' || (readOnly() && !el.hasAttribute("data-mc-site")); });
+        panel.querySelectorAll("input,select,textarea,button").forEach(el => { el.disabled = el.dataset.mcBusy === 'true' || el.dataset.mcUnavailable === 'true' || (readOnly() && !el.hasAttribute("data-mc-site")); });
         panel.querySelectorAll('[data-mc-sign-canvas]').forEach(canvas=>canvas.setAttribute('aria-disabled',String(Boolean(readOnly()))));
     }
     function render() {
@@ -202,12 +202,13 @@
         if (!container || !site) return;
         if (!container.children.length) {
             container.innerHTML = [['technician','Técnico'],['customer','Cliente']].map(([role,label]) => {
-                const input = signatureInput(site,role), id = esc(`mc-sign-${site.id}-${role}`);
-                if (!site.signatures?.[role] && !site.signature_drafts?.[role]) {
+                const input = signatureInput(site,role), id = esc(`mc-sign-${site.id}-${role}`), exception = def.signature_exceptions[role];
+                if (!model.signatureWaived(site,role,def) && !site.signatures?.[role] && !site.signature_drafts?.[role]) {
                     site.signature_drafts ||= {}; site.signature_drafts[role] = input;
                 }
                 return `<section class="signature-card" data-mc-sign-card="${role}" aria-label="Assinatura do ${label.toLowerCase()}">
                     <div class="signature-card-head"><h3>${label}</h3><button type="button" class="btn btn-secondary" data-mc-sign-clear="${role}">Limpar</button></div>
+                    <label class="client-absence-toggle" for="${id}-exception"><input id="${id}-exception" type="checkbox" data-mc-sign-exception="${role}"><span><strong>${esc(exception.label)}</strong><small>A assinatura deixa de ser obrigatória neste local e a exceção fica registada.</small></span></label>
                     <div class="signature-capture"><div class="signature-details">
                         <div class="form-field"><label for="${id}-name">Primeiro e último nome <span class="required" aria-hidden="true">*</span></label><input id="${id}-name" type="text" data-mc-signer="${role}" data-mc-sign-field="name" aria-required="true" placeholder="Primeiro e último nome" autocomplete="name" maxlength="120" value="${esc(input.name)}"></div>
                         <div class="form-field signature-date"><label for="${id}-date">Data da assinatura <span class="required" aria-hidden="true">*</span></label><input id="${id}-date" type="date" data-mc-signer="${role}" data-mc-sign-field="date" aria-required="true" value="${esc(input.date)}"></div>
@@ -219,10 +220,15 @@
             container.querySelectorAll('[data-mc-sign-canvas]').forEach(canvas => setupSignatureCanvas(canvas,site));
         }
         container.querySelectorAll('[data-mc-sign-card]').forEach(card => {
-            const role = card.dataset.mcSignCard, key = `${site.id}:${role}`;
-            card.querySelector('[data-mc-sign-status]').textContent = signatureJobs.has(key) ? 'A guardar assinatura…' : signatureMessages.get(key) || (site.signatures?.[role]?.token ? 'Assinatura guardada.' : 'Assinatura por recolher');
+            const role = card.dataset.mcSignCard, key = `${site.id}:${role}`, waived = model.signatureWaived(site,role,def);
+            card.querySelector('[data-mc-sign-exception]').checked = waived;
+            card.querySelector('.signature-capture').hidden = waived;
+            card.querySelector('[data-mc-sign-clear]').hidden = waived;
+            card.querySelectorAll('[data-mc-signer],[data-mc-sign-clear],[data-mc-sign-save]').forEach(input => {input.dataset.mcUnavailable = String(waived);});
+            card.querySelectorAll('[data-mc-signer]').forEach(input => input.setAttribute('aria-required',String(!waived)));
+            card.querySelector('[data-mc-sign-status]').textContent = waived ? 'Assinatura dispensada neste local.' : signatureJobs.has(key) ? 'A guardar assinatura…' : signatureMessages.get(key) || (site.signatures?.[role]?.token ? 'Assinatura guardada.' : 'Assinatura por recolher');
             const save = card.querySelector('[data-mc-sign-save]');
-            save.hidden = Boolean(site.signatures?.[role]?.token);
+            save.hidden = waived || Boolean(site.signatures?.[role]?.token);
             save.dataset.mcBusy = String(signatureJobs.has(key));
             card.querySelector('canvas').setAttribute('aria-disabled',String(Boolean(readOnly())));
         });
@@ -245,13 +251,13 @@
         }
         const point = event => {const r=canvas.getBoundingClientRect();return [(event.clientX-r.left)*canvas.width/r.width,(event.clientY-r.top)*canvas.height/r.height];};
         canvas.onpointerdown=event=>{
-            if(readOnly() || restoring || event.button > 0)return;
+            if(readOnly() || model.signatureWaived(site,role,def) || restoring || event.button > 0)return;
             drawing=true;changed=true;canvas.setPointerCapture(event.pointerId);ctx.beginPath();ctx.moveTo(...point(event));event.preventDefault();
         };
         canvas.onpointermove=event=>{if(drawing && !readOnly()){ctx.lineTo(...point(event));ctx.stroke();}};
         canvas.onpointerup=canvas.onpointercancel=()=>{
             if(!drawing)return;drawing=false;
-            if(readOnly() || !sites.includes(site))return;
+            if(readOnly() || model.signatureWaived(site,role,def) || !sites.includes(site))return;
             const input=signatureInput(site,role);
             site.signature_drafts ||= {}; site.signature_drafts[role]={...input,image:canvas.toDataURL('image/png')};
             delete site.signatures?.[role];signatureMessages.delete(`${site.id}:${role}`);dirty();renderStatus();
@@ -273,7 +279,7 @@
         signatureMessages.delete(`${site.id}:${role}`);dirty();renderStatus();
     }
     async function saveSignature(site,role) {
-        if(readOnly() || !sites.includes(site))return;
+        if(readOnly() || model.signatureWaived(site,role,def) || !sites.includes(site))return;
         const jobKey=`${site.id}:${role}`, input=signatureInput(site,role);
         if(signatureJobs.has(jobKey)){signatureJobs.get(jobKey).again=true;return;}
         const message=!input.image ? 'Assine no espaço indicado.' : !input.name.trim() || !input.date ? 'Indique o primeiro e último nome e a data da assinatura.' : pendingPhotos ? 'Aguarde a preparação das fotografias antes de assinar.' : '';
@@ -314,6 +320,13 @@
             panel.addEventListener("change",async event=>{
                 if(readOnly())return;
                 const input=event.target;
+                if(input.dataset.mcSignException){
+                    const site=current(), role=input.dataset.mcSignException;
+                    site[def.signature_exceptions[role].field]=input.checked;
+                    clearSignatures(site);
+                    if(input.checked){delete site.signatures?.[role];delete site.signature_drafts?.[role];}
+                    signatureMessages.delete(`${site.id}:${role}`);dirty();render();return;
+                }
                 if(input.dataset.mcSigner){const site=current();if(signatureInput(site,input.dataset.mcSigner).image)saveSignature(site,input.dataset.mcSigner);return;}
                 if(input.hasAttribute('data-mc-photos')){await addPhotos(input);return;}
                 if(input.id==="mc-site-count"||input.dataset.mcCount){await changeCount(input);return;}
@@ -346,7 +359,7 @@
             if(signatureJobs.size)return ["Aguarde a gravação das assinaturas antes de finalizar."];
             if(pendingPhotos)return ['Aguarde a preparação das fotografias antes de finalizar.'];
             if(!sites.length)return ["SADI: indique o número de locais e preencha as checklists."];
-            return sites.flatMap((site,index)=>[...model.validateSite(site,def),...(["technician","customer"].filter(role=>!site.signatures?.[role]?.token).map(role=>`Assinatura do ${role==='technician'?'técnico':'cliente'}`))].map(error=>`${site.location||`Local ${index+1}`}: ${error}`));
+            return sites.flatMap((site,index)=>[...model.validateSite(site,def),...model.signatureErrors(site,def)].map(error=>`${site.location||`Local ${index+1}`}: ${error}`));
         },
         sync
     };
