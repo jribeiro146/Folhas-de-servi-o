@@ -1,4 +1,4 @@
-# Notas da versão — checklists SADI (2026-09-25)
+# Notas da versão — Checklists de manutenção SADI · 25/09/2026
 
 ## Âmbito do pacote
 
@@ -6,19 +6,28 @@ Esta versão acrescenta as checklists de manutenção SADI do modelo Excel à de
 
 - Depois do rascunho, a folha de serviço e as checklists aparecem em separadores. Cada local tem configuração, respostas, fotografias, observações e assinaturas próprias do técnico e do cliente.
 - Centrais convencionais, endereçáveis e repetidores são repetidos por equipamento. O campo «Local do repetidor» é obrigatório. A secção 4, Periféricos e ensaios, é independente das centrais e aparece uma vez por local.
+- Fotografias e observações finais aparecem antes das assinaturas, sem acrescentar numeração à do Excel. Os campos de observações e justificação começam numa linha e crescem com o texto. O campo «Hora de saída» foi retirado.
 - Respostas OK/NC/NA, justificação obrigatória de NC, periodicidade, cobertura condicional dos ensaios, quantidades e assinaturas são validadas no navegador e no servidor. As assinaturas são invalidadas quando o conteúdo assinado muda.
 - A pré-visualização apresenta a folha e cada checklist em separadores. A finalização gera um PDF da folha e um por local. Uma falha de geração preserva o rascunho.
 - O email ao cliente inclui **só o PDF da folha de serviço**. Na demo, os PDFs das checklists ficam no conjunto arquivado; em produção ficam na pasta privada da app, disponíveis apenas para as contas autorizadas. A simulação da demo não envia comunicação.
 - O modelo visual da checklist acompanha o da folha de serviço. As orientações de preenchimento aparecem no formulário, sem poluir o relatório final.
-- Cada local permite registar «Cliente não presente na obra», dispensando só a assinatura do cliente. A opção fica identificada no PDF e é independente da folha de serviço e dos outros locais. A identificação e a assinatura do técnico são sempre obrigatórias na checklist. Alterar esta opção invalida as assinaturas anteriores desse local.
+- Cada local permite registar «Cliente não presente na obra», dispensando só a assinatura do cliente. A opção fica identificada no PDF e é independente da folha de serviço e dos outros locais. **A identificação e a assinatura do técnico são sempre obrigatórias na checklist**, sem opção de dispensa. Esta regra não altera as assinaturas da folha de serviço. Alterar a ausência do cliente invalida as assinaturas anteriores desse local.
+- É possível recolher assinaturas durante o preenchimento; os campos em falta bloqueiam a finalização. «Verificar checklist» apresenta as pendências. Uma NC justificada permite concluir a checklist.
+
+## Gravação e compatibilidade
+
+Os rascunhos podem ser guardados e retomados por local, com respostas e equipamentos independentes. Aumentar quantidades acrescenta blocos; reduzir exige escolher os blocos a remover e confirmar quando contêm dados. Desativar um equipamento preserva as respostas no rascunho e exclui-o da validação e do PDF.
+
+Folhas antigas sem checklists continuam compatíveis. A definição versionada centraliza as perguntas, condições e validações. Alterar conteúdo assinado exige novas assinaturas nos locais afetados. Os pré-requisitos de edição, controlo de revisão e finalização atómica fazem parte deste pacote; impedem sobrescritas e permitem recuperar de falhas de geração.
 
 ## Verificação isolada
 
-- `python -B -m pytest -q`: suite Python aprovada, incluindo testes SADI e de acesso em produção com serviços simulados.
+- `python -B -m pytest -q`: 278 testes aprovados, incluindo SADI, acesso em produção, assinatura obrigatória do técnico e arquivo com serviços simulados.
 - Suite JavaScript (`node --test` em todos os ficheiros `tests/js/*.test.cjs`): 19 testes aprovados, incluindo 8 SADI.
 - `python -B tools/run_test_version.py --check`: `CHECK_OK`, com dados fictícios, rede de saída bloqueada e email, Teams e workers desligados.
 - `python -B tools/verify_sadi_pdf_demo.py`: três PDFs gerados; simulação com um anexo (folha de serviço) e duas checklists guardadas, sem comunicação externa.
-- O pacote foi montado sobre a `main` local num worktree separado. Inclui apenas a SADI e os pré-requisitos de validação, edição e finalização atómica; alterações pendentes de administração, desempenho, registos, relatórios e artefactos temporários ficaram fora.
+- Verificação manual no navegador: ausência do cliente dispensa apenas a assinatura desse cliente; o cartão do técnico continua disponível e a finalização exige a sua assinatura.
+- O pacote foi montado sobre a `main` num worktree separado. Inclui apenas a SADI e os pré-requisitos de validação, edição e finalização atómica; alterações pendentes de administração, desempenho, registos, relatórios e artefactos temporários ficaram fora.
 
 ## Acesso reservado e armazenamento
 
