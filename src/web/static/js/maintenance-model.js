@@ -2,7 +2,7 @@
     "use strict";
     const present = value => value !== undefined && value !== null && String(value).trim() !== "";
     const applicable = doc => Boolean(doc.service_types?.manutencao && doc.equipments?.sadi);
-    const signatureWaived = (site, role, definition) => site[definition.signature_exceptions?.[role]?.field] === true;
+    const signatureWaived = (site, role, definition) => Boolean(definition.signature_exceptions?.[role]) && site[definition.signature_exceptions[role].field] === true;
     const signatureErrors = (site, definition) => ["technician", "customer"]
         .filter(role => !signatureWaived(site, role, definition) && !site.signatures?.[role]?.token)
         .map(role => `Assinatura do ${role === 'technician' ? 'técnico' : 'cliente'}`);

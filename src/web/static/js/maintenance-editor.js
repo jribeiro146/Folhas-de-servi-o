@@ -208,7 +208,7 @@
                 }
                 return `<section class="signature-card" data-mc-sign-card="${role}" aria-label="Assinatura do ${label.toLowerCase()}">
                     <div class="signature-card-head"><h3>${label}</h3><button type="button" class="btn btn-secondary" data-mc-sign-clear="${role}">Limpar</button></div>
-                    <label class="client-absence-toggle" for="${id}-exception"><input id="${id}-exception" type="checkbox" data-mc-sign-exception="${role}"><span><strong>${esc(exception.label)}</strong><small>A assinatura deixa de ser obrigatória neste local e a exceção fica registada.</small></span></label>
+                    ${exception ? `<label class="client-absence-toggle" for="${id}-exception"><input id="${id}-exception" type="checkbox" data-mc-sign-exception="${role}"><span><strong>${esc(exception.label)}</strong><small>A assinatura deixa de ser obrigatória neste local e a exceção fica registada.</small></span></label>` : ''}
                     <div class="signature-capture"><div class="signature-details">
                         <div class="form-field"><label for="${id}-name">Primeiro e último nome <span class="required" aria-hidden="true">*</span></label><input id="${id}-name" type="text" data-mc-signer="${role}" data-mc-sign-field="name" aria-required="true" placeholder="Primeiro e último nome" autocomplete="name" maxlength="120" value="${esc(input.name)}"></div>
                         <div class="form-field signature-date"><label for="${id}-date">Data da assinatura <span class="required" aria-hidden="true">*</span></label><input id="${id}-date" type="date" data-mc-signer="${role}" data-mc-sign-field="date" aria-required="true" value="${esc(input.date)}"></div>
@@ -221,7 +221,8 @@
         }
         container.querySelectorAll('[data-mc-sign-card]').forEach(card => {
             const role = card.dataset.mcSignCard, key = `${site.id}:${role}`, waived = model.signatureWaived(site,role,def);
-            card.querySelector('[data-mc-sign-exception]').checked = waived;
+            const exceptionInput = card.querySelector('[data-mc-sign-exception]');
+            if (exceptionInput) exceptionInput.checked = waived;
             card.querySelector('.signature-capture').hidden = waived;
             card.querySelector('[data-mc-sign-clear]').hidden = waived;
             card.querySelectorAll('[data-mc-signer],[data-mc-sign-clear],[data-mc-sign-save]').forEach(input => {input.dataset.mcUnavailable = String(waived);});

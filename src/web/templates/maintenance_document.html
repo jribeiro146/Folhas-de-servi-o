@@ -110,8 +110,8 @@
                 <section class="panel"><table class="grid-table info-table"><tbody><tr><th>Responsável SCIE</th><td colspan="5">{{ site.scie or '—' }}</td></tr></tbody></table></section>
                 <div class="signature-strip">
                 {% for role,label in [('technician','Assinatura do técnico'),('customer','Assinatura do cliente')] %}
-                    {% set exception = definition.signature_exceptions[role] %}
-                    {% set waived = site.get(exception.field) is sameas true %}
+                    {% set exception = definition.signature_exceptions.get(role) %}
+                    {% set waived = exception and site.get(exception.field) is sameas true %}
                     {% set signature = site.signatures.get(role) %}
                     <article class="signature-panel">
                         <div class="panel-title">{{ label }}</div>

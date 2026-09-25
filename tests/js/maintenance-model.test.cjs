@@ -4,7 +4,7 @@ const model = require('../../src/web/static/js/maintenance-model.js');
 
 // A compact definition exercises the branching contract independently of the full text catalogue.
 const definition = {periods:{monthly:'Mensal',annual:'Anual',other:'Outra'},groups:{conventional:'Central convencional',repeater:'Repetidor'},
- signature_exceptions:{customer:{field:'customer_not_present'},technician:{field:'technician_signature_not_collected'}},
+ signature_exceptions:{customer:{field:'customer_not_present'}},
  fields:{conventional:[['brand','Marca','text'],['total','Zonas','number'],['used','Zonas em uso','number']],repeater:[['brand','Marca','text'],['location','Local do repetidor','text']]},
  general:[['G','Geral']],conventional:[['C','Central']],repeater:[['R','Repetidor']],peripherals:[['P','Periférico']],trials:[['T','Ensaio']]};
 const answers = key => ({[key]:{answer:'OK',justification:''}});
@@ -54,12 +54,14 @@ test('invalid photographs and duplicate IDs block signing but optional notes do 
  site.photos=[{...photo,error:''},{...photo,error:''}];assert.match(model.validateSite(site,definition)[0],/repetido/);
 });
 
-test('signature exceptions are per person and do not waive checklist completion',()=>{
+test('customer absence never waives the technician signature or checklist completion',()=>{
  const site=complete(), other=complete();
  site.customer_not_present=true;
  assert.deepEqual(model.signatureErrors(site,definition),['Assinatura do técnico']);
  assert.equal(model.status(site,definition),'Por assinar');
  site.technician_signature_not_collected=true;
+ assert.deepEqual(model.signatureErrors(site,definition),['Assinatura do técnico']);
+ site.signatures.technician={token:'signed'};
  assert.deepEqual(model.signatureErrors(site,definition),[]);
  assert.equal(model.status(site,definition),'Completa');
  assert.equal(model.status(other,definition),'Por assinar');

@@ -225,7 +225,7 @@ def test_unsigned_capture_rejects_external_or_invalid_images():
     assert normalized["signature_drafts"]["customer"]["image"] == ""
 
 
-@pytest.mark.parametrize("roles", [("customer",), ("technician",), ("customer", "technician")])
+@pytest.mark.parametrize("roles", [("customer",)])
 def test_checklist_signature_exceptions_save_reopen_render_and_finalize(demo, roles):
     app, client, draft, metadata, renders, _root = demo
     document = complete_document()
@@ -255,7 +255,7 @@ def test_checklist_signature_exceptions_save_reopen_render_and_finalize(demo, ro
     assert len(renders) == 3
 
 
-@pytest.mark.parametrize("role", ["customer", "technician"])
+@pytest.mark.parametrize("role", ["customer"])
 def test_signature_exception_invalidates_signatures_only_for_its_local_and_cannot_be_signed(role):
     document = complete_document()
     sign_document(document, "secret")
@@ -290,7 +290,7 @@ def test_signature_exceptions_do_not_waive_checklist_fields(demo, pending):
     app, client, draft, metadata, renders, _root = demo
     document = complete_document()
     site = document["maintenance_checklists"][0]
-    site["customer_not_present"] = site["technician_signature_not_collected"] = True
+    site["customer_not_present"] = True
     if pending == "technician":
         site["technician"] = ""
     else:
@@ -300,6 +300,27 @@ def test_signature_exceptions_do_not_waive_checklist_fields(demo, pending):
     assert result.status_code == 400 and draft.exists() and not renders
     errors = result.get_json()["missing_fields"]
     assert errors and all("assinatura" not in message for message in errors)
+
+
+def test_technician_signature_is_always_required_in_checklist(demo):
+    app, client, draft, metadata, renders, _root = demo
+    document = complete_document()
+    site = document["maintenance_checklists"][0]
+    site["customer_not_present"] = True
+    sign_document(document, app.secret_key)
+    del site["signatures"]["technician"]
+    # A stale or forged exemption must never waive the technician signature.
+    site["technician_signature_not_collected"] = True
+    checked = client.post(f"/api/file/{draft.stem}/maintenance/validate", json={"document": document}).get_json()
+    assert checked["sites"][0]["waived"] == {"customer": True, "technician": False}
+    assert any("assinatura do técnico" in message for message in checked["errors"])
+    result = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
+    assert result.status_code == 400 and draft.exists() and not renders
+    assert any("assinatura do técnico" in message for message in result.get_json()["missing_fields"])
+    html = client.post(f"/api/file/{draft.stem}/document-preview", json={**document,
+        "_maintenance_site_id": site["id"], "_auto_print": True}).get_json()["html"]
+    assert html.count("Assinatura por recolher") == 1
+    assert "Técnico presente, sem assinatura" not in html
 
 
 @pytest.mark.parametrize("bad", ["https://example.invalid/photo.jpg", "data:image/svg+xml;base64,PHN2Zz4=", "data:image/jpeg;base64,eA=="])

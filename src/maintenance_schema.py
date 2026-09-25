@@ -67,7 +67,6 @@ COVERAGE_WARNING = "Quando o procedimento seja mensal, trimestral ou semestral i
 PERIODS = {"monthly": "Mensal", "quarterly": "Trimestral", "half_yearly": "Semestral", "annual": "Anual", "other": "Outra"}
 SIGNATURE_EXCEPTIONS = {
     "customer": {"field": "customer_not_present", "label": "Cliente não presente na obra"},
-    "technician": {"field": "technician_signature_not_collected", "label": "Técnico presente, sem assinatura"},
 }
 FIELDS = {
     "conventional": [("brand", "Marca", "text"), ("model", "Modelo", "text"), ("location", "Local da central", "text"), ("total", "N.º zonas total", "number"), ("used", "N.º zonas em uso", "number"), ("detectors", "N.º de detetores", "number"), ("buttons", "N.º de botoneiras", "number"), ("sirens", "N.º de sirenes", "number")],
