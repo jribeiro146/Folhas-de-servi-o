@@ -2,6 +2,10 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends chromium fonts-dejavu-core fonts-liberation \
+ && rm -rf /var/lib/apt/lists/*
+
 RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
 
 COPY requirements-server.txt .
@@ -19,6 +23,7 @@ USER appuser
 
 ENV FS_APP_DATA_DIR=/app/data
 ENV GRAPH_CACHE_DIR=/app/data/graph-cache
+ENV FS_PDF_BROWSER_PATH=/usr/bin/chromium
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 

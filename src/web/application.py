@@ -56,6 +56,8 @@ from src.services.archive_service import ArchiveService
 from src.services.finalization_service import FinalizationService
 from src import maintenance_schema as maintenance
 from src.services.maintenance_artifact_service import build_maintenance_bundle, render_maintenance_document
+from src.services.maintenance_access import can_access_maintenance
+from src.services.maintenance_private_service import MaintenancePrivateService
 from src.services.document_style_service import load_document_assets
 from src.services.runtime_safety import runtime_mode
 from src.services.local_changes import bundle_guard, mark_dirty
@@ -146,6 +148,12 @@ def create_app(
     app.config["SYNTHETIC_TEST_VERSION"] = runtime_mode() == "test" and os.environ.get("FS_TEST_SYNTHETIC") == "true"
     # Demo only: no operational queues or transports may be attached to this feature.
     app.config["MAINTENANCE_DEMO"] = app.config["SYNTHETIC_TEST_VERSION"] and STORAGE_BACKEND == "local" and not any((MAIL_ENABLED, TEAMS_NOTIFICATIONS_ENABLED, GRAPH_QUEUE_IN_WEB, graph_service, mail_service, graph_sync_queue, teams_notification_service))
+    app.config["MAINTENANCE_ENABLED"] = app.config["MAINTENANCE_DEMO"] or (
+        runtime_mode() == "production"
+        and AUTH_ENABLED
+        and STORAGE_BACKEND == "graph"
+        and os.environ.get("FS_MAINTENANCE_ENABLED", "").strip().casefold() == "true"
+    )
     if test_editor_identity is not None and not (
         app.config["MAINTENANCE_DEMO"] and not AUTH_ENABLED and ACTIVE_AUTH_PROVIDER == "none"
     ):
@@ -159,7 +167,11 @@ def create_app(
         app.config["SESSION_COOKIE_NAME"] = f"sensorpoint_fs_{session_namespace}"
     @app.context_processor
     def maintenance_context():
-        return {"maintenance_definition": maintenance.DEFINITION}
+        allowed = maintenance_access_allowed()
+        return {
+            "maintenance_definition": maintenance.DEFINITION if allowed else {},
+            "maintenance_enabled_for_user": allowed,
+        }
 
     app.config.update(
         SESSION_COOKIE_SECURE=runtime_mode() == "production",
@@ -192,6 +204,7 @@ def create_app(
     )
 
     editing_state_service = editing_state_service or EditingStateService()
+    private_maintenance = MaintenancePrivateService(APP_DATA_DIR / "sadi")
     finalization_service = FinalizationService(archive_service, APP_DATA_DIR / "finalizing")
     graph_refresh_coordinator = graph_refresh_coordinator or (
         GraphRefreshCoordinator(
@@ -412,8 +425,11 @@ def create_app(
             if not document_id:
                 return view(*args, **kwargs)
             try:
-                with editing_state_service.operation_guard(document_id, current_editor_identity()):
-                    path = file_service.get_file_by_name(str(kwargs.get("name") or ""))
+                path = file_service.get_file_by_name(str(kwargs.get("name") or ""))
+                with editing_state_service.operation_guard(
+                    document_id, current_editor_identity(),
+                    allow_foreign_owner=can_edit_foreign_sadi_draft(path),
+                ):
                     guard = bundle_guard(path.parent) if path and path.parent.name == path.stem else nullcontext()
                     with guard:
                         return view(*args, **kwargs)
@@ -470,6 +486,60 @@ def create_app(
             return
 
         g.current_user = None
+
+    def maintenance_access_allowed() -> bool:
+        if not app.config["MAINTENANCE_ENABLED"]:
+            return False
+        if app.config["MAINTENANCE_DEMO"] and not AUTH_ENABLED:
+            return True
+        return can_access_maintenance(g.get("current_user"))
+
+    def can_edit_foreign_sadi_draft(path: Path | None) -> bool:
+        """The two SADI editors may work on an applicable draft from another technician."""
+        if not path or not maintenance_access_allowed() or not file_service.is_draft_file(path):
+            return False
+        return maintenance.applicable(DocumentDataService(path).read())
+
+    def trusted_maintenance(path: Path) -> list[dict]:
+        if not app.config["MAINTENANCE_ENABLED"]:
+            return []
+        snapshot = editing_state_service.snapshot(path)
+        autosaved = snapshot.get("server_document")
+        if isinstance(autosaved, dict) and "maintenance_checklists" in autosaved:
+            return autosaved["maintenance_checklists"]
+        if not app.config["MAINTENANCE_DEMO"]:
+            document_id = editing_state_service.resolve_document_id(path)
+            return private_maintenance.read(document_id)
+        return DocumentDataService(path).read().get("maintenance_checklists") or []
+
+    def normalize_document_for_write(payload, path: Path):
+        document = normalize_document_for_file(payload, path)
+        if app.config["MAINTENANCE_ENABLED"] and not maintenance_access_allowed():
+            document["maintenance_checklists"] = maintenance.normalize_sites(trusted_maintenance(path))
+            maintenance.clear_invalid_signatures(document, app.secret_key)
+        return document
+
+    def public_document(document: dict) -> dict:
+        if runtime_mode() == "production":
+            return {key: value for key, value in document.items() if key != "maintenance_checklists"}
+        return document
+
+    def hide_maintenance(value):
+        if isinstance(value, list):
+            return [hide_maintenance(item) for item in value]
+        if isinstance(value, dict):
+            return {key: hide_maintenance(item) for key, item in value.items()
+                    if key not in {"maintenance_checklists", "maintenance_bundle_url"}}
+        return value
+
+    @app.after_request
+    def redact_maintenance_json(response):
+        if not response.is_json or maintenance_access_allowed():
+            return response
+        body = response.get_json(silent=True)
+        if isinstance(body, (dict, list)):
+            response.set_data(json.dumps(hide_maintenance(body), ensure_ascii=False))
+        return response
 
     @app.before_request
     def require_login():
@@ -710,14 +780,14 @@ def create_app(
         canonical_number = FileService.service_number_from_name(file_name)
         if canonical_number:
             document["service_number"] = canonical_number
-        if app.config["MAINTENANCE_DEMO"]:
+        if app.config["MAINTENANCE_ENABLED"]:
             maintenance.clear_invalid_signatures(document, app.secret_key)
         return document
 
     @app.route("/api/file/<name>/maintenance/validate", methods=["POST"])
     def validate_maintenance(name):
-        if not app.config["MAINTENANCE_DEMO"]:
-            return json_error("Checklists disponíveis apenas na demo isolada.", 404)
+        if not maintenance_access_allowed():
+            return json_error("Checklist não disponível.", 404)
         path = file_service.get_file_by_name(name)
         if not path or not file_service.is_draft_file(path):
             return json_error("Crie primeiro um rascunho.", 409)
@@ -731,8 +801,8 @@ def create_app(
 
     @app.route("/api/file/<name>/maintenance/sign", methods=["POST"])
     def sign_maintenance(name):
-        if not app.config["MAINTENANCE_DEMO"]:
-            return json_error("Checklists disponíveis apenas na demo isolada.", 404)
+        if not maintenance_access_allowed():
+            return json_error("Checklist não disponível.", 404)
         path = file_service.get_file_by_name(name)
         if not path or not file_service.is_draft_file(path):
             return json_error("Crie primeiro um rascunho.", 409)
@@ -761,7 +831,7 @@ def create_app(
         from src.services import archive_service as archive_module
         root = archive_module.EXCEL_ARQUIVADAS_DIR.resolve()
         directory = (root / bundle).resolve()
-        if not app.config["MAINTENANCE_DEMO"] or directory.parent != root:
+        if not maintenance_access_allowed() or directory.parent != root:
             return None, []
         manifest = directory / "maintenance-manifest.json"
         if not manifest.is_file():
@@ -799,13 +869,49 @@ def create_app(
                        message="Simulação concluída: a folha de serviço seria enviada ao cliente; "
                                "as checklists ficam guardadas na pasta do serviço. Nenhuma comunicação foi enviada.")
 
+    def private_bundle(key):
+        if not maintenance_access_allowed() or app.config["MAINTENANCE_DEMO"]:
+            return None, [], None
+        try:
+            metadata, entries, directory = private_maintenance.bundle(key)
+            archived_name = str(metadata["archived_name"])
+            if (Path(archived_name).name != archived_name
+                    or Path(archived_name).suffix.lower() not in {".xlsx", ".xlsm"}):
+                return None, [], None
+            from src.services import archive_service as archive_module
+            archived = archive_module.EXCEL_ARQUIVADAS_DIR / Path(archived_name).stem / archived_name
+            if not finalization_service.owns(archived, str(metadata["operation_id"])):
+                return None, [], None
+            return directory, entries, archived_name
+        except (OSError, KeyError, ValueError, TypeError):
+            return None, [], None
+
+    @app.route("/maintenance/bundles/<key>")
+    def private_maintenance_bundle_page(key):
+        directory, entries, archived_name = private_bundle(key)
+        if directory is None:
+            return json_error("Conjunto SADI não encontrado.", 404)
+        return render_template("maintenance_private_bundle.html", key=key, entries=entries,
+                               archived_name=archived_name)
+
+    @app.route("/maintenance/bundles/<key>/pdf/<filename>")
+    def private_maintenance_bundle_pdf(key, filename):
+        directory, entries, _ = private_bundle(key)
+        if directory is None or filename not in {entry["name"] for entry in entries}:
+            return json_error("PDF não encontrado.", 404)
+        return send_from_directory(directory, filename, as_attachment=request.args.get("download") == "1")
+
     def load_editor_state(path):
         excel_form_data = serialize_payload(ExcelService(path).read_link_as_form_data())
+        extra_data = DocumentDataService(path).read()
+        if app.config["MAINTENANCE_ENABLED"] and not app.config["MAINTENANCE_DEMO"]:
+            extra_data = dict(extra_data)
+            extra_data["maintenance_checklists"] = trusted_maintenance(path)
         document_data = serialize_payload(
             normalize_document_for_file(
                 document_from_excel_and_extra(
                     excel_form_data,
-                    DocumentDataService(path).read(),
+                    extra_data,
                 ),
                 path,
             )
@@ -1135,7 +1241,10 @@ def create_app(
             form_data, source_document, signatures = load_editor_state(path)
             identity = current_editor_identity()
             if file_service.is_draft_file(path):
-                editing = editing_state_service.acquire_lease(path, identity, client_id)
+                editing = editing_state_service.acquire_lease(
+                    path, identity, client_id,
+                    allow_foreign_owner=can_edit_foreign_sadi_draft(path),
+                )
             else:
                 editing = editing_state_service.acquire_private_workspace(
                     path, identity, client_id
@@ -1255,7 +1364,10 @@ def create_app(
         try:
             identity = current_editor_identity()
             if file_service.is_draft_file(path):
-                editing = editing_state_service.acquire_lease(path, identity, client_id)
+                editing = editing_state_service.acquire_lease(
+                    path, identity, client_id,
+                    allow_foreign_owner=can_edit_foreign_sadi_draft(path),
+                )
             else:
                 editing = editing_state_service.acquire_private_workspace(
                     path,
@@ -1319,7 +1431,7 @@ def create_app(
             metadata = extract_edit_metadata(data)
             document_id = validate_document_identity(path, metadata)
             document = (
-                strip_signature_payload(normalize_document_for_file(document_payload, path))
+                strip_signature_payload(normalize_document_for_write(document_payload, path))
                 if isinstance(document_payload, dict)
                 else None
             )
@@ -1352,7 +1464,7 @@ def create_app(
             document_id = validate_document_identity(path, metadata)
             idempotency_key = str(metadata.get("idempotency_key") or secrets.token_urlsafe(18))
             document = strip_signature_payload(
-                normalize_document_for_file(document_payload, path)
+                normalize_document_for_write(document_payload, path)
             )
             editing = editing_state_service.save_autosave(
                 document_id=document_id,
@@ -1405,8 +1517,8 @@ def create_app(
             selected_site = None
             document = normalize_document_for_file(payload, path)
             if "_maintenance_site_id" in payload:
-                if not app.config["MAINTENANCE_DEMO"]:
-                    return json_error("Checklists disponíveis apenas na demo isolada.", 404)
+                if not maintenance_access_allowed():
+                    return json_error("Checklist não disponível.", 404)
                 if not file_service.is_draft_file(path):
                     return json_error("Crie primeiro um rascunho.", 409)
                 if not maintenance.applicable(document):
@@ -1425,7 +1537,7 @@ def create_app(
                 payload=payload,
                 auto_print=bool(payload.get("_auto_print")),
             )
-            if (not payload.get("_auto_print") and app.config["MAINTENANCE_DEMO"]
+            if (not payload.get("_auto_print") and maintenance_access_allowed()
                     and file_service.is_draft_file(path) and maintenance.applicable(document)):
                 documents = [{"id": "service", "label": "Folha de serviço", "html": html}]
                 selected = "service"
@@ -1499,7 +1611,7 @@ def create_app(
                     created_copy=created_copy,
                 )
 
-            document_data = normalize_document_for_file(data, draft_path)
+            document_data = normalize_document_for_write(data, draft_path)
             if document_data.get("client_not_present"):
                 data[CLIENT_SIGNATURE_LABEL] = ""
             excel_form_data = document_to_excel_form(document_data)
@@ -1512,7 +1624,12 @@ def create_app(
                 signatures=resolved_signatures,
                 trusted_service_number=str(document_data.get("service_number") or ""),
             )
-            DocumentDataService(draft_path).write(strip_signature_payload(document_data))
+            DocumentDataService(draft_path).write(strip_signature_payload(public_document(document_data)))
+            if app.config["MAINTENANCE_ENABLED"] and not app.config["MAINTENANCE_DEMO"] and maintenance_access_allowed():
+                private_maintenance.write(
+                    editing_state_service.resolve_document_id(draft_path),
+                    document_data["maintenance_checklists"],
+                )
             signature_service.save_from_form_data(data)
             PhotoAttachmentService(draft_path).apply(
                 prepared_photos,
@@ -1646,15 +1763,19 @@ def create_app(
                     "error": "A publicação do rascunho ainda não terminou. Aguarde a sincronização antes de finalizar."}), 409
 
             internal_observations = pop_internal_observations(document_payload)
-            document_data = normalize_document_for_file(
+            document_data = normalize_document_for_write(
                 document_payload,
                 archived_path or path or name,
             )
             service_number = str(document_data.get("service_number") or name)
             missing_fields = document_missing_required_fields(document_data)
             invalid_fields = document_invalid_fields(document_data)
-            if app.config["MAINTENANCE_DEMO"]:
-                missing_fields.extend(maintenance.document_errors(document_data, app.secret_key))
+            if app.config["MAINTENANCE_ENABLED"]:
+                checklist_errors = maintenance.document_errors(document_data, app.secret_key)
+                if maintenance_access_allowed():
+                    missing_fields.extend(checklist_errors)
+                elif checklist_errors:
+                    missing_fields.append("Checklist de manutenção SADI pendente")
             elif document_data.get("maintenance_checklists"):
                 return json_error("A finalização de checklists está disponível apenas na demo isolada.", 409)
             mail_payload = None
@@ -1753,6 +1874,7 @@ def create_app(
             if claim["status"] == "replay":
                 return jsonify(claim["operation"]["response"])
             operation_context = dict(claim["operation"].get("context") or {})
+            private_bundle_key = str(operation_context.get("private_bundle_key") or "")
 
             source_path = Path(str(operation_context.get("source_path") or path))
             graph_active_etag = str(operation_context.get("graph_active_etag") or "") or None
@@ -1770,14 +1892,21 @@ def create_app(
                         document_to_excel_form(document_data), signatures=resolved_signatures,
                         final=True, trusted_service_number=service_number,
                     )
-                    DocumentDataService(staged_path).write(strip_signature_payload(document_data))
+                    DocumentDataService(staged_path).write(strip_signature_payload(public_document(document_data)))
                     SignatureService(staged_path).save_from_form_data(document_payload)
                     write_internal_observations(staged_path, internal_observations)
                     DocumentArtifactService(staged_path).write_html(build_document_html(
                         file_name=staged_path.stem, path=staged_path, payload=document_payload, auto_print=False,
                     ))
-                    if app.config["MAINTENANCE_DEMO"] and maintenance.applicable(document_data):
-                        build_maintenance_bundle(staged_path, document_data, local_pdf_service or LocalPdfService())
+                    if app.config["MAINTENANCE_ENABLED"] and maintenance.applicable(document_data):
+                        renderer = local_pdf_service or LocalPdfService()
+                        if app.config["MAINTENANCE_DEMO"]:
+                            build_maintenance_bundle(staged_path, document_data, renderer)
+                        else:
+                            private_bundle_key = private_maintenance.publish_bundle(
+                                staged_path, document_data, renderer, document_id,
+                                f"{document_id}:{idempotency_key}", target_path.name,
+                            )
                     editing_state_service.update_operation_context(
                         document_id, idempotency_key, source_path=str(source_path),
                         archived_path=str(target_path), prepared_document=document_payload,
@@ -1785,6 +1914,7 @@ def create_app(
                         source_fingerprint=editing_state_service._fingerprint(source_path),
                         graph_active_etag=graph_active_etag,
                         graph_active_source_name=graph_active_source_name,
+                        private_bundle_key=private_bundle_key,
                     )
                     archived_path = finalization_service.publish(staged_path, target_path, f"{document_id}:{idempotency_key}")
                 finally:
@@ -1867,8 +1997,13 @@ def create_app(
                     ),
                     "archived_excel": archived_path.name,
                     "maintenance_bundle_url": (
-                        url_for("maintenance_bundle_page", bundle=archived_path.parent.name)
-                        if app.config["MAINTENANCE_DEMO"] and maintenance.applicable(document_data) else None
+                        (
+                            url_for("maintenance_bundle_page", bundle=archived_path.parent.name)
+                            if app.config["MAINTENANCE_DEMO"] else
+                            url_for("private_maintenance_bundle_page", key=private_bundle_key)
+                        )
+                        if maintenance_access_allowed() and maintenance.applicable(document_data)
+                        and (app.config["MAINTENANCE_DEMO"] or private_bundle_key) else None
                     ),
                     "internal_observations": (
                         internal_observations_path.name if internal_observations_path else None

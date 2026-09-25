@@ -18,7 +18,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/field-app.css', v=asset_version) }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/document-editor.css', v=asset_version) }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/editing-state.css', v=asset_version) }}">
-    {% if config.MAINTENANCE_DEMO %}<link rel="stylesheet" href="{{ url_for('static', filename='css/maintenance.css', v=asset_version) }}">{% endif %}
+    {% if maintenance_enabled_for_user %}<link rel="stylesheet" href="{{ url_for('static', filename='css/maintenance.css', v=asset_version) }}">{% endif %}
 </head>
 {% set has_selected_data = selected_document_data is not none %}
 <body class="{% if has_selected_data %}has-active-file{% endif %}">
@@ -242,7 +242,7 @@
 
             <section class="form-shell" id="form-wrapper" {% if not has_selected_data %}hidden{% endif %}>
                 <form id="service-form" class="document-form" novalidate>
-                    {% if config.MAINTENANCE_DEMO %}
+                    {% if maintenance_enabled_for_user %}
                     <nav id="maintenance-tabs" class="mc-tabs" role="tablist" aria-label="Partes da folha" hidden>
                         <button type="button" role="tab" data-mc-tab="service" aria-selected="true" aria-controls="service-part">Folha de serviço</button>
                         <button type="button" role="tab" data-mc-tab="checklists" aria-selected="false" aria-controls="maintenance-panel">Checklists de manutenção</button>
@@ -574,7 +574,7 @@
                         </div>
                     </section>
 
-                    {% if config.MAINTENANCE_DEMO %}
+                    {% if maintenance_enabled_for_user %}
                     </div>
                     <section id="maintenance-panel" hidden>
                         <p class="eyebrow">Manutenção preventiva · SADI</p><h2>Checklists por local</h2>
@@ -639,7 +639,7 @@
     <script>
         window.__FILES_APP__ = {
             bootstrapEnabled: true,
-            maintenanceEnabled: {{ config.MAINTENANCE_DEMO | tojson }},
+            maintenanceEnabled: {{ maintenance_enabled_for_user | tojson }},
             maintenanceDefinition: {{ maintenance_definition | tojson }},
             mailEnabled: {{ mail_enabled | tojson }},
             mailTestRecipient: {{ mail_test_recipient | tojson }},
@@ -663,7 +663,7 @@
     </script>
     <script src="{{ url_for('static', filename='js/mail-job-monitor.js', v=asset_version) }}"></script>
     <script src="{{ url_for('static', filename='js/document-validation.js', v=asset_version) }}"></script>
-    {% if config.MAINTENANCE_DEMO %}
+    {% if maintenance_enabled_for_user %}
     <script src="{{ url_for('static', filename='js/maintenance-model.js', v=asset_version) }}"></script>
     <script src="{{ url_for('static', filename='js/maintenance-editor.js', v=asset_version) }}"></script>
     {% endif %}

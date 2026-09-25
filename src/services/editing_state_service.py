@@ -166,6 +166,8 @@ class EditingStateService:
         path: str | Path,
         identity: EditorIdentity,
         client_id: str,
+        *,
+        allow_foreign_owner: bool = False,
     ) -> dict[str, Any]:
         file_path = Path(path)
         document_id = self.resolve_document_id(file_path)
@@ -175,6 +177,7 @@ class EditingStateService:
             identity,
             client_id,
             workspace_kind="draft",
+            allow_foreign_owner=allow_foreign_owner,
         )
 
     def acquire_private_workspace(
@@ -202,6 +205,7 @@ class EditingStateService:
         client_id: str,
         *,
         workspace_kind: str,
+        allow_foreign_owner: bool = False,
     ) -> dict[str, Any]:
         if not client_id.strip():
             raise EditingStateError("Identificador da sessão de edição em falta.")
@@ -211,7 +215,7 @@ class EditingStateService:
             state["workspace_kind"] = workspace_kind
             self._normalize_sessions(state, now)
             owner = state.get("owner")
-            if owner and owner.get("owner_id") != identity.id:
+            if owner and owner.get("owner_id") != identity.id and not allow_foreign_owner:
                 raise LeaseConflictError(self._public_snapshot(state, now=now))
             if not owner:
                 state["owner"] = self._owner_payload(identity, now=now)
@@ -619,7 +623,8 @@ class EditingStateService:
             raise OperationInProgressError("Outra operação sobre esta folha está em curso.")
 
     @contextmanager
-    def operation_guard(self, document_id: str, identity: EditorIdentity):
+    def operation_guard(self, document_id: str, identity: EditorIdentity, *,
+                        allow_foreign_owner: bool = False):
         lock_id = hashlib.sha256(document_id.encode("utf-8")).hexdigest()
         try:
             with file_mutex(self.root / "operation-locks" / lock_id):
@@ -627,7 +632,7 @@ class EditingStateService:
                 # writing, even if its process died before updating SQLite.
                 with self._state_transaction(document_id) as state:
                     owner = state.get("owner") or {}
-                    if owner.get("owner_id") not in {None, identity.id}:
+                    if owner.get("owner_id") not in {None, identity.id} and not allow_foreign_owner:
                         raise LeaseConflictError(self._public_snapshot(state))
                     for operation in state.get("operations", {}).values():
                         if operation.get("status") == "pending":
