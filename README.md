@@ -1,9 +1,9 @@
 ﻿# Folhas de Servico
 
-Versao recomendada para servidor: `v1.0.0-servidor`.
+Esta revisão inclui a versão de produção das checklists de manutenção SADI.
 
-Para deploy em Plesk/Docker, usar a tag acima e seguir `docs/IMPLEMENTACAO_SERVIDOR.md`.
-A checklist SADI, o acesso reservado e a preparação do servidor estão descritos em [RELEASE_NOTES_SADI_DEMO_2026-09-24.md](docs/RELEASE_NOTES_SADI_DEMO_2026-09-24.md).
+Para instalar em Plesk/Docker, publicar esta revisão e seguir [as notas de versão SADI](docs/RELEASE_NOTES_SADI_DEMO_2026-09-24.md) e `docs/IMPLEMENTACAO_SERVIDOR.md`. A tag antiga `v1.0.0-servidor` não inclui estas alterações.
+A SADI fica ativa por defeito com `FS_ENVIRONMENT=production`, autenticação Microsoft e backend Graph. O ficheiro `.env.production.example` inclui `FS_MAINTENANCE_ENABLED=true`. Um valor explícito `false` no servidor mantém a funcionalidade desligada. São necessários Chromium e armazenamento privado persistente em `FS_APP_DATA_DIR`.
 Para a migracao do sincronismo transacional, seguir tambem `docs/SINCRONIZACAO_V2_ADMIN.md`.
 Para localizacao, rotacao e operacao dos logs, seguir `docs/LOGGING.md`.
 
@@ -29,8 +29,10 @@ Fluxo oficial atual:
 1. Ler folhas ativas a partir de `Excel/Activas` em modo local ou Microsoft Graph em servidor.
 2. Editar apenas a sheet `LINK`.
 3. Guardar rascunho ou arquivar/cancelar o Excel.
-4. Nao gerar PDF na webapp.
-5. Preferir `http://localhost:5001` ou a proxima porta livre.
+4. Gerar o PDF da folha e, em Manutenção + SADI, um PDF privado por local. O email ao cliente inclui apenas a folha de serviço.
+5. Aceder à app pelo endereço HTTPS configurado no servidor. As checklists são visíveis apenas para as contas Microsoft autorizadas.
+
+O lançador `tools/run_test_version.py` é exclusivo para desenvolvimento: cria dados fictícios e bloqueia comunicações. Não é usado pelo Plesk/Passenger nem pelo Dockerfile de produção.
 
 Notas de consistencia:
 

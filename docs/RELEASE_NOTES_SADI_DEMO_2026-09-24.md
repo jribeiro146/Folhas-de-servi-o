@@ -2,7 +2,7 @@
 
 ## Âmbito do pacote
 
-Esta versão acrescenta as checklists de manutenção SADI do modelo Excel à demo local e, mediante ativação explícita, ao servidor de produção. Em produção exige `FS_MAINTENANCE_ENABLED=true`, autenticação Microsoft e backend Graph.
+Esta é a versão de produção das checklists de manutenção SADI do modelo Excel. A SADI fica ativa por defeito em `FS_ENVIRONMENT=production`, com autenticação Microsoft e backend Graph. O exemplo de configuração de produção inclui `FS_MAINTENANCE_ENABLED=true`; um valor explícito `false` no servidor mantém a funcionalidade desligada. O lançador de testes é separado e não é usado na instalação de produção.
 
 - Depois do rascunho, a folha de serviço e as checklists aparecem em separadores. Cada local tem configuração, respostas, fotografias, observações e assinaturas próprias do técnico e do cliente.
 - Centrais convencionais, endereçáveis e repetidores são repetidos por equipamento. O campo «Local do repetidor» é obrigatório. A secção 4, Periféricos e ensaios, é independente das centrais e aparece uma vez por local.
@@ -22,7 +22,7 @@ Folhas antigas sem checklists continuam compatíveis. A definição versionada c
 
 ## Verificação isolada
 
-- `python -B -m pytest -q`: 278 testes aprovados, incluindo SADI, acesso em produção, assinatura obrigatória do técnico e arquivo com serviços simulados.
+- `python -B -m pytest -q`: 286 testes aprovados, incluindo ativação SADI por defeito em produção, desativação explícita, acesso reservado, assinatura obrigatória do técnico e arquivo com serviços simulados.
 - Suite JavaScript (`node --test` em todos os ficheiros `tests/js/*.test.cjs`): 19 testes aprovados, incluindo 8 SADI.
 - `python -B tools/run_test_version.py --check`: `CHECK_OK`, com dados fictícios, rede de saída bloqueada e email, Teams e workers desligados.
 - `python -B tools/verify_sadi_pdf_demo.py`: três PDFs gerados; simulação com um anexo (folha de serviço) e duas checklists guardadas, sem comunicação externa.
@@ -43,4 +43,4 @@ Instalar Chromium no host Plesk/Passenger e, se não estiver no `PATH`, definir 
 
 A dependência de finalização atómica também altera o fluxo comum de arquivo das folhas de serviço, mesmo com a checklist desativada. Validar esse fluxo em ambiente de ensaio antes de publicar o código no servidor.
 
-Atualizar app e worker para a mesma revisão, conservando volumes e configuração. Depois de validar armazenamento, permissões, PDFs e backup, definir `FS_MAINTENANCE_ENABLED=true` e reiniciar a app pelo procedimento normal. A flag vem desligada por defeito. Não é necessária migração do esquema Graph nem nova permissão Microsoft. Esta preparação não executa deploy nem processa filas.
+Preparar Chromium, armazenamento privado, permissões e backup antes da atualização. Atualizar app e worker para a mesma revisão, conservando volumes e configuração, e reiniciar pelo procedimento normal. A SADI já fica ativa por defeito em produção; se a configuração existente tiver `FS_MAINTENANCE_ENABLED=false`, alterar para `true`. Atualizar o código não substitui as variáveis existentes do Plesk nem o seu ficheiro de segredos. Não é necessária migração do esquema Graph nem nova permissão Microsoft. Esta preparação não executa deploy nem processa filas.

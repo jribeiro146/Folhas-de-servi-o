@@ -152,7 +152,7 @@ def create_app(
         runtime_mode() == "production"
         and AUTH_ENABLED
         and STORAGE_BACKEND == "graph"
-        and os.environ.get("FS_MAINTENANCE_ENABLED", "").strip().casefold() == "true"
+        and os.environ.get("FS_MAINTENANCE_ENABLED", "true").strip().casefold() == "true"
     )
     if test_editor_identity is not None and not (
         app.config["MAINTENANCE_DEMO"] and not AUTH_ENABLED and ACTIVE_AUTH_PROVIDER == "none"

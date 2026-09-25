@@ -19,12 +19,19 @@ import src.web.application as web
 
 
 @pytest.fixture
-def production_sadi(tmp_path, monkeypatch):
-    monkeypatch.setenv("FS_ENVIRONMENT", "production")
-    monkeypatch.setenv("FS_MAINTENANCE_ENABLED", "true")
-    monkeypatch.setattr(web, "AUTH_ENABLED", True)
-    monkeypatch.setattr(web, "ACTIVE_AUTH_PROVIDER", "microsoft")
-    monkeypatch.setattr(web, "STORAGE_BACKEND", "graph")
+def production_sadi(tmp_path, monkeypatch, request):
+    settings = getattr(request, "param", {})
+    monkeypatch.setenv("FS_ENVIRONMENT", settings.get("mode", "production"))
+    monkeypatch.delenv("FS_TEST_SYNTHETIC", raising=False)
+    flag = settings.get("flag")
+    if flag is None:
+        monkeypatch.delenv("FS_MAINTENANCE_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("FS_MAINTENANCE_ENABLED", flag)
+    authenticated = settings.get("auth", True)
+    monkeypatch.setattr(web, "AUTH_ENABLED", authenticated)
+    monkeypatch.setattr(web, "ACTIVE_AUTH_PROVIDER", "microsoft" if authenticated else "none")
+    monkeypatch.setattr(web, "STORAGE_BACKEND", settings.get("backend", "graph"))
     monkeypatch.setattr(web, "APP_DATA_DIR", tmp_path / "private")
     monkeypatch.setattr(archive_module, "EXCEL_ARQUIVADAS_DIR", tmp_path / "archive")
     source = synthetic_workbook(tmp_path / "active" / "2026_9900.xlsx")
@@ -75,7 +82,7 @@ def production_sadi(tmp_path, monkeypatch):
         microsoft_auth_service=Authentication(),
         local_pdf_service=LocalPdfService(renderer=render),
     )
-    assert app.config["MAINTENANCE_ENABLED"] and not app.config["MAINTENANCE_DEMO"]
+    assert not app.config["MAINTENANCE_DEMO"] and not app.config["SYNTHETIC_TEST_VERSION"]
     return app, app.test_client(), draft, edits, tmp_path
 
 
@@ -93,6 +100,25 @@ def lease(client, draft, client_id):
     return {"document_id": editing["document_id"], "client_id": client_id,
             "lease_token": editing["lease"]["token"], "base_revision": editing["revision"],
             "idempotency_key": uuid.uuid4().hex}
+
+
+@pytest.mark.parametrize("production_sadi,enabled", [
+    ({}, True),
+    ({"flag": "true"}, True),
+    ({"flag": "false"}, False),
+    ({"flag": ""}, False),
+    ({"flag": "true", "mode": "development"}, False),
+    ({"flag": "true", "mode": "test"}, False),
+    ({"flag": "true", "auth": False}, False),
+    ({"flag": "true", "backend": "local"}, False),
+], indirect=["production_sadi"])
+def test_production_sadi_default_preserves_auth_storage_and_explicit_disable(production_sadi, enabled):
+    app, client, draft, _edits, _root = production_sadi
+    assert app.config["MAINTENANCE_ENABLED"] is enabled
+    login(client, "jribeiro@sensorpoint.pt")
+    assert ("Checklists de manutenção" in client.get("/").get_data(as_text=True)) is enabled
+    checked = client.post(f"/api/file/{draft.stem}/maintenance/validate", json={"document": complete_document()})
+    assert checked.status_code == (200 if enabled else 404)
 
 
 def test_only_named_microsoft_accounts_see_sadi_and_private_data_survives_other_editor(production_sadi):

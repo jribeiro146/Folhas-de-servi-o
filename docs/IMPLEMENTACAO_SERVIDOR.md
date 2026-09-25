@@ -150,6 +150,7 @@ Exemplo de configuracao:
 
 ```bash
 FS_ENVIRONMENT=production
+FS_MAINTENANCE_ENABLED=true
 FS_STORAGE_BACKEND=graph
 FS_AUTH_PROVIDER=microsoft
 FS_SECRET_KEY=<gerar-chave-aleatoria-longa>

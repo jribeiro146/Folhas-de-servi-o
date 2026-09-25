@@ -37,7 +37,7 @@ Na demo, os PDFs e o manifesto são produzidos no staging da finalização. Em p
 
 ## Demo e produção
 
-O lançador descrito no início continua restrito ao ambiente sintético local, sem serviços Graph, email, Teams ou filas injetados. Em produção, a checklist só fica ativa com `FS_MAINTENANCE_ENABLED=true`, autenticação Microsoft e backend Graph. Só `acarvalho@sensorpoint.pt` e `jribeiro@sensorpoint.pt` a podem ver e preencher; os PDFs SADI são servidos exclusivamente pela app a estas contas. Os textos técnicos SADI estão em português. A exportação mantém o conteúdo do Excel, com paginação própria para suportar vários equipamentos; não reproduz a grelha Excel célula a célula. Ver [notas de versão](RELEASE_NOTES_SADI_DEMO_2026-09-24.md) antes de preparar o servidor.
+O lançador descrito no início continua restrito ao ambiente sintético local, sem serviços Graph, email, Teams ou filas injetados. Em produção, a checklist fica ativa por defeito com autenticação Microsoft e backend Graph; `FS_MAINTENANCE_ENABLED=false` permite desativá-la explicitamente. Só `acarvalho@sensorpoint.pt` e `jribeiro@sensorpoint.pt` a podem ver e preencher; os PDFs SADI são servidos exclusivamente pela app a estas contas. Os textos técnicos SADI estão em português. A exportação mantém o conteúdo do Excel, com paginação própria para suportar vários equipamentos; não reproduz a grelha Excel célula a célula. Ver [notas de versão](RELEASE_NOTES_SADI_DEMO_2026-09-24.md) antes de preparar o servidor.
 
 ## Validação
 
