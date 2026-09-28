@@ -1,0 +1,757 @@
+{
+  "algorithm": "SHA-256",
+  "date": "2026-09-28",
+  "scope": "Aplicação completa, excluindo administração",
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "bytes": 3369,
+      "sha256": "8b4e23f1832a96da26860bcbee723eda70bc8a81e1b2e98f0e70e259118850fb"
+    },
+    {
+      "path": "README.md",
+      "bytes": 5431,
+      "sha256": "9b5c10178892bda73fc2e168cc355f8bbcef627e8c6190c6044c6e920c5bbe2a"
+    },
+    {
+      "path": "aplicacao/.dockerignore",
+      "bytes": 249,
+      "sha256": "11835b0997f9fb0c15e7edf6a59e37212a7bdb0c67e7848bbb8bc086545122b7"
+    },
+    {
+      "path": "aplicacao/.env.example",
+      "bytes": 1226,
+      "sha256": "63b0dc74d591c4a2cf7798cb7b147f825916a62ddad7245933c84ec4c0985d9c"
+    },
+    {
+      "path": "aplicacao/.gitignore",
+      "bytes": 114,
+      "sha256": "8d21246e2039fba8835955536ae75870712a0f67cb1442bfa5ec89477ee1e301"
+    },
+    {
+      "path": "aplicacao/Dockerfile",
+      "bytes": 1157,
+      "sha256": "9605a7adee23ad6f21a7ee0cdaa16422ed4dbbf06df9e36ec0235a143f40df98"
+    },
+    {
+      "path": "aplicacao/docker-compose.yml",
+      "bytes": 553,
+      "sha256": "f84393d7d88f11830db00a294491634ffb1d9e54c443820b2f3128a3046800a5"
+    },
+    {
+      "path": "aplicacao/passenger_wsgi.py",
+      "bytes": 872,
+      "sha256": "58213abfabbf35a68af72a48cffd198899b0d689d8c4cb36762402dfb6519a2a"
+    },
+    {
+      "path": "aplicacao/requirements-dev.txt",
+      "bytes": 32,
+      "sha256": "0e7d800c45d87cda68e95d462890ae6a7a006b839af6247af7dc55d25aa725dc"
+    },
+    {
+      "path": "aplicacao/requirements-server.txt",
+      "bytes": 213,
+      "sha256": "c2494f6a2c188cbf3b4a1b6fc939b4441c1d04a24bbf4fce34c2632c7b7741c2"
+    },
+    {
+      "path": "aplicacao/requirements-smoke.txt",
+      "bytes": 85,
+      "sha256": "0749cf46d48d9279994940f189f26dd4d6fb00b30fc5e52c012dc42ddbd88696"
+    },
+    {
+      "path": "aplicacao/requirements.txt",
+      "bytes": 152,
+      "sha256": "7a215ae54e8bb06e3726894150c0529e773800a2e2876e77ca132f8f0940d2c0"
+    },
+    {
+      "path": "aplicacao/src/__init__.py",
+      "bytes": 45,
+      "sha256": "1756b4475f5082ca4e92e2ecaa948f90dc338cb6c5d39b073155cdcfc80af779"
+    },
+    {
+      "path": "aplicacao/src/config.py",
+      "bytes": 10210,
+      "sha256": "7e35692a7261054c771309ecb2500250637dc7fe27b657c3bcfad0fa84a42092"
+    },
+    {
+      "path": "aplicacao/src/document_schema.py",
+      "bytes": 29511,
+      "sha256": "70f4d3631035194bdea1275c10af95993bd933d1e7f46e1425188f46f5e045e8"
+    },
+    {
+      "path": "aplicacao/src/field_map.py",
+      "bytes": 9414,
+      "sha256": "38d77db23076dceced5b55c06798ef44e78ede24e019ed5a75147b3d08b19318"
+    },
+    {
+      "path": "aplicacao/src/logging_config.py",
+      "bytes": 12022,
+      "sha256": "18cd371d52ff4f3abb5f0d22e79a369f1598b9fdd4d0df1e1cbf53c3f523f27c"
+    },
+    {
+      "path": "aplicacao/src/main.py",
+      "bytes": 2724,
+      "sha256": "c10ce622ff74aec14f7609d236e78ef2244a864afa4eff6d8e6a350587d91245"
+    },
+    {
+      "path": "aplicacao/src/maintenance_schema.py",
+      "bytes": 20755,
+      "sha256": "55f701cddcb686482c740dc0e3c20558fe3269ea4c2c65c31b3567cb7e2c98e1"
+    },
+    {
+      "path": "aplicacao/src/queue_worker.py",
+      "bytes": 3738,
+      "sha256": "e4c18b54693c85755a0309e8c7f51b8bf237ed02d1af00f6477748909175dc97"
+    },
+    {
+      "path": "aplicacao/src/services/__init__.py",
+      "bytes": 38,
+      "sha256": "ffa5220d3245550005be155a70feb669ee747105a1648ed9b314bb157676bf28"
+    },
+    {
+      "path": "aplicacao/src/services/active_file_index.py",
+      "bytes": 2746,
+      "sha256": "4f859f753208f832223d5a543a1c152992b251da6be369c23f8150861901cff8"
+    },
+    {
+      "path": "aplicacao/src/services/archive_service.py",
+      "bytes": 9961,
+      "sha256": "5f68ed20911b00c2ac60cac573f7971af4d83886aca5b22246de8c9d586eab60"
+    },
+    {
+      "path": "aplicacao/src/services/document_artifact_service.py",
+      "bytes": 2777,
+      "sha256": "6c6721044aeb0c158b9a29636991234495e2258ffbe3edf87f1d95e158250630"
+    },
+    {
+      "path": "aplicacao/src/services/document_data_service.py",
+      "bytes": 3280,
+      "sha256": "2c0fdadf9bb857bfb9e4a90769f122e176a26351a7defc17ec0a154ffcbcd16c"
+    },
+    {
+      "path": "aplicacao/src/services/document_style_service.py",
+      "bytes": 876,
+      "sha256": "a365cf3343e7ff340fe1de4e9a9aa8bb415905b9b4755f633e726a2a38408eb0"
+    },
+    {
+      "path": "aplicacao/src/services/editing_state_repository.py",
+      "bytes": 5181,
+      "sha256": "449a3d22dc6d471962cbabac92ee4eb9619b309bd0c988aabeaa11fa257955f5"
+    },
+    {
+      "path": "aplicacao/src/services/editing_state_service.py",
+      "bytes": 32716,
+      "sha256": "e19ce486fd28285eb2f392d3d1dce506583d55e3125a1690c13216ef05a1cbae"
+    },
+    {
+      "path": "aplicacao/src/services/excel_service.py",
+      "bytes": 19090,
+      "sha256": "065c1d7de1d8e5246d332de116a8bd1c27aa25386ea71d253a41c226f813bb13"
+    },
+    {
+      "path": "aplicacao/src/services/file_diagnostics.py",
+      "bytes": 3281,
+      "sha256": "fcfbcdca02d51314b43baa9b9c317f0a397b4cd5fbac98172964611d0fb210e6"
+    },
+    {
+      "path": "aplicacao/src/services/file_mutex.py",
+      "bytes": 1310,
+      "sha256": "c953a5b46d3e60372847bf6e04e01b07e44689b27efe6ca142e9f618bbd6d81c"
+    },
+    {
+      "path": "aplicacao/src/services/file_service.py",
+      "bytes": 11534,
+      "sha256": "796cff7b701fead9badb90003270f51d3afc2adcf44e6e60a7fbdb638a50c526"
+    },
+    {
+      "path": "aplicacao/src/services/finalization_service.py",
+      "bytes": 3328,
+      "sha256": "4a47bee25f63083646583fc09b5885a36a792f92caa9905cfb80111aa4baf47b"
+    },
+    {
+      "path": "aplicacao/src/services/graph_mail_service.py",
+      "bytes": 19990,
+      "sha256": "f3621e76d2ead9d7b1010dc7d3271378ee55ddcdffa69a5d8cd7844ee773012b"
+    },
+    {
+      "path": "aplicacao/src/services/graph_storage_service.py",
+      "bytes": 50884,
+      "sha256": "7e5f393c93c4372cb0970e4bc66f827d38ee447a83074acd592bb7dbdddea6fd"
+    },
+    {
+      "path": "aplicacao/src/services/graph_sync_coordinator.py",
+      "bytes": 12012,
+      "sha256": "7c06b7836a7901cdf8d2e8699d5d099a2cf0254a25d66fd08ccee112568663bf"
+    },
+    {
+      "path": "aplicacao/src/services/graph_sync_queue.py",
+      "bytes": 41085,
+      "sha256": "9d3f24215f3b88907c7771d49976740c82457e67458cb56b04141d424275d578"
+    },
+    {
+      "path": "aplicacao/src/services/local_changes.py",
+      "bytes": 897,
+      "sha256": "b4fc63e6b05debd394fe096cf9fe1386a1e3480e7490be3d13896d020484b3e5"
+    },
+    {
+      "path": "aplicacao/src/services/local_pdf_service.py",
+      "bytes": 10773,
+      "sha256": "e9f02ab73675b4de7bb9580385079f7bc83b633e851d3dd03c53b22759590e71"
+    },
+    {
+      "path": "aplicacao/src/services/maintenance_artifact_service.py",
+      "bytes": 1654,
+      "sha256": "cb1c0cc5e4225ddabcafea6ca843797a42483fed98fcefc4324985c678081ae5"
+    },
+    {
+      "path": "aplicacao/src/services/microsoft_auth_service.py",
+      "bytes": 8066,
+      "sha256": "3c92b3427a022ff5998882187b10fd5224566cbd5dfc4da185f125f88f94b555"
+    },
+    {
+      "path": "aplicacao/src/services/photo_attachment_service.py",
+      "bytes": 10680,
+      "sha256": "b83574fc1a41ab359498c5bc67bee36a5e1aa5ade2cb132b73744dd68d75c139"
+    },
+    {
+      "path": "aplicacao/src/services/runtime_safety.py",
+      "bytes": 624,
+      "sha256": "d7a7131938448d438d6f7ca1e848983aed8eabf87f98a6c8ee5a75ccb470f687"
+    },
+    {
+      "path": "aplicacao/src/services/signature_service.py",
+      "bytes": 5963,
+      "sha256": "18f5faa767bea91e7a1a929a349fa1d9c449b883c436f350880cf30d04b36e9d"
+    },
+    {
+      "path": "aplicacao/src/services/teams_notification_service.py",
+      "bytes": 5250,
+      "sha256": "83c81f35cf4aea976d05675a945160378be32105324b347d8002f8b8dfe76eaa"
+    },
+    {
+      "path": "aplicacao/src/services/work_folder_service.py",
+      "bytes": 4631,
+      "sha256": "844ea38c16e00f9a58f40a536c75a284d201bbe8417135344bfbfbe53ee4453f"
+    },
+    {
+      "path": "aplicacao/src/web/app.py",
+      "bytes": 264,
+      "sha256": "6551562dca601c555c9b9067c913c105f2de2be12508e6fcda2359ed586259a1"
+    },
+    {
+      "path": "aplicacao/src/web/application.py",
+      "bytes": 94292,
+      "sha256": "04119fa195465571038271248686b0c3b0b9895f8c9288f04f8e4cbc3cd433cc"
+    },
+    {
+      "path": "aplicacao/src/web/static/css/auth.css",
+      "bytes": 1491,
+      "sha256": "61052314e83165adb692a10a5bfabbeb465c30b2a99277500a6db13b183005bf"
+    },
+    {
+      "path": "aplicacao/src/web/static/css/document-editor.css",
+      "bytes": 9552,
+      "sha256": "b1b6d650481ab3ce71111d75cf7a5b12bfe990336c6c3749d81fc9c2cdf550de"
+    },
+    {
+      "path": "aplicacao/src/web/static/css/editing-state.css",
+      "bytes": 3861,
+      "sha256": "d1bf77ddc92b2e564046c85caaac4e9854e66afcbcb6f07807aaf1a3245d393d"
+    },
+    {
+      "path": "aplicacao/src/web/static/css/field-app.css",
+      "bytes": 23544,
+      "sha256": "92a4c4b66574288ceaec2521022a0b0ebbdd3b758bab46084f947daa25f59dd0"
+    },
+    {
+      "path": "aplicacao/src/web/static/css/maintenance-document.css",
+      "bytes": 4007,
+      "sha256": "db03938cf5819ffd54c6ba6f698a2cb80ab7df7a830366d4b6352ca340ad6ba0"
+    },
+    {
+      "path": "aplicacao/src/web/static/css/maintenance.css",
+      "bytes": 5086,
+      "sha256": "a826ab07dd6da2e059edee8ed45b50c664a80154f908a8d60e9fba953645a510"
+    },
+    {
+      "path": "aplicacao/src/web/static/css/service-document.css",
+      "bytes": 15325,
+      "sha256": "2b2ac0b9190c1ca03bad88632aa24f50eafbb299097b9a3ae1436e33d0d4f9f3"
+    },
+    {
+      "path": "aplicacao/src/web/static/img/assinatura-dora.jpg",
+      "bytes": 275093,
+      "sha256": "a885e8e3322e6779fcbd4af679bbbca8ea3f7f79f17b0bb66255b7f1481f1dde"
+    },
+    {
+      "path": "aplicacao/src/web/static/img/pwa/icon-192.png",
+      "bytes": 16289,
+      "sha256": "9ac59d0a9b7ed0dd82a3309feb0f03c031d647f8d09c4e6f2896370813196fd2"
+    },
+    {
+      "path": "aplicacao/src/web/static/img/pwa/icon-512.png",
+      "bytes": 69385,
+      "sha256": "419f19bfce11ccd305be5b66991800fb8500fdddb6d212dc1cfe1ec392e0e633"
+    },
+    {
+      "path": "aplicacao/src/web/static/img/pwa/icon-maskable-512.png",
+      "bytes": 50347,
+      "sha256": "101707161e0ac3d1420ad44a628840742dd7955497e22c43ef69bd7ec22f0c29"
+    },
+    {
+      "path": "aplicacao/src/web/static/img/sensorpoint-logo.png",
+      "bytes": 54548,
+      "sha256": "695d763e5847e16328f98dd0a40ff9435b627649c46f3261806af3ba9cf11304"
+    },
+    {
+      "path": "aplicacao/src/web/static/js/document-editor.js",
+      "bytes": 83611,
+      "sha256": "5131e24a49a13fd39f92da124b0c8b1a518770fe5ed04f431b902e5ff7f9a752"
+    },
+    {
+      "path": "aplicacao/src/web/static/js/document-validation.js",
+      "bytes": 2293,
+      "sha256": "cffcdb40d6a1d974a427747a3fb01756987519b83ebfe824a87b6ed4a5726603"
+    },
+    {
+      "path": "aplicacao/src/web/static/js/editing-coordinator.js",
+      "bytes": 37480,
+      "sha256": "72182d2926c6a5bde3f654db9bf6344b0c6de80890d01fb9d225be6b29e6e4b2"
+    },
+    {
+      "path": "aplicacao/src/web/static/js/field-app.js",
+      "bytes": 21236,
+      "sha256": "3523dfb40417c5c63d07a7333bab6def1c67bfea4499b58acdffbdbe19576601"
+    },
+    {
+      "path": "aplicacao/src/web/static/js/mail-job-monitor.js",
+      "bytes": 4049,
+      "sha256": "5cb73154089cedcc22072f244e1620d49d758b49fd2d0cfb81a8103421a078bc"
+    },
+    {
+      "path": "aplicacao/src/web/static/js/maintenance-editor.js",
+      "bytes": 40684,
+      "sha256": "4ea8994cefd127c6b46759b7bfc291cf207abbb59e4ff318f93faa09c8711f17"
+    },
+    {
+      "path": "aplicacao/src/web/static/js/maintenance-model.js",
+      "bytes": 4938,
+      "sha256": "b79181bce764e66fa4b22301835d4b9f611ec5079d35cd46ac018bfc4ebee721"
+    },
+    {
+      "path": "aplicacao/src/web/static/js/pwa.js",
+      "bytes": 2850,
+      "sha256": "b1308fab92a913560ebfb9685abe075bebb5004cfc30b2068ce0758159abaf60"
+    },
+    {
+      "path": "aplicacao/src/web/static/manifest.webmanifest",
+      "bytes": 848,
+      "sha256": "3a14785cf194064512c9fa4b0767e500367e0d612cfb665eda9d2fac40413dac"
+    },
+    {
+      "path": "aplicacao/src/web/static/offline.html",
+      "bytes": 1387,
+      "sha256": "0d2818e3e19a62f061cadecde5b9b21f29ccf4599c7ea2db41914ae85c996280"
+    },
+    {
+      "path": "aplicacao/src/web/static/service-worker.js",
+      "bytes": 3956,
+      "sha256": "7d1c305e3649c21c858924c21fe49d5182995b25e63630e6b3d36406e13cf5c3"
+    },
+    {
+      "path": "aplicacao/src/web/templates/document_preview.html",
+      "bytes": 4652,
+      "sha256": "5f33c68602e697e1810faf3e059e2b205adc35001a3c88f999a22a297a07de62"
+    },
+    {
+      "path": "aplicacao/src/web/templates/field_app.html",
+      "bytes": 39385,
+      "sha256": "80baf5fcc86f3537f3ce2eb8ce2f47fb1e0cecab9a240dec639a75f97a3c179f"
+    },
+    {
+      "path": "aplicacao/src/web/templates/login.html",
+      "bytes": 4400,
+      "sha256": "655ba380b44a619dca5c87a943479daf8d9ce894ed059717846f9681755dcf6a"
+    },
+    {
+      "path": "aplicacao/src/web/templates/maintenance_bundle.html",
+      "bytes": 1878,
+      "sha256": "2590e4313829919c23db2df1615161bf8ca3e13a92953706d8a60808cc503ef7"
+    },
+    {
+      "path": "aplicacao/src/web/templates/maintenance_document.html",
+      "bytes": 9075,
+      "sha256": "c811aa1070baa20ce821fb4a47a97319fb83266196e45319f625237c439246aa"
+    },
+    {
+      "path": "aplicacao/src/web/templates/partials/active_file_list.html",
+      "bytes": 3597,
+      "sha256": "ecc4b519d000e4c8cf81bb3cbb3156961ef4f1c96f4d91fd14fe87ee1e4822a8"
+    },
+    {
+      "path": "aplicacao/src/web/templates/partials/document_header.html",
+      "bytes": 581,
+      "sha256": "ed18f15ad469324e2393781419accef8debec367a703087a9c051b8e2a2244f9"
+    },
+    {
+      "path": "aplicacao/src/web/templates/service_document.html",
+      "bytes": 13451,
+      "sha256": "895183f00d8c113915400729bd0e756ff4f4de621d00a3f0e5f2725d76287487"
+    },
+    {
+      "path": "aplicacao/src/web/templates/work_folder_error.html",
+      "bytes": 1402,
+      "sha256": "67171f7dbaaca567a8663d2024d6dae0f53a041fdcea083c8504d83783b4a604"
+    },
+    {
+      "path": "aplicacao/tests/__init__.py",
+      "bytes": 29,
+      "sha256": "5d933ac648400caa7c926835ba690b971d91e003492f9a79332f4a1b2ec19c01"
+    },
+    {
+      "path": "aplicacao/tests/conftest.py",
+      "bytes": 657,
+      "sha256": "fa36dcff1eb5bb104b5ece27cef36b8de937e1e6d5bdf99607fefcd824f4e058"
+    },
+    {
+      "path": "aplicacao/tests/fixtures/test_sample.xlsx",
+      "bytes": 7962,
+      "sha256": "d837d49ad53c3e41ef740ab2a29240520fef8b055d9bd96af62fb6e572bb9231"
+    },
+    {
+      "path": "aplicacao/tests/js/active-file-list.test.cjs",
+      "bytes": 9036,
+      "sha256": "637c0464410a6f93e389f2cd2d66ee883d4aeffa5d98d47c18cd9df6862c1f5e"
+    },
+    {
+      "path": "aplicacao/tests/js/document-validation.test.cjs",
+      "bytes": 3114,
+      "sha256": "a5c0f2d14921b79a49826d15bd2340f9a3c466476f0310dbe5f8381177aae01e"
+    },
+    {
+      "path": "aplicacao/tests/js/editing-coordinator.test.cjs",
+      "bytes": 5289,
+      "sha256": "f91929dfff59bd074e1feb6141f4164e19cc2718faaf5bf783f7f7f80a5c7f1e"
+    },
+    {
+      "path": "aplicacao/tests/js/mail-job-monitor.test.cjs",
+      "bytes": 4213,
+      "sha256": "103734674fb2756959a0408f765212590d1ad98cf895a75ea7a8fa871eeb9f54"
+    },
+    {
+      "path": "aplicacao/tests/js/maintenance-model.test.cjs",
+      "bytes": 5745,
+      "sha256": "27f314a7872d1ab54e16d4f6c7f99717f18f2b64adc844dd9446ee80ef3796d7"
+    },
+    {
+      "path": "aplicacao/tests/js/migration-fixtures.test.cjs",
+      "bytes": 2205,
+      "sha256": "ad764c96fe1135869c26e55f659a07b8c6c99ff9f783f64a9faeae16659fb09c"
+    },
+    {
+      "path": "aplicacao/tests/js/service-worker.test.cjs",
+      "bytes": 4844,
+      "sha256": "5ddde93f6e1109b486bbf65e4e4038f9e384749a09d712295177680ac33e2603"
+    },
+    {
+      "path": "aplicacao/tests/test_active_file_index.py",
+      "bytes": 14751,
+      "sha256": "3e8ed7231892c0d3418b9c1da4f490c641698bc65c07c994f5935346ee036dfe"
+    },
+    {
+      "path": "aplicacao/tests/test_archive_and_web.py",
+      "bytes": 38477,
+      "sha256": "a99acc2e122d93557ce060428101ac465eb42a889aea55b605117885d9d17953"
+    },
+    {
+      "path": "aplicacao/tests/test_config.py",
+      "bytes": 3987,
+      "sha256": "e351ac7566807ce794931f0011f9a2a351f115e5c822babf0c928fa8e4564e56"
+    },
+    {
+      "path": "aplicacao/tests/test_document_reports.py",
+      "bytes": 1670,
+      "sha256": "0468b6641e0804fa5ddbbef3bc522ce3c8d027016ccb13bc951d11c135adb9cc"
+    },
+    {
+      "path": "aplicacao/tests/test_document_schema.py",
+      "bytes": 8424,
+      "sha256": "85e941365b3a982ba2e6c95aef5f0f0baaa10103210adfcf4b0df6be4cb3f1ca"
+    },
+    {
+      "path": "aplicacao/tests/test_editing_state_service.py",
+      "bytes": 25649,
+      "sha256": "2d1fbb4a1900b31c5743c78552a5ae579b759d513f6160c38d5a7ca27653be45"
+    },
+    {
+      "path": "aplicacao/tests/test_excel_service.py",
+      "bytes": 12985,
+      "sha256": "e034545e7d5da76816f63722fb2350381ef20a11e613af29c0e58f60f33722f6"
+    },
+    {
+      "path": "aplicacao/tests/test_file_diagnostics.py",
+      "bytes": 7317,
+      "sha256": "ad6b60aee77285609663f96f6da5cf1da95bd057baaae9f73f32d391b7909a55"
+    },
+    {
+      "path": "aplicacao/tests/test_file_refresh_api.py",
+      "bytes": 1856,
+      "sha256": "c3c06db9f743c85226918098e96c415821eaa0ec7aa8716f3f91ca04d8587cb3"
+    },
+    {
+      "path": "aplicacao/tests/test_graph_mail_service.py",
+      "bytes": 36611,
+      "sha256": "69d56bba70a81ec6acb721898c38cfcf2f6780ac9724d86149c8ba44328e8c6a"
+    },
+    {
+      "path": "aplicacao/tests/test_graph_refresh_coordinator.py",
+      "bytes": 10933,
+      "sha256": "bdda7ed166faa8c0138db3da49170206a2bf7d3b9e85f2ac56ca9013ac571ba4"
+    },
+    {
+      "path": "aplicacao/tests/test_hosting_readiness.py",
+      "bytes": 3299,
+      "sha256": "41008f7d16cfb5bbf9f4697d0c1bbe926b9d0d6945284f82c387a7e2e16e0333"
+    },
+    {
+      "path": "aplicacao/tests/test_logging_config.py",
+      "bytes": 7731,
+      "sha256": "78f0db001ef4f5cba9204bcc345522e82b05157b1b1a95ead6caf3e60022e492"
+    },
+    {
+      "path": "aplicacao/tests/test_main.py",
+      "bytes": 577,
+      "sha256": "fa4776e58458ba66f90f8755a61429acf787212981e978d9ab345a8875175615"
+    },
+    {
+      "path": "aplicacao/tests/test_maintenance.py",
+      "bytes": 36095,
+      "sha256": "4699b05a8d18e3c7838edd3d4644d8f5846c8fb44e0af277a33dc84060eab209"
+    },
+    {
+      "path": "aplicacao/tests/test_photo_attachments.py",
+      "bytes": 13626,
+      "sha256": "40ade130d5de930e58b82964f1e9ab9088fc6491f847ad46f2e8cded3fa96803"
+    },
+    {
+      "path": "aplicacao/tests/test_required_fields.py",
+      "bytes": 3663,
+      "sha256": "c7e05298a58dae1d0ff07c6eb9ade249b5b49460b96c450ed4986e468c025931"
+    },
+    {
+      "path": "aplicacao/tests/test_safety_regressions.py",
+      "bytes": 26637,
+      "sha256": "2a027c8946187d1454c30c9f0357df6f56288c74428229d3cb75b780d0370416"
+    },
+    {
+      "path": "aplicacao/tests/test_sync_v2.py",
+      "bytes": 11013,
+      "sha256": "4ba1d96213a84a1c10e3b3eb9676475c2d1f03c838c93085c7da77352da8ec15"
+    },
+    {
+      "path": "aplicacao/tests/test_teams_notification_service.py",
+      "bytes": 4274,
+      "sha256": "1b8e998b106308267900c1e7d43c1855d93e1cb05a678858f8a67400d9b157a5"
+    },
+    {
+      "path": "aplicacao/tests/test_work_folder_service.py",
+      "bytes": 7688,
+      "sha256": "261a66c7195eb8ee8e59d153c6295718d50acd4edf50a733e7e8f1333642f557"
+    },
+    {
+      "path": "aplicacao/tests/test_work_folder_web.py",
+      "bytes": 4520,
+      "sha256": "d1c6b248b0f44615a9510f861de9478cdae55f1530e130ec6d804cc5c72a4a5b"
+    },
+    {
+      "path": "aplicacao/tools/build_synthetic_fixture.py",
+      "bytes": 4432,
+      "sha256": "c432c011d97e5fc16d3a86b04ff9ee2587b5a90c7fccb4ed633707355f7d69cd"
+    },
+    {
+      "path": "aplicacao/tools/run_test_version.py",
+      "bytes": 1767,
+      "sha256": "49af22eab697ef7864a955f8d50387ea8701cd6eda8b42afb50e2aa150332f5f"
+    },
+    {
+      "path": "aplicacao/tools/smoke_pdf.py",
+      "bytes": 2673,
+      "sha256": "b90deba93f7093f96a9dd439a1765826a87ae074b9ee04bfe8042e33131e02de"
+    },
+    {
+      "path": "aplicacao/tools/test_runtime.py",
+      "bytes": 2550,
+      "sha256": "cbbd6556e6a00420e2f9be80e22cefd835f30f848998abbcf90c707c587e1bc9"
+    },
+    {
+      "path": "aplicacao/tools/validate_migration.py",
+      "bytes": 1524,
+      "sha256": "26ee601927b1506a57a5b07391b4168e5af319ebd8104b7007853ee8001443c1"
+    },
+    {
+      "path": "aplicacao/tools/validate_reports.py",
+      "bytes": 3683,
+      "sha256": "b5078df88f7c12772439e3035c02d3cd008ae14f5d04c9bf457f4034cc7474d7"
+    },
+    {
+      "path": "dados/catalogos-folha.json",
+      "bytes": 2725,
+      "sha256": "54470aeca84c2e91dc3aeaca873538c65d924c9a1e697fcc003970c3177661f9"
+    },
+    {
+      "path": "dados/cenarios/cliente-ausente.json",
+      "bytes": 1546,
+      "sha256": "21d036553ccf11f6ccbbedb87ffdf830c8ff2e0553e954e8fd659bb87ae29d80"
+    },
+    {
+      "path": "dados/cenarios/data-impossivel.json",
+      "bytes": 1579,
+      "sha256": "56dfec8b8dfdf6890b9deb16cdeb760a2738d8bfd43af8f3dffc0c5b18344b4c"
+    },
+    {
+      "path": "dados/cenarios/folha-incompleta.json",
+      "bytes": 1322,
+      "sha256": "fc6eaad06d7ba9009f9bbba6e32b324e7daea88ea8ea9bd605bbd3501aa32063"
+    },
+    {
+      "path": "dados/cenarios/folha-valida.json",
+      "bytes": 1579,
+      "sha256": "ce534340b5d50fc505067b84c7c9f6d6db2ef1ab01d8ae61d41a0b645a81cbde"
+    },
+    {
+      "path": "dados/cenarios/index.json",
+      "bytes": 2441,
+      "sha256": "8391ad06f4093c762d2559606e7774a9d65945a120346304f3ba8f841cd04fcc"
+    },
+    {
+      "path": "dados/cenarios/sadi-cobertura-zero.json",
+      "bytes": 4808,
+      "sha256": "a70af2b631bcb2b49c3c779354e641505d9efc49782ca84e0dc0e1d439e4e0e8"
+    },
+    {
+      "path": "dados/cenarios/sadi-mensal-sem-cobertura.json",
+      "bytes": 4807,
+      "sha256": "5f32eb6ac5b63e7c9441ac8eba10d4875602b04337a8056a8bf84cf425099e55"
+    },
+    {
+      "path": "dados/cenarios/sadi-nc-sem-justificacao.json",
+      "bytes": 4806,
+      "sha256": "431af6d4b7aa3e71c49562f95a8fdcb8d6252352fa173a2014c8d165bac07430"
+    },
+    {
+      "path": "dados/cenarios/sadi-por-assinar.json",
+      "bytes": 4806,
+      "sha256": "e934795c7c3b9b249b27eae2de1c73df5a7f5773dfc0663706fc254fe449f4e5"
+    },
+    {
+      "path": "dados/documento-vazio.json",
+      "bytes": 1322,
+      "sha256": "fc6eaad06d7ba9009f9bbba6e32b324e7daea88ea8ea9bd605bbd3501aa32063"
+    },
+    {
+      "path": "dados/mapeamento-link.json",
+      "bytes": 12208,
+      "sha256": "28bee6826701184fad3caccefb44d12ff5a2766bc99eeefffac09f8a9f3cc3a6"
+    },
+    {
+      "path": "dados/sadi-definition.json",
+      "bytes": 6467,
+      "sha256": "5ca982e9eb54161dcd45a38bb313da84be51384dc221d9ad48562fc04bceff6a"
+    },
+    {
+      "path": "documentacao/01_AMBITO_E_INVENTARIO.md",
+      "bytes": 3629,
+      "sha256": "acc970330ed5c87f3c66e2a0fd2e7d8d7293f700050a89afc5b2b4e7203adb56"
+    },
+    {
+      "path": "documentacao/02_REGRAS_FOLHAS_E_CHECKLISTS.md",
+      "bytes": 38747,
+      "sha256": "cebc1bd8b118cee6b300b13d7bd7cfd9a5c2849d550d485a051720c3712bae7f"
+    },
+    {
+      "path": "documentacao/03_INTERFACE_E_CONTRATOS.md",
+      "bytes": 29326,
+      "sha256": "3dc4da099c3f380502003aa2778d1bf4565e91bb1066fb3799a15b292646c8df"
+    },
+    {
+      "path": "documentacao/04_AVALIACAO_E_MELHORIAS.md",
+      "bytes": 25878,
+      "sha256": "dd88936a44744465ce662bdca1fa2ecdb98f1f789273261286652217e52a4ab3"
+    },
+    {
+      "path": "documentacao/05_PLANO_E_ACEITACAO.md",
+      "bytes": 3906,
+      "sha256": "f8d8cd7531689db82b197454099ac03495968f6f1a12700f0d112fc014531727"
+    },
+    {
+      "path": "documentacao/06_GUIA_DE_UTILIZACAO.md",
+      "bytes": 6588,
+      "sha256": "dbc772f878705cd4fe39cd102626f1b098b07aa6258a44d7c3c0bd8485bdd9ca"
+    },
+    {
+      "path": "documentacao/07_VALIDACAO_DA_ENTREGA.md",
+      "bytes": 5565,
+      "sha256": "c9696f6f0c820341bd94a1568b42c51f963919cadabca624dca52e2b67eae7cc"
+    },
+    {
+      "path": "documentacao/08_BACKEND_FORMULARIOS.md",
+      "bytes": 5146,
+      "sha256": "05fd2ad30367b6308b54d0b71421486a2c605c0f8fa425ac7af5f8e3109c54ed"
+    },
+    {
+      "path": "documentacao/09_MELHORIAS_E_VALIDACAO.md",
+      "bytes": 7521,
+      "sha256": "549255b08c56c7769f05391ba06e82b76f7c1cb11a8abd47453af4d4e681d7dc"
+    },
+    {
+      "path": "documentacao/10_ALOJAMENTO_DOCKER.md",
+      "bytes": 7400,
+      "sha256": "2c72cf95cf67663a9185a196227b38c2942cfd7dc9479e98571af8a7da0ea9e4"
+    },
+    {
+      "path": "documentacao/11_REVISAO_INDEPENDENTE.md",
+      "bytes": 5554,
+      "sha256": "427135471be03351cbb4af7c0579baff6a717e1a2ba8021b97a22c2f79558143"
+    },
+    {
+      "path": "documentacao/12_QA_INTERFACE.md",
+      "bytes": 5659,
+      "sha256": "d95ea3fa17944d36e9e91b735aa7dba89050b20c9b5424ab6174a895bfcdd2bc"
+    },
+    {
+      "path": "ferramentas/bloquear-rede.cjs",
+      "bytes": 644,
+      "sha256": "c364e76bf94fa0c717657c365c550e520131386b042f46ef26622430b7457947"
+    },
+    {
+      "path": "ferramentas/validar.cjs",
+      "bytes": 2883,
+      "sha256": "4cfba2d21eb9565cf3d8ed52beb82b8e8c7dd06e7b995c5c2b3a3dd849fb093d"
+    },
+    {
+      "path": "laboratorio/dados-demo.js",
+      "bytes": 44606,
+      "sha256": "1637e5a89986283e4224b6389d9ba0811e36ebc624167d724e14fb7b4d02d93d"
+    },
+    {
+      "path": "laboratorio/index.html",
+      "bytes": 2129,
+      "sha256": "01cc9991262aed74309850f64d4f6c13ea2bc60fc1740dd4dda776ea7c1668b3"
+    },
+    {
+      "path": "laboratorio/laboratorio.css",
+      "bytes": 1801,
+      "sha256": "e9b9f3a9009c6a690e636d5db6d2e76032650db59140ea865ae130a0e214682c"
+    },
+    {
+      "path": "laboratorio/laboratorio.js",
+      "bytes": 3860,
+      "sha256": "e4bf1c475b6818274a879f9ec3bfcbf1c5b0a906cf88042c126e276c6a648a28"
+    },
+    {
+      "path": "proveniencia.json",
+      "bytes": 45479,
+      "sha256": "f74331c721dfe7a288ed26cffec19f5bc9dfa82113006a49ebef8965604be8b1"
+    }
+  ]
+}

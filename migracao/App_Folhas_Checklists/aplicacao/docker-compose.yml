@@ -1,0 +1,27 @@
+x-runtime: &runtime
+  build: .
+  image: ${FS_IMAGE:-folhas-servico:local}
+  restart: unless-stopped
+  init: true
+  volumes:
+    - app-data:/app/data
+  env_file:
+    - .env
+  environment:
+    FS_BASE_PATH: /app/data
+    FS_APP_DATA_DIR: /app/data
+    GRAPH_CACHE_DIR: /app/data/graph-cache
+    FS_GRAPH_QUEUE_IN_WEB: "false"
+
+services:
+  app:
+    <<: *runtime
+    ports:
+      - "127.0.0.1:8000:8000"
+  worker:
+    <<: *runtime
+    command: ["python", "-B", "-m", "src.queue_worker", "--watch", "--interval", "5"]
+
+volumes:
+  app-data:
+    driver: local

@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "serviceTypeOptions": [
+    {
+      "key": "piquete",
+      "label": "Piquete",
+      "excel_label": "PIQ"
+    },
+    {
+      "key": "assistencia",
+      "label": "Assistência",
+      "excel_label": "ASSIST"
+    },
+    {
+      "key": "manutencao",
+      "label": "Manutenção",
+      "excel_label": "MAN"
+    },
+    {
+      "key": "formacao",
+      "label": "Formação",
+      "excel_label": "FORM"
+    },
+    {
+      "key": "colocacao_servico",
+      "label": "Colocação de serviço",
+      "excel_label": "COL.SERV"
+    },
+    {
+      "key": "reparacao_oficina",
+      "label": "Reparação oficina",
+      "excel_label": "REP.OF"
+    },
+    {
+      "key": "garantia",
+      "label": "Garantia",
+      "excel_label": "GAR"
+    },
+    {
+      "key": "instalacao",
+      "label": "Instalação",
+      "excel_label": "INST"
+    }
+  ],
+  "equipmentOptions": [
+    {
+      "key": "sadi",
+      "label": "SADI",
+      "excel_label": "SADI"
+    },
+    {
+      "key": "vss",
+      "label": "VSS",
+      "excel_label": "CCTV"
+    },
+    {
+      "key": "sadco",
+      "label": "SADCO",
+      "excel_label": "PA/VA"
+    },
+    {
+      "key": "sadir",
+      "label": "SADIR",
+      "excel_label": "SAI"
+    },
+    {
+      "key": "sadei",
+      "label": "SADEI",
+      "excel_label": "EXT"
+    },
+    {
+      "key": "sca",
+      "label": "SCA",
+      "excel_label": "SCA"
+    },
+    {
+      "key": "eas",
+      "label": "EAS",
+      "excel_label": "EAS"
+    },
+    {
+      "key": "sadg",
+      "label": "SADG",
+      "excel_label": "SADG"
+    },
+    {
+      "key": "sch",
+      "label": "SCH",
+      "excel_label": "SCH"
+    },
+    {
+      "key": "other",
+      "label": "OTHER",
+      "excel_label": "OTHER"
+    }
+  ],
+  "validation": {
+    "requiredFields": [
+      {
+        "key": "customer_name",
+        "label": "Cliente / Customer"
+      }
+    ],
+    "technicianRequiredFields": [
+      {
+        "key": "technician",
+        "label": "Nome"
+      },
+      {
+        "key": "start_time",
+        "label": "Hora de início"
+      },
+      {
+        "key": "end_time",
+        "label": "Hora de fim"
+      },
+      {
+        "key": "total_hours",
+        "label": "Total de horas"
+      },
+      {
+        "key": "date",
+        "label": "Data"
+      }
+    ],
+    "signatureRequiredFields": [
+      {
+        "key": "customer_signer_name",
+        "label": "Primeiro e último nome"
+      },
+      {
+        "key": "customer_signature_date",
+        "label": "Data da assinatura"
+      }
+    ]
+  },
+  "limits": {
+    "materials": 12,
+    "technicians": 4
+  },
+  "technicianOptions": [
+    "Técnico Demonstração A",
+    "Técnico Demonstração B"
+  ],
+  "languages": [
+    "pt",
+    "en"
+  ]
+}

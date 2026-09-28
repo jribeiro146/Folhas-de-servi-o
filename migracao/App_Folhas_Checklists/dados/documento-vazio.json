@@ -1,0 +1,65 @@
+{
+  "document_language": "pt",
+  "service_number": "",
+  "customer_name": "",
+  "requested_by": "",
+  "request_date": "",
+  "customer_number": "",
+  "nif_number": "",
+  "vat_number": "",
+  "customer_email": "",
+  "customer_phone": "",
+  "site_contact": "",
+  "site_phone": "",
+  "local_store": "",
+  "work_number": "",
+  "contract_number": "",
+  "address": "",
+  "store_number": "",
+  "requested_tasks": "",
+  "intervention_report": "",
+  "customer_signer_name": "",
+  "customer_signature_date": "",
+  "service_types": {
+    "piquete": false,
+    "assistencia": false,
+    "manutencao": false,
+    "formacao": false,
+    "colocacao_servico": false,
+    "reparacao_oficina": false,
+    "garantia": false,
+    "instalacao": false
+  },
+  "equipments": {
+    "sadi": false,
+    "vss": false,
+    "sadco": false,
+    "sadir": false,
+    "sadei": false,
+    "sca": false,
+    "eas": false,
+    "sadg": false,
+    "sch": false,
+    "other": false
+  },
+  "materials_used": false,
+  "materials": [
+    {
+      "ref": "",
+      "description": "",
+      "qty": ""
+    }
+  ],
+  "technician_records": [
+    {
+      "technician": "",
+      "start_time": "",
+      "end_time": "",
+      "total_hours": "",
+      "total_hours_overridden": false,
+      "date": ""
+    }
+  ],
+  "client_not_present": false,
+  "maintenance_checklists": []
+}

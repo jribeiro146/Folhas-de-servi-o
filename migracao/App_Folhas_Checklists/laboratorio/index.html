@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'self' data:; form-action 'none'; base-uri 'none'; object-src 'none'">
+  <title>Laboratório de regras · Folhas e checklists</title>
+  <link rel="stylesheet" href="laboratorio.css">
+  <script defer src="../aplicacao/src/web/static/js/document-validation.js"></script>
+  <script defer src="../aplicacao/src/web/static/js/maintenance-model.js"></script>
+  <script defer src="dados-demo.js"></script>
+  <script defer src="laboratorio.js"></script>
+</head>
+<body>
+  <main>
+    <header><p class="eyebrow">Migração · Dados fictícios · Sem backend</p><h1>Folhas de serviço e checklists</h1><p>Experimente as regras existentes antes de desenvolver a nova aplicação.</p></header>
+    <aside class="notice">Este laboratório verifica campos e respostas. Não guarda rascunhos, recolhe assinaturas, gera PDFs nem finaliza folhas. As alterações desaparecem ao fechar ou recarregar a página.</aside>
+    <div class="toolbar"><label for="scenario">Cenário<select id="scenario"></select></label><button id="restore" type="button">Repor exemplo</button><button id="validate" type="button">Validar alterações</button></div>
+    <p id="scenario-note"></p>
+    <div class="columns"><section><label for="payload"><h2>Documento de exemplo</h2></label><p>Os nomes das propriedades são os do contrato da aplicação. Pode editar este JSON e voltar a validar.</p><textarea id="payload" spellcheck="false" aria-describedby="privacy-note"></textarea><p id="privacy-note">Utilize apenas dados fictícios.</p></section><section class="results" aria-live="polite"><h2>Resultado dos validadores</h2><div id="results"></div></section></div>
+    <footer>Referência de interface e plano de desenvolvimento: <a href="../README.md">README do pacote</a>. A validação completa e a persistência pertencem ao futuro adaptador/backend.</footer>
+  </main>
+</body>
+</html>

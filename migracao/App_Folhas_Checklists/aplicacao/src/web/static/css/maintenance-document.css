@@ -1,0 +1,53 @@
+/* Extend the service-sheet stylesheet; brand, typography, panels and signatures stay shared. */
+.maintenance-sheet { display:block; }
+.running-context { padding:2mm 0 3mm; font-size:9px; color:var(--muted); }
+.maintenance-sheet .panel { display:block; margin-bottom:2.4mm; }
+.maintenance-sheet .panel-title { margin:0; }
+.maintenance-sheet .info-table th { text-align:left; }
+.maintenance-identification .info-table th { width:15%; }
+.draft-note, .result-legend { margin:2mm 0; font-size:9px; line-height:1.35; color:var(--muted); }
+.draft-note { color:#855112; }
+.result-legend span { padding:0 2mm; }
+.result-legend b { color:var(--accent); }
+.unit-heading { display:flex; flex-wrap:wrap; justify-content:space-between; gap:2mm; margin:3mm 0 0; padding:2.4mm 3mm; background:var(--accent); color:white; font-size:11px; font-weight:700; }
+.unit-heading span { font-weight:400; }
+.checklist-table .result-col { width:12%; }
+.checklist-table thead .checklist-heading { background:var(--accent-soft); font-size:9px; padding:2mm 2.5mm; }
+.checklist-heading > div { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:1mm 3mm; }
+.checklist-heading .table-context { color:var(--muted); font-size:8px; text-transform:none; letter-spacing:0; font-weight:400; }
+.checklist-table .center { text-align:center; vertical-align:middle; }
+.result { font-weight:700; color:var(--accent); }
+.result-nc { color:#a32a2a; }
+.nc-reason { margin-top:1.5mm; padding:1.5mm 2mm; border-left:2px solid #b24747; background:#fff6f4; color:#843232; white-space:pre-wrap; overflow-wrap:anywhere; }
+.preserve-lines { white-space:pre-wrap; }
+.maintenance-sheet .signature-strip { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.maintenance-footer { margin-top:3mm; padding-top:2mm; border-top:1px solid var(--line); color:var(--muted); font-size:8px; }
+.maintenance-section-title { margin:4mm 0 2mm; padding-bottom:1.5mm; border-bottom:2px solid var(--accent); color:var(--accent); font-size:12px; break-after:avoid; }
+.equipment-absent { margin:1.5mm 0; color:var(--muted); font-size:9px; }
+.maintenance-sheet .maintenance-photo { margin:0 0 3mm; break-inside:avoid; }
+.maintenance-photo img { display:block; max-width:100%; width:100%; height:85mm; object-fit:contain; padding:3mm; box-sizing:border-box; }
+.maintenance-photo figcaption { padding:2mm 3mm; font-size:10px; line-height:1.4; white-space:pre-wrap; overflow-wrap:anywhere; }
+@media screen and (max-width:620px) {
+    .maintenance-sheet .signature-strip { grid-template-columns:1fr; }
+    .checklist-table .result-col { width:22%; }
+    .maintenance-sheet .info-table, .maintenance-sheet .info-table tbody { display:block; }
+    .maintenance-sheet .info-table tr { display:grid; grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr); }
+    .maintenance-sheet .info-table th, .maintenance-sheet .info-table td { display:block; width:auto; min-width:0; overflow-wrap:anywhere; }
+    .maintenance-sheet .info-table th:empty, .maintenance-sheet .info-table td:empty { display:none; }
+}
+@media print {
+    @page {
+        size:A4; margin:12mm 7mm 10mm;
+        @bottom-right { content:counter(page) " / " counter(pages); font:8px "Segoe UI",Arial,sans-serif; color:#6b7f92; }
+    }
+    .maintenance-sheet { display:block; print-color-adjust:exact; -webkit-print-color-adjust:exact; }
+    .maintenance-sheet .checks-panel, .maintenance-sheet .checklist-table, .maintenance-sheet .observation-panel, .maintenance-sheet .lined-area { break-inside:auto; }
+    .document-running-header { break-inside:avoid; }
+    .equipment-identification { break-inside:avoid; break-after:avoid; }
+    .unit-heading { break-after:avoid; }
+    .checklist-table thead { display:table-header-group; break-after:avoid; }
+    .checklist-table tr { break-inside:avoid; }
+    .completion-section { break-inside:avoid; }
+    .observation-panel .panel-title { break-after:avoid; }
+    .maintenance-sheet .signature-strip { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}

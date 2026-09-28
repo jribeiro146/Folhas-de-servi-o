@@ -1,5 +1,13 @@
 ﻿# Folhas de Servico
 
+## Entrega de migração — 28/09/2026
+
+O [pacote de migração revisto](migracao/App_Folhas_Checklists/README.md) está em `migracao/`. Inclui melhorias de SharePoint, interface móvel, SADI de demonstração, PDF e preparação Docker/worker, com validação e revisão independente documentadas.
+
+A [nota de passagem ao implementador Plesk](migracao/ENTREGA_PLESK_2026-09-28.md) contém o comentário de entrega, o contexto de construção da imagem e as verificações necessárias. Este pacote deve ser comparado com a versão efetivamente instalada antes de qualquer integração ou instalação; adicioná-lo ao repositório não atualiza a aplicação da raiz nem o servidor.
+
+## Aplicação existente na raiz
+
 Versao recomendada para servidor: `v1.0.0-servidor`.
 
 Para deploy em Plesk/Docker, usar a tag acima e seguir `docs/IMPLEMENTACAO_SERVIDOR.md`.

@@ -1,0 +1,15 @@
+# Só o código e requisitos entram no contexto da imagem.
+*
+!src/
+!src/**
+!requirements-server.txt
+!requirements-smoke.txt
+!passenger_wsgi.py
+!Dockerfile
+!tools/
+!tools/smoke_pdf.py
+!tools/test_runtime.py
+**/__pycache__/
+**/*.pyc
+**/.env
+**/.env.*

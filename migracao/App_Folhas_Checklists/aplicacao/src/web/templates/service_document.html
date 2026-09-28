@@ -1,0 +1,245 @@
+{% set doc_lang = "en" if document.document_language == "en" else "pt" %}
+{% set service_type_labels_en = {
+    "piquete": "Emergency call",
+    "assistencia": "Assistance",
+    "manutencao": "Maintenance",
+    "formacao": "Training",
+    "colocacao_servico": "Service commissioning",
+    "reparacao_oficina": "Workshop repair",
+    "garantia": "Warranty",
+    "instalacao": "Installation"
+} %}
+<!DOCTYPE html>
+<html lang="{{ doc_lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ "Service Sheet" if doc_lang == "en" else "Folha de Serviço" }} {{ document.service_number or file_name }}</title>
+    <style>{{ embedded_styles | safe }}</style>
+</head>
+<body>
+    {% set materials = document.materials if document.materials_used else [] %}
+    {% set technician_records = document.technician_records if document.technician_records else [] %}
+    {% set technician_row_target = 4 %}
+    {% set visible_materials = materials %}
+    {% set visible_technician_records = technician_records[:technician_row_target] %}
+
+    <div class="print-actions">
+        <button type="button" onclick="window.print()">{{ "Print / Save PDF" if doc_lang == "en" else "Imprimir / Guardar em PDF" }}</button>
+        <button type="button" onclick="window.close()">{{ "Close" if doc_lang == "en" else "Fechar" }}</button>
+    </div>
+
+    <main class="sheet-page readable-sheet">
+        {% with sheet_kicker="Service Sheet" if doc_lang == "en" else "Folha de Serviço",
+                sheet_title="Service Report" if doc_lang == "en" else "Relatório de Intervenção",
+                sheet_number_label="Sheet no." if doc_lang == "en" else "N.º da folha",
+                sheet_date=document.request_date %}
+        {% include "partials/document_header.html" %}
+        {% endwith %}
+
+        <section class="summary-grid">
+            <article class="panel">
+                <div class="panel-title">{{ "Customer details" if doc_lang == "en" else "Dados do cliente" }}</div>
+                <table class="grid-table info-table">
+                    <tbody>
+                        <tr>
+                            <th>{{ "Customer" if doc_lang == "en" else "Cliente" }}</th>
+                            <td colspan="3">{{ document.customer_name or "-" }}</td>
+                            <th>{{ "Customer no." if doc_lang == "en" else "N.º de cliente" }}</th>
+                            <td>{{ document.customer_number or "-" }}</td>
+                        </tr>
+                        <tr>
+                            <th>{{ "Requested by" if doc_lang == "en" else "Pedido por" }}</th>
+                            <td colspan="3">{{ document.requested_by or "-" }}</td>
+                            <th>{{ "Date" if doc_lang == "en" else "Data" }}</th>
+                            <td>{{ document.request_date or "-" }}</td>
+                        </tr>
+                        <tr>
+                            <th>{{ "NIF / VAT" if doc_lang == "en" else "NIF / N.º de IVA" }}</th>
+                            <td colspan="3">{{ document.nif_number or document.vat_number or "-" }}</td>
+                            <th>{{ "Phone" if doc_lang == "en" else "Telefone" }}</th>
+                            <td>{{ document.customer_phone or "-" }}</td>
+                        </tr>
+                        <tr>
+                            <th>E-mail</th>
+                            <td colspan="5">{{ document.customer_email or "-" }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </article>
+
+            <article class="panel">
+                <div class="panel-title">{{ "Site information" if doc_lang == "en" else "Dados da instalação" }}</div>
+                <table class="grid-table info-table">
+                    <tbody>
+                        <tr>
+                            <th>{{ "Contact" if doc_lang == "en" else "Contacto" }}</th>
+                            <td colspan="3">{{ document.site_contact or "-" }}</td>
+                            <th>{{ "Phone" if doc_lang == "en" else "Telefone" }}</th>
+                            <td>{{ document.site_phone or "-" }}</td>
+                        </tr>
+                        <tr>
+                            <th>{{ "Local / store" if doc_lang == "en" else "Local / loja" }}</th>
+                            <td>{{ document.local_store or "-" }}</td>
+                            <th>{{ "Work no." if doc_lang == "en" else "N.º de obra" }}</th>
+                            <td>{{ document.work_number or "-" }}</td>
+                            <th>{{ "Store no." if doc_lang == "en" else "Loja n.º" }}</th>
+                            <td>{{ document.store_number or "-" }}</td>
+                        </tr>
+                        <tr>
+                            <th>{{ "Contract" if doc_lang == "en" else "Contrato" }}</th>
+                            <td>{{ document.contract_number or "-" }}</td>
+                            <th>{{ "Site" if doc_lang == "en" else "Instalação" }}</th>
+                            <td>{{ document.local_store or "-" }}</td>
+                            <th>{{ "Date" if doc_lang == "en" else "Data" }}</th>
+                            <td>{{ document.request_date or "-" }}</td>
+                        </tr>
+                        <tr>
+                            <th>{{ "Address" if doc_lang == "en" else "Morada" }}</th>
+                            <td colspan="5">{{ document.address or "-" }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </article>
+        </section>
+
+        <section class="selection-grid">
+            <article class="panel">
+                <div class="panel-title">{{ "Service type" if doc_lang == "en" else "Tipo de serviço" }}</div>
+                <div class="selected-grid">
+                    {% for option in service_type_options if document.service_types.get(option.key) %}
+                    <div class="selected-item">{{ service_type_labels_en.get(option.key, option.label) if doc_lang == "en" else option.label }}</div>
+                    {% else %}
+                    <div class="selected-empty">{{ "No service types selected." if doc_lang == "en" else "Sem tipos de serviço selecionados." }}</div>
+                    {% endfor %}
+                </div>
+            </article>
+
+            <article class="panel">
+                <div class="panel-title">{{ "Equipment" if doc_lang == "en" else "Equipamentos" }}</div>
+                <div class="selected-grid selected-grid-compact">
+                    {% for option in equipment_options if document.equipments.get(option.key) %}
+                    <div class="selected-item">{{ service_type_labels_en.get(option.key, option.label) if doc_lang == "en" else option.label }}</div>
+                    {% else %}
+                    <div class="selected-empty">{{ "No equipment selected." if doc_lang == "en" else "Sem equipamentos selecionados." }}</div>
+                    {% endfor %}
+                </div>
+            </article>
+        </section>
+
+        <section class="panel flowing-panel">
+            <div class="panel-title">{{ "Requested tasks" if doc_lang == "en" else "Trabalhos a efetuar" }}</div>
+            <div class="lined-area lined-area-short {{ 'is-empty' if not document.requested_tasks else '' }}">{{ document.requested_tasks or "" }}</div>
+        </section>
+
+        <section class="panel flowing-panel">
+            <div class="panel-title">{{ "Technical intervention report" if doc_lang == "en" else "Relatório técnico da intervenção" }}</div>
+            <div class="lined-area lined-area-tall {{ 'is-empty' if not document.intervention_report else '' }}">{{ document.intervention_report or "" }}</div>
+        </section>
+
+        <section class="panel flowing-panel">
+            <div class="panel-title">{{ "Materials / items / parts" if doc_lang == "en" else "Materiais / artigos / peças" }}</div>
+            <table class="grid-table materials-table">
+                <colgroup><col class="ref-col"><col><col class="qty-col"></colgroup>
+                <thead>
+                    <tr class="materials-context"><th colspan="3">{{ document.customer_name }} · {{ "Sheet" if doc_lang == "en" else "Folha" }} {{ document.service_number or file_name }}</th></tr>
+                    <tr>
+                        <th class="ref-col">Ref.</th>
+                        <th>{{ "Description" if doc_lang == "en" else "Descrição" }}</th>
+                        <th class="qty-col">{{ "Qty" if doc_lang == "en" else "Qtd." }}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% if visible_materials %}
+                        {% for item in visible_materials %}
+                        <tr>
+                            <td>{{ item.ref or "" }}</td>
+                            <td>{{ item.description or "" }}</td>
+                            <td class="center">{{ item.qty or "" }}</td>
+                        </tr>
+                        {% endfor %}
+                    {% else %}
+                    <tr class="empty-state-row">
+                        <td colspan="3">{{ "No materials recorded." if doc_lang == "en" else "Sem materiais registados." }}</td>
+                    </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="panel">
+            <div class="panel-title">{{ "Technician time records" if doc_lang == "en" else "Registo de técnicos e horas" }}</div>
+            <table class="grid-table tech-lines-table">
+                <thead>
+                    <tr>
+                        <th>{{ "Technician" if doc_lang == "en" else "Técnico" }}</th>
+                        <th>{{ "Date" if doc_lang == "en" else "Data" }}</th>
+                        <th>{{ "Start" if doc_lang == "en" else "Início" }}</th>
+                        <th>{{ "End" if doc_lang == "en" else "Fim" }}</th>
+                        <th>Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% if visible_technician_records %}
+                        {% for record in visible_technician_records %}
+                        <tr>
+                            <td>{{ record.technician or "-" }}</td>
+                            <td>{{ record.date or "-" }}</td>
+                            <td>{{ record.start_time or "-" }}</td>
+                            <td>{{ record.end_time or "-" }}</td>
+                            <td>{{ record.total_hours or "-" }}</td>
+                        </tr>
+                        {% endfor %}
+                    {% else %}
+                    <tr class="empty-state-row">
+                        <td colspan="5">{{ "No technician records." if doc_lang == "en" else "Sem registos de técnicos." }}</td>
+                    </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="signature-strip">
+            <article class="signature-panel signature-info-panel">
+                <div class="panel-title">{{ "Responsible technician" if doc_lang == "en" else "Técnico responsável" }}</div>
+                <div class="signature-meta signature-meta-info">
+                    <strong>{{ responsible_technician or "-" }}</strong>
+                </div>
+            </article>
+
+            <article class="signature-panel signature-panel-customer">
+                <div class="panel-title">{{ "Customer signature" if doc_lang == "en" else "Assinatura do cliente" }}</div>
+                <div class="signature-image {% if document.client_not_present %}is-exempt{% elif signatures.get('Assinatura Cliente') %}has-signature{% else %}is-empty{% endif %}">
+                    {% if document.client_not_present %}
+                    <span class="signature-exemption">
+                        <strong>{{ "Customer not present on site" if doc_lang == "en" else "Cliente não presente na obra" }}</strong>
+                        <small>{{ "Signature waived." if doc_lang == "en" else "Assinatura dispensada." }}</small>
+                    </span>
+                    {% elif signatures.get("Assinatura Cliente") %}
+                    <img src="{{ signatures.get('Assinatura Cliente') }}" alt="Assinatura do cliente">
+                    {% else %}
+                    <span>{{ "No signature captured." if doc_lang == "en" else "Sem assinatura recolhida." }}</span>
+                    {% endif %}
+                </div>
+                {% if not document.client_not_present %}
+                <div class="signature-meta signature-meta-customer">
+                    <div class="signature-signer-name">
+                        <span>{{ "First and last name" if doc_lang == "en" else "Primeiro e último nome" }}</span>
+                        <strong>{{ document.customer_signer_name or "-" }}</strong>
+                    </div>
+                    <span>{{ "Date" if doc_lang == "en" else "Data" }}: {{ document.customer_signature_date or "-" }}</span>
+                </div>
+                {% endif %}
+            </article>
+        </section>
+    </main>
+
+    {% if auto_print %}
+    <script>
+        window.addEventListener("load", () => {
+            window.setTimeout(() => window.print(), 250);
+        });
+    </script>
+    {% endif %}
+</body>
+</html>
