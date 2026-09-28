@@ -1,5 +1,7 @@
 # Notas da versão — Checklists de manutenção SADI · 25/09/2026
 
+Atualização de 28/09/2026: corrigida a dependência em falta na fila de produção que impedia finalizar folhas (`has_unfinished_upload`), com testes da classe de fila real. Ver [instruções do hotfix](HOTFIX_FILA_2026-09-28.md).
+
 ## Âmbito do pacote
 
 Esta é a versão de produção das checklists de manutenção SADI do modelo Excel. A SADI fica ativa por defeito em `FS_ENVIRONMENT=production`, com autenticação Microsoft e backend Graph. O exemplo de configuração de produção inclui `FS_MAINTENANCE_ENABLED=true`; um valor explícito `false` no servidor mantém a funcionalidade desligada. O lançador de testes é separado e não é usado na instalação de produção.
@@ -22,7 +24,7 @@ Folhas antigas sem checklists continuam compatíveis. A definição versionada c
 
 ## Verificação isolada
 
-- `python -B -m pytest -q`: 286 testes aprovados, incluindo ativação SADI por defeito em produção, desativação explícita, acesso reservado, assinatura obrigatória do técnico e arquivo com serviços simulados.
+- `python -B -m pytest -q`: 298 testes aprovados, incluindo ativação SADI por defeito em produção, desativação explícita, acesso reservado, assinatura obrigatória do técnico e finalização com a fila real em SQLite temporário e transportes simulados.
 - Suite JavaScript (`node --test` em todos os ficheiros `tests/js/*.test.cjs`): 19 testes aprovados, incluindo 8 SADI.
 - `python -B tools/run_test_version.py --check`: `CHECK_OK`, com dados fictícios, rede de saída bloqueada e email, Teams e workers desligados.
 - `python -B tools/verify_sadi_pdf_demo.py`: três PDFs gerados; simulação com um anexo (folha de serviço) e duas checklists guardadas, sem comunicação externa.

@@ -13,6 +13,7 @@ from src.services.file_service import FileService
 from src.services.local_pdf_service import LocalPdfService
 from src.services.maintenance_private_service import MaintenancePrivateService
 from src.services.graph_storage_service import GraphStorageService
+from src.services.graph_sync_queue import GraphSyncQueue
 from tests.test_maintenance import complete_document, sign_document, synthetic_workbook
 import src.services.archive_service as archive_module
 import src.web.application as web
@@ -45,6 +46,9 @@ def production_sadi(tmp_path, monkeypatch, request):
             return SimpleNamespace(**payload) if payload else None
 
     class Graph:
+        def __init__(self):
+            self.calls = []
+
         @staticmethod
         def active_source_name(path):
             return path.parent.name
@@ -53,16 +57,17 @@ def production_sadi(tmp_path, monkeypatch, request):
         def active_source_etag(_path):
             return "synthetic-etag"
 
-    class Queue:
-        calls = []
+        def upload_active_bundle(self, path, *, fail_if_exists=False):
+            self.calls.append(("upload_active", path))
+            return [path.name]
 
-        @staticmethod
-        def has_unfinished_upload(_path):
-            return False
+        def upload_archive_bundle(self, path):
+            self.calls.append(("upload_archive", path))
+            return [path.name]
 
-        def enqueue(self, kind, payload, *, job_id=None):
-            self.calls.append((kind, payload))
-            return {"id": job_id, "status": "pending"}
+        def remove_active_name(self, name, *, expected_etag=None):
+            self.calls.append(("remove_active", name))
+            return True
 
     class Refresh:
         @staticmethod
@@ -72,16 +77,19 @@ def production_sadi(tmp_path, monkeypatch, request):
     def render(_html, destination):
         destination.write_bytes(b"%PDF-1.4\nsynthetic SADI access test")
 
+    graph = Graph()
+    queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", auto_start=False)
     app = web.create_app(
         file_service=files,
         editing_state_service=edits,
-        graph_service=Graph(),
-        graph_sync_queue=Queue(),
+        graph_service=graph,
+        graph_sync_queue=queue,
         graph_refresh_coordinator=Refresh(),
         work_folder_service=object(),
         microsoft_auth_service=Authentication(),
         local_pdf_service=LocalPdfService(renderer=render),
     )
+    app.extensions["test_graph_queue"] = queue
     assert not app.config["MAINTENANCE_DEMO"] and not app.config["SYNTHETIC_TEST_VERSION"]
     return app, app.test_client(), draft, edits, tmp_path
 
@@ -237,3 +245,32 @@ def test_allowed_editor_cannot_take_unrelated_draft(production_sadi):
     login(client, "acarvalho@sensorpoint.pt")
     result = client.post(f"/api/file/{draft.stem}/lease", json={"client_id": "other"})
     assert result.status_code == 423
+
+
+@pytest.mark.parametrize("sadi", [False, True])
+def test_real_queue_blocks_finalization_until_draft_upload_finishes(production_sadi, sadi):
+    app, client, draft, _edits, root = production_sadi
+    queue = app.extensions["test_graph_queue"]
+    login(client, "jribeiro@sensorpoint.pt")
+    metadata = lease(client, draft, "owner")
+    document = complete_document()
+    document["equipments"]["sadi"] = sadi
+    sign_document(document, app.secret_key)
+    upload = queue.enqueue("upload_active", {"draft_path": str(draft)})
+    before = draft.read_bytes()
+    blocked = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
+    assert blocked.status_code == 409, blocked.get_json()
+    assert blocked.get_json()["code"] == "publication_pending"
+    assert draft.read_bytes() == before and not list((root / "archive").rglob("*.xlsx"))
+    assert queue.graph_service.calls == []
+    queue.run_until_idle()  # Temporary SQLite queue and in-memory Graph only.
+    assert queue.status(upload["id"])["status"] == "complete"
+    finalized = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
+    assert finalized.status_code == 200, finalized.get_json()
+    job_id = finalized.get_json()["graph_job_id"]
+    queue.run_until_idle()
+    assert queue.status(job_id)["status"] == "complete"
+    repeated = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
+    assert repeated.status_code == 200 and repeated.get_json()["graph_job_id"] == job_id
+    queue.run_until_idle()
+    assert [kind for kind, _ in queue.graph_service.calls] == ["upload_active", "upload_archive", "remove_active"]
