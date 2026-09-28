@@ -33,6 +33,13 @@ class LocalPdfService:
             raise LocalPdfError(f"HTML final da folha não encontrado: {html_path}")
 
         destination = source.with_name(f"{source.stem}__folha_final.pdf")
+        return self.export_html_pdf(html_path, destination)
+
+    def export_html_pdf(self, html_path: Path, destination: Path) -> Path:
+        """Render an explicit local artifact; publish only a complete PDF."""
+        html_path, destination = Path(html_path), Path(destination)
+        if not html_path.is_file():
+            raise LocalPdfError("HTML para PDF não encontrado.")
         configured_temp = os.environ.get("FS_PDF_TEMP_DIR", "").strip() or None
         working_root = Path(configured_temp).resolve() if configured_temp else Path(tempfile.gettempdir())
         working_root.mkdir(parents=True, exist_ok=True)

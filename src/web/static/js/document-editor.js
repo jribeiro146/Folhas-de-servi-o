@@ -1,9 +1,9 @@
 document.addEventListener("DOMContentLoaded", () => {
     let activeFileName = null;
+    let preservedMaintenance = [];
     let pendingConfirmation = null;
 
     const filesApp = window.__FILES_APP__ || {};
-    const requiredFields = Array.isArray(filesApp.requiredFields) ? filesApp.requiredFields : [];
     const mailEnabled = Boolean(filesApp.mailEnabled);
     const mailTestRecipient = String(filesApp.mailTestRecipient || "").trim();
     const mailJobStaleSeconds = Math.max(Number(filesApp.mailJobStaleSeconds) || 180, 90);
@@ -145,6 +145,7 @@ document.addEventListener("DOMContentLoaded", () => {
             photo_too_large: "Cada fotografia pode ter no máximo 10 MB.",
             photo_total_limit: "As fotografias podem ocupar no máximo 50 MB no total.",
             technician: "Técnico",
+            technicians_required_help: "Preencha todos os campos de cada técnico para finalizar. Pode guardar um rascunho incompleto.",
             start_time: "Hora Início",
             end_time: "Hora Fim",
             total_hours: "Total efetivo",
@@ -163,7 +164,7 @@ document.addEventListener("DOMContentLoaded", () => {
             signature_help: "Assine no espaço acima com o dedo ou com uma caneta digital.",
             customer_signer_name: "Primeiro e último nome",
             customer_signer_name_placeholder: "Primeiro e último nome",
-            customer_signature_date: "Cliente - data",
+            customer_signature_date: "Data da assinatura",
             save_send: "Finalizar folha",
             cancel_sheet: "Cancelar folha",
             save_draft: "Guardar rascunho",
@@ -240,6 +241,7 @@ document.addEventListener("DOMContentLoaded", () => {
             photo_too_large: "Each photograph can be up to 10 MB.",
             photo_total_limit: "Photographs can use up to 50 MB in total.",
             technician: "Technician",
+            technicians_required_help: "Complete every field for each technician to finalize. You can save an incomplete draft.",
             start_time: "Start time",
             end_time: "End time",
             total_hours: "Effective total",
@@ -258,7 +260,7 @@ document.addEventListener("DOMContentLoaded", () => {
             signature_help: "Sign in the area above using a finger or digital pen.",
             customer_signer_name: "First and last name",
             customer_signer_name_placeholder: "First and last name",
-            customer_signature_date: "Customer - date",
+            customer_signature_date: "Signature date",
             save_send: "Finalize sheet",
             cancel_sheet: "Cancel sheet",
             save_draft: "Save draft",
@@ -1237,10 +1239,14 @@ document.addEventListener("DOMContentLoaded", () => {
         clientPad.clearButton.hidden = shouldWaive;
         clientPad.clearButton.disabled = shouldWaive;
         clientPad.canvas.setAttribute("aria-disabled", String(shouldWaive));
+        ["customer_signer_name", "customer_signature_date"].forEach((key) => {
+            form.querySelector(`[data-field="${key}"]`).setAttribute("aria-required", String(!shouldWaive));
+        });
     };
 
     const populateForm = (fileName, documentData, signatures = {}, photos = []) => {
         const safeDocument = { ...createEmptyDocument(), ...(documentData || {}) };
+        preservedMaintenance = structuredClone(safeDocument.maintenance_checklists || []);
         activeFileName = fileName;
 
         simpleFields.forEach((field) => {
@@ -1262,6 +1268,7 @@ document.addEventListener("DOMContentLoaded", () => {
             clearSignature: Boolean(safeDocument.client_not_present)
         });
         applyLanguage(safeDocument.document_language || "pt");
+        window.MaintenanceEditor?.hydrate(safeDocument);
 
         setActiveCard(fileName);
         setStatusMessage("");
@@ -1274,6 +1281,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const resetActiveState = () => {
         activeFileName = null;
+        preservedMaintenance = [];
         form.reset();
         renderMaterials();
         setMaterialsUsed(false);
@@ -1282,6 +1290,7 @@ document.addEventListener("DOMContentLoaded", () => {
         resetPhotoState();
         setClientNotPresent(false);
         applyLanguage("pt");
+        window.MaintenanceEditor?.hydrate({});
         updateWorkspaceVisibility(false);
         setStatusMessage("");
         setActiveCard(null);
@@ -1332,6 +1341,7 @@ document.addEventListener("DOMContentLoaded", () => {
         });
 
         payload.service_types = collectOptionGroup(serviceTypeInputs);
+        payload.maintenance_checklists = window.MaintenanceEditor ? window.MaintenanceEditor.collect() : structuredClone(preservedMaintenance);
         payload.equipments = collectOptionGroup(equipmentInputs);
         payload.materials_used = materialsUsedYes.checked;
         payload.materials = payload.materials_used
@@ -1347,14 +1357,13 @@ document.addEventListener("DOMContentLoaded", () => {
         return payload;
     };
 
-    const getMissingRequiredFields = (payload) => {
-        const missing = requiredFields
-            .filter((field) => !String(payload[field.key] || "").trim())
-            .map((field) => field.label);
+    const getFinalizationValidation = (payload) => {
+        const result = window.DocumentValidation.validate(payload, filesApp);
+        result.missing.push(...(window.MaintenanceEditor?.validate(payload) || []));
         if (!payload.client_not_present && !String(payload["Assinatura Cliente"] || "").trim()) {
-            missing.push(t("customer_signature_title"));
+            result.missing.push(t("customer_signature_title"));
         }
-        return missing;
+        return result;
     };
 
     const getInvalidDurationInputs = () => (
@@ -1453,11 +1462,22 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
 
+    const commitMessageKey = "sensorpoint-commit-message";
+    const navigateAfterCommit = (url, message) => {
+        try {
+            window.sessionStorage.setItem(commitMessageKey, message);
+        } catch (_error) {
+            // Navigation must also work when browser storage is unavailable.
+        }
+        window.location.href = url;
+    };
+
     const saveDraft = async () => {
         if (!activeFileName) {
             return;
         }
 
+        await window.MaintenanceEditor?.settleSignatures();
         hideConfirm();
         setBusy(true, "A guardar rascunho", "Estamos a guardar a folha.");
 
@@ -1483,10 +1503,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 ? "Rascunho guardado e nova folha em execução criada."
                 : "Rascunho guardado com sucesso.";
 
-            showToast(successMessage, "success");
-            window.setTimeout(() => {
-                window.location.href = `/?file=${encodeURIComponent(nextFileName)}`;
-            }, 800);
+            navigateAfterCommit(`/?file=${encodeURIComponent(nextFileName)}`, successMessage);
         } catch (error) {
             showToast(error.message, "error");
         } finally {
@@ -1530,6 +1547,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
             commitPhotoState();
             await window.__EDITING_COORDINATOR__?.markCommitted(result, "send");
+            if (result.maintenance_bundle_url) {
+                navigateAfterCommit(result.maintenance_bundle_url, "Folha e checklists finalizadas. PDFs disponíveis; envio apenas simulado.");
+                return;
+            }
             if (result.email_status === "pending") {
                 setBusy(
                     true,
@@ -1545,16 +1566,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 await monitor.waitForMailJob(result.graph_job_id, {
                     timeoutMs: mailJobMonitorTimeoutMs
                 });
-                showToast(
-                    "Folha arquivada e e-mail aceite para envio pela Microsoft.",
-                    "success"
-                );
+                navigateAfterCommit("/", "Folha arquivada e e-mail aceite para envio pela Microsoft.");
             } else {
-                showToast(result.message || "Folha concluída com sucesso.", "success");
+                navigateAfterCommit("/", result.message || "Folha concluída com sucesso.");
             }
-            window.setTimeout(() => {
-                window.location.href = "/";
-            }, 1200);
         } catch (error) {
             showToast(error.message, "error");
             if (error?.code === "mail_failed" && error.job?.id) {
@@ -1589,13 +1604,7 @@ document.addEventListener("DOMContentLoaded", () => {
                             await window.SensorpointMailJobMonitor.waitForMailJob(failedJobId, {
                                 timeoutMs: mailJobMonitorTimeoutMs
                             });
-                            showToast(
-                                "E-mail aceite para envio pela Microsoft.",
-                                "success"
-                            );
-                            window.setTimeout(() => {
-                                window.location.href = "/";
-                            }, 1200);
+                            navigateAfterCommit("/", "E-mail aceite para envio pela Microsoft.");
                         } catch (retryError) {
                             showToast(retryError.message, "error");
                         } finally {
@@ -1647,6 +1656,12 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
+        const checklist = window.MaintenanceEditor?.previewTarget();
+        if (checklist && !checklist.siteId) {
+            showToast("Indique o número de locais e selecione a checklist a pré-visualizar.", "error");
+            return;
+        }
+
         const previewWindow = window.open("", "_blank");
         if (!previewWindow) {
             showToast("O browser bloqueou a pré-visualização. Permita abrir uma nova aba.", "error");
@@ -1656,8 +1671,10 @@ document.addEventListener("DOMContentLoaded", () => {
         previewWindow.document.write(`<p style="font-family:Segoe UI,sans-serif;padding:24px;">${t("preparing_document")}</p>`);
 
         try {
+            await window.MaintenanceEditor?.settleSignatures();
             const payload = collectFormData();
             payload._auto_print = autoPrint;
+            if (checklist) payload._maintenance_site_id = checklist.siteId;
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/document-preview`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -1899,9 +1916,13 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
-        const missingFields = getMissingRequiredFields(payload);
-        if (missingFields.length > 0) {
-            showToast(`Campos obrigatórios em falta: ${missingFields.join(", ")}`, "error");
+        const validation = getFinalizationValidation(payload);
+        if (validation.missing.length > 0) {
+            showToast(`Campos obrigatórios em falta: ${validation.missing.join(", ")}`, "error");
+            return;
+        }
+        if (validation.invalid.length > 0) {
+            showToast(`Corrija os campos: ${validation.invalid.join(", ")}.`, "error");
             return;
         }
 
@@ -1958,11 +1979,13 @@ document.addEventListener("DOMContentLoaded", () => {
         collectFormData,
         populateForm,
         showToast,
+        openDocumentPreview,
         hasPendingPhotoChanges,
         renderAttachments: renderPhotos,
         getActiveFileName: () => activeFileName
     };
 
+    window.MaintenanceEditor?.init();
     initializeSignaturePads();
     resetActiveState();
 
@@ -1975,4 +1998,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     window.__FILES_EDITOR_READY__ = true;
     document.dispatchEvent(new CustomEvent("files-editor-ready"));
+    try {
+        const message = window.sessionStorage.getItem(commitMessageKey);
+        window.sessionStorage.removeItem(commitMessageKey);
+        if (message) showToast(message, "success");
+    } catch (_error) {
+        // Feedback persistence is optional; document safety is server-side.
+    }
 });

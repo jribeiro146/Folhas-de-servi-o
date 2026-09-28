@@ -1,0 +1,23 @@
+#service-part{display:contents}#service-part[hidden]{display:none}
+.mc-tabs{display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap}.mc-tabs button{padding:14px 20px;border:1px solid #b9cbd7;border-radius:9px;background:white;color:#173b51;font:inherit;cursor:pointer}.mc-tabs button[aria-selected=true]{background:#174f6e;color:white}
+.mc-tabs[hidden],#maintenance-panel[hidden]{display:none}
+#maintenance-panel{padding:24px;background:#fff;border:1px solid #d5e0e7;border-radius:14px;color:#163246;min-width:0}#maintenance-panel h3{font-size:1.15rem;margin:24px 0 14px}#maintenance-panel h4{margin:20px 0 12px;font-size:1rem}#maintenance-panel p{line-height:1.55}
+.mc-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.mc-field{display:flex;flex-direction:column;gap:7px;font-weight:600;margin-bottom:14px;min-width:0}.mc-field input,.mc-field select,.mc-field textarea,.mc-question select{font:inherit;padding:11px;border:1px solid #b7c9d6;border-radius:7px;background:white;color:#163246;width:100%}.mc-field textarea{resize:vertical;font-weight:400}
+.mc-sites{display:flex;gap:10px;overflow-x:auto;margin:18px 0;padding-bottom:5px}.mc-site{display:flex;flex-direction:column;align-items:start;gap:7px;padding:13px;min-width:160px;border:1px solid #b6cbd8;border-radius:9px;background:#f4f8fb;color:#183b50;text-align:left;cursor:pointer}.mc-site.selected{border:2px solid #176789;background:#eaf5fa}.mc-site span{font-size:.85rem}
+.mc-context{color:#587082}.mc-warning{padding:14px;background:#fff8df;border-left:4px solid #c79537;border-radius:4px}.mc-question{padding:12px 0;border-bottom:1px solid #e1e8ee}.mc-question>label{display:grid;grid-template-columns:minmax(0,1fr) 125px;align-items:center;gap:16px;line-height:1.5}.mc-question>.mc-field{margin-top:12px}.mc-question:has(option[value=NC]:checked){background:#fff7f4}.mc-unit{margin:12px 0;border:1px solid #bdcedb;border-radius:9px;overflow:hidden}.mc-unit summary{padding:16px;background:#edf4f8;font-weight:700;cursor:pointer}.mc-unit-body{padding:18px}.mc-group{margin:20px 0}.mc-errors{color:#8d3434;line-height:1.6;overflow-wrap:anywhere}.mc-empty{padding:30px;background:#f1f6f9}.mc-dialog{border:1px solid #adbfca;border-radius:14px;padding:24px;max-width:650px;width:calc(100% - 32px);max-height:90vh;overflow:auto;color:#163246}.mc-dialog::backdrop{background:#16324699}.mc-dialog canvas{width:100%;height:180px;touch-action:none;border:1px solid #8ba7ba;border-radius:6px;background:white}.mc-dialog-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px;flex-wrap:wrap}.mc-dialog button{padding:12px;border:1px solid #adbfca;border-radius:6px;cursor:pointer;font:inherit}.mc-remove-choice{display:flex;align-items:center;gap:10px;padding:10px}.mc-remove-choice input{width:auto}
+@media(max-width:650px){#maintenance-panel{padding:15px}.mc-grid,.mc-signatures{grid-template-columns:1fr}.mc-question>label{grid-template-columns:1fr}.mc-question select{max-width:170px}.mc-unit-body{padding:12px}}
+#maintenance-panel .mc-text-line{display:flex;align-items:stretch;width:100%;gap:7px}
+#maintenance-panel .mc-text-line textarea{box-sizing:border-box;min-height:44px;height:44px;line-height:1.5;overflow-y:hidden;width:100%;resize:vertical}
+.mc-photos{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.mc-photo{min-width:0;border:1px solid #cad8e2;border-radius:8px;padding:14px}
+.mc-photo>img{display:block;width:100%;height:220px;object-fit:contain;background:#f4f8fb;border-radius:6px}
+.mc-photo>p{overflow-wrap:anywhere;font-size:.9rem}
+.mc-photo-status{color:#8d3434}
+@media(max-width:650px){.mc-photos{grid-template-columns:1fr}}
+
+#maintenance-panel .mc-signatures{grid-template-columns:minmax(0,936px);gap:20px}
+#maintenance-panel .signature-card h3{margin:0 0 4px;font-size:1rem}
+.mc-signature-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;flex-wrap:wrap}
+.mc-signature-actions button[hidden]{display:none}
+#maintenance-panel [data-mc-sign-clear][hidden]{display:none}
+#maintenance-panel .signature-canvas[aria-disabled=true]{cursor:default;opacity:.65}
