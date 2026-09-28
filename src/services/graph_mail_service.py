@@ -241,9 +241,6 @@ class GraphMailService:
         body_html = str(prepared.get("body_html") or "").strip()
 
         pdf_path = Path(attachment_path)
-        # Keep archived paths stable; expose a readable document name in email.
-        display_stem = pdf_path.stem.removesuffix("__folha_final") or pdf_path.stem
-        attachment_name = re.sub(r"\s+", "_", display_stem) + pdf_path.suffix
         if not pdf_path.exists() or not pdf_path.is_file():
             raise GraphMailError(f"PDF da folha não encontrado: {pdf_path}")
         if pdf_path.suffix.casefold() != ".pdf":
@@ -269,7 +266,7 @@ class GraphMailService:
                 "attachments": [
                     {
                         "@odata.type": "#microsoft.graph.fileAttachment",
-                        "name": attachment_name,
+                        "name": pdf_path.name,
                         "contentType": "application/pdf",
                         "contentBytes": base64.b64encode(pdf_bytes).decode("ascii"),
                     }
@@ -289,7 +286,7 @@ class GraphMailService:
             "sender": self.config.sender,
             "to": recipient,
             "cc": cc_recipients,
-            "attachment": attachment_name,
+            "attachment": pdf_path.name,
         }
 
     @staticmethod

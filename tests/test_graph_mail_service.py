@@ -194,14 +194,9 @@ def test_prepare_service_email_rejects_invalid_customer_address():
         )
 
 
-@pytest.mark.parametrize("stored_name,display_name", [
-    ("FS-123__folha_final.pdf", "FS-123.pdf"),
-    ("2026_4730 Edifício MUDE_2026-09-28_LD__folha_final.pdf", "2026_4730_Edifício_MUDE_2026-09-28_LD.pdf"),
-    ("FS-123.pdf", "FS-123.pdf"),
-])
-def test_send_prepared_posts_pdf_attachment_to_graph(tmp_path, monkeypatch, stored_name, display_name):
+def test_send_prepared_posts_pdf_attachment_to_graph(tmp_path, monkeypatch):
     service = GraphMailService(mail_config())
-    pdf_path = tmp_path / stored_name
+    pdf_path = tmp_path / "FS-123__folha_final.pdf"
     pdf_path.write_bytes(b"%PDF-1.7\nconteudo")
     captured = {}
 
@@ -235,9 +230,7 @@ def test_send_prepared_posts_pdf_attachment_to_graph(tmp_path, monkeypatch, stor
     assert "bccRecipients" not in message
     assert captured["payload"]["saveToSentItems"] is True
     assert len(message["attachments"]) == 1
-    assert message["attachments"][0]["name"] == result["attachment"] == display_name
-    assert pdf_path.read_bytes() == b"%PDF-1.7\nconteudo"
-    assert list(tmp_path.iterdir()) == [pdf_path]
+    assert message["attachments"][0]["name"] == "FS-123__folha_final.pdf"
     assert message["attachments"][0]["contentType"] == "application/pdf"
     assert message["internetMessageHeaders"][0]["value"] == "send:documento:1"
 

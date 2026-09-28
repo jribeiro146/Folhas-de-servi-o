@@ -14,9 +14,6 @@ Aplicar a raiz desta branch; não instalar a cópia sob `migracao/`.
 
 ## Alterações
 
-- Nome do anexo PDF sem o sufixo interno `__folha_final`, com espaços substituídos
-  por `_`. Os caminhos arquivados e as filas existentes mantêm-se compatíveis;
-  só o nome apresentado no email muda nos próximos envios.
 - Inventário SharePoint com índice local, atualização concorrente coordenada e
   diagnóstico sem nomes de clientes, com lista de ativas renovada sem recarregar a página.
 - Doze materiais nos relatórios, paginação de textos extensos e identificação nas páginas.
