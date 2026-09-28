@@ -4,6 +4,13 @@ Registo das principais alteracoes por versao da aplicacao Folhas de Servico.
 
 As versoes sem tag formal usam o commit Git como referencia. A versao marcada para servidor continua a ser `v1.0.0-servidor`, salvo indicacao posterior.
 
+## 2026-09-28 — Pacote de migração para revisão e integração
+
+- Adicionado o pacote revisto em `migracao/App_Folhas_Checklists/`, preservando o código da aplicação existente na raiz.
+- O pacote melhora o inventário/refresco SharePoint, a interface móvel, as pendências e assinaturas SADI de demonstração, a impressão dos 12 materiais, a paginação PDF, a PWA e a preparação Docker/worker.
+- Validação local da implementação: 396 testes Python, 47 JavaScript, PDFs reais e ensaios de interface; revisão independente concluída sem achados P1/P2 abertos no âmbito revisto.
+- O manifesto SHA-256 acompanha o pacote. A [passagem ao implementador Plesk](migracao/ENTREGA_PLESK_2026-09-28.md) identifica limitações, configuração a reconfirmar, teste isolado da imagem e recuperação. Esta entrega não altera a versão recomendada para servidor, não torna SADI operacional e não executa deploy.
+
 ## Em desenvolvimento - confirmação e segurança do envio de e-mail
 
 - Foi adicionado logging operacional JSON Lines para web, servidor local e worker,

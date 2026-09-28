@@ -1,0 +1,261 @@
+{
+  "version": "sadi-2",
+  "groups": {
+    "conventional": "Central convencional",
+    "addressable": "Central endereçável",
+    "repeater": "Repetidor"
+  },
+  "fields": {
+    "conventional": [
+      [
+        "brand",
+        "Marca",
+        "text"
+      ],
+      [
+        "model",
+        "Modelo",
+        "text"
+      ],
+      [
+        "location",
+        "Local da central",
+        "text"
+      ],
+      [
+        "total",
+        "N.º zonas total",
+        "number"
+      ],
+      [
+        "used",
+        "N.º zonas em uso",
+        "number"
+      ],
+      [
+        "detectors",
+        "N.º de detetores",
+        "number"
+      ],
+      [
+        "buttons",
+        "N.º de botoneiras",
+        "number"
+      ],
+      [
+        "sirens",
+        "N.º de sirenes",
+        "number"
+      ]
+    ],
+    "addressable": [
+      [
+        "brand",
+        "Marca",
+        "text"
+      ],
+      [
+        "model",
+        "Modelo",
+        "text"
+      ],
+      [
+        "location",
+        "Local da central",
+        "text"
+      ],
+      [
+        "total",
+        "N.º loops central",
+        "number"
+      ],
+      [
+        "used",
+        "N.º loops em uso",
+        "number"
+      ]
+    ],
+    "repeater": [
+      [
+        "brand",
+        "Marca",
+        "text"
+      ],
+      [
+        "model",
+        "Modelo",
+        "text"
+      ],
+      [
+        "location",
+        "Local do repetidor",
+        "text"
+      ]
+    ]
+  },
+  "periods": {
+    "monthly": "Mensal",
+    "quarterly": "Trimestral",
+    "half_yearly": "Semestral",
+    "annual": "Anual",
+    "other": "Outra"
+  },
+  "general": [
+    [
+      "B22",
+      "Verificação de que não existiram alterações ao projeto e/ou Medidas de Autoproteção."
+    ],
+    [
+      "B23",
+      "Verificação dos eventos registados nos registos das Medidas de Autoproteção."
+    ]
+  ],
+  "conventional": [
+    [
+      "B44",
+      "Verificar funcionamento geral incluindo teclado e chaves"
+    ],
+    [
+      "B45",
+      "Verificar funcionalidade e nível de luminosidade dos leds de falha e/ou alarme"
+    ],
+    [
+      "B46",
+      "Verificar estado da alimentação (230 v / 50 Hz)"
+    ],
+    [
+      "B47",
+      "Medição da carga e validade das baterias, verificação da tensão de entrada/saída, limpeza e reaperto de bornes"
+    ],
+    [
+      "B48",
+      "Confirmação de ligação entre Central Principal e PC de operacionalização quando exista"
+    ],
+    [
+      "B49",
+      "Verificação da acessibilidade e existência de sinalética da(s) central(ais)"
+    ]
+  ],
+  "addressable": [
+    [
+      "B68",
+      "Verificar funcionamento geral incluindo teclado e chaves"
+    ],
+    [
+      "B69",
+      "Verificar funcionalidade e nível de luminosidade dos leds de falha e/ou alarme"
+    ],
+    [
+      "B70",
+      "Verificar estado da alimentação (230 v / 50 Hz)"
+    ],
+    [
+      "B71",
+      "Medição da carga e validade das baterias, verificação da tensão de entrada/saída, limpeza e reaperto de bornes"
+    ],
+    [
+      "B72",
+      "Confirmação de ligação entre centrais (quando em rede) e repetidores"
+    ],
+    [
+      "B73",
+      "Confirmação de ligação entre Central Principal e PC de operacionalização quando exista"
+    ],
+    [
+      "B74",
+      "Verificação da acessibilidade e existência de sinalética da(s) central(ais)"
+    ]
+  ],
+  "repeater": [
+    [
+      "B90",
+      "Verificar funcionamento geral incluindo teclado e chaves"
+    ],
+    [
+      "B91",
+      "Verificar funcionalidade e nível de luminosidade dos leds de falha e/ou alarme"
+    ],
+    [
+      "B92",
+      "Medição da carga e validade das baterias, verificação da tensão de entrada/saída, limpeza e reaperto de bornes"
+    ],
+    [
+      "B93",
+      "Verificação da acessibilidade e existência de sinalética dos repetidores"
+    ]
+  ],
+  "peripherals": [
+    [
+      "B107",
+      "Verificação da alimentação de fontes auxiliares da instalação"
+    ],
+    [
+      "B108",
+      "Verificação da carga e validade das baterias e reaperto de bornes das fontes auxiliares"
+    ],
+    [
+      "B109",
+      "Verificação do estado geral de conservação dos detetores"
+    ],
+    [
+      "B110",
+      "Verificação do estado geral de conservação acessibilidade e sinalização dos botões de Alarme"
+    ],
+    [
+      "B111",
+      "Verificação do estado geral de conservação das sirenes"
+    ],
+    [
+      "B112",
+      "Verificação do estado geral das cablagens"
+    ],
+    [
+      "B113",
+      "Inspeção visual para verificar se ocorreram mudanças estruturais ou ocupacionais que tenham afetado os requisitos para a localização de botões de alarme manual, detetores e sirenes"
+    ],
+    [
+      "B115",
+      "A inspeção visual para confirmar que um espaço de pelo menos 0,5 m é conservado desimpedido em todas direções abaixo de cada detetor e que todos os botões de alarme manual permanecem desobstruídos e conspícuos"
+    ]
+  ],
+  "trials": [
+    [
+      "B121",
+      "Ensaios e testes às funções gerais das centrais"
+    ],
+    [
+      "B122",
+      "Ensaio e teste de todos os detetores"
+    ],
+    [
+      "B123",
+      "Ensaio e teste de todos os botões"
+    ],
+    [
+      "B124",
+      "Ensaio e teste de todas as sirenes"
+    ],
+    [
+      "B125",
+      "Ensaio funcional dos comandos"
+    ],
+    [
+      "B126",
+      "Ensaio da comunicação de alarme ao corpo de bombeiros ou central recetora de alarmes"
+    ],
+    [
+      "B127",
+      "Execução de simulação de um alarme por zona e análise das ativações (*)"
+    ]
+  ],
+  "start_warning": "ATENÇÃO - VERIFICAR SE OCUPANTES FORAM AVISADOS DO ENSAIO. Colocar o Sistema em modo Teste e/ou verificar se comandos podem ser ativados.",
+  "end_warning": "Repor todos os sistemas em situação normal de funcionamento. Não esquecer de retirar \"modo teste\" e/ou \"modo service\".",
+  "trial_warning": "(*) Para esta operação poderão ter de ser desativados alguns módulos de dispositivos de proteção.",
+  "coverage_warning": "Quando o procedimento seja mensal, trimestral ou semestral indicar em observações a % de elementos testados ou preferencialmente as áreas do edifício onde os elementos foram testados de forma que ao longo do ano 100% dos dispositivos e todas as zonas sejam testados.",
+  "photo_limits": {
+    "count": 10,
+    "bytes": 1000000,
+    "edge": 1600,
+    "source_bytes": 10000000
+  }
+}

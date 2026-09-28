@@ -1,0 +1,250 @@
+"""
+Folhas de Serviço — Configuração centralizada.
+
+Todos os caminhos, nomes de sheets e constantes do projecto
+devem ser definidos aqui. Nenhum módulo deve hardcode estes valores.
+"""
+
+import os
+import sys
+import hashlib
+import logging
+import tempfile
+from pathlib import Path
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Lê uma variável booleana sem aceitar silenciosamente valores ambíguos."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().casefold() in {"1", "true", "yes", "sim", "on"}
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    """Lê uma variável inteira e usa o valor seguro por defeito se for inválida."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw.strip())
+    except (TypeError, ValueError):
+        return default
+    return value if value >= minimum else default
+
+
+def _load_env_file() -> None:
+    """Carrega um ficheiro .env simples antes de ler a configuração."""
+    project_root = Path(__file__).resolve().parent.parent
+    env_path = Path(os.environ.get("FS_ENV_FILE", str(project_root / ".env")))
+    if not env_path.exists():
+        return
+
+    file_values: dict[str, str] = {}
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip().lstrip("\ufeff")
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            # A rotação de uma credencial pode deixar temporariamente duas
+            # definições no ficheiro. Como nos loaders dotenv habituais, a
+            # última definição do ficheiro vence. Variáveis já fornecidas pelo
+            # processo (por exemplo pelo Plesk) continuam a ter prioridade.
+            file_values[key] = value
+
+    for key, value in file_values.items():
+        if key not in os.environ:
+            os.environ[key] = value
+
+
+_load_env_file()
+
+# ---------------------------------------------------------------------------
+# Caminho base da pasta sincronizada (OneDrive/SharePoint)
+# Pode ser overridden pela variável de ambiente FS_BASE_PATH
+# ---------------------------------------------------------------------------
+
+def _detect_default_base_path() -> Path:
+    """Dados próprios desta cópia; nunca reutiliza a pasta operacional original."""
+    installation = str(Path(__file__).resolve().parent.parent)
+    identity = hashlib.sha256(installation.encode("utf-8")).hexdigest()[:12]
+    local_root = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir())
+    return local_root / "Sensorpoint" / "FolhasServicoMigracao" / identity
+
+
+_DEFAULT_BASE_PATH = _detect_default_base_path()
+
+BASE_PATH: Path = Path(os.environ.get("FS_BASE_PATH", str(_DEFAULT_BASE_PATH)))
+
+def _default_app_data_dir() -> Path:
+    """Não partilha estado de edição ou filas com a instalação original."""
+    return BASE_PATH / "data"
+
+
+APP_DATA_DIR: Path = Path(os.environ.get("FS_APP_DATA_DIR", str(_default_app_data_dir())))
+
+# ---------------------------------------------------------------------------
+# Logging operacional
+# ---------------------------------------------------------------------------
+
+# Os logs ficam no disco local persistente da aplicacao, nunca no document root.
+# Todos os processos usam exatamente os mesmos limites para uma rotacao segura.
+LOG_ENABLED: bool = _env_flag("FS_LOG_ENABLED", True)
+LOG_LEVEL: str = os.environ.get("FS_LOG_LEVEL", "INFO").strip().upper() or "INFO"
+_LOG_DIR_VALUE = os.environ.get("FS_LOG_DIR", "").strip()
+LOG_DIR: Path = Path(_LOG_DIR_VALUE) if _LOG_DIR_VALUE else APP_DATA_DIR / "logs"
+LOG_FILE_NAME: str = (
+    os.environ.get("FS_LOG_FILE_NAME", "folhas-servico.jsonl").strip()
+    or "folhas-servico.jsonl"
+)
+LOG_MAX_BYTES: int = _env_int(
+    "FS_LOG_MAX_BYTES",
+    10 * 1024 * 1024,
+    minimum=64 * 1024,
+)
+LOG_BACKUP_COUNT: int = _env_int("FS_LOG_BACKUP_COUNT", 10, minimum=1)
+LOG_STDERR: bool = _env_flag("FS_LOG_STDERR", True)
+LOG_REQUESTS: bool = _env_flag("FS_LOG_REQUESTS", True)
+
+# ---------------------------------------------------------------------------
+# Identidade única da App Registration Microsoft Graph / Entra
+# ---------------------------------------------------------------------------
+
+# SharePoint, envio de e-mail e login Microsoft pertencem à mesma App
+# Registration nesta instalação. Existe uma única origem de credenciais para
+# impedir que um secret específico de um serviço fique desatualizado no Plesk.
+GRAPH_TENANT_ID: str = os.environ.get("GRAPH_TENANT_ID", "").strip()
+GRAPH_CLIENT_ID: str = os.environ.get("GRAPH_CLIENT_ID", "").strip()
+GRAPH_CLIENT_SECRET: str = os.environ.get("GRAPH_CLIENT_SECRET", "").strip()
+
+# ---------------------------------------------------------------------------
+# Autenticação
+# ---------------------------------------------------------------------------
+
+AUTH_PROVIDER: str = os.environ.get("FS_AUTH_PROVIDER", "none").strip().lower()
+MICROSOFT_AUTH_REDIRECT_URI: str = os.environ.get("MICROSOFT_AUTH_REDIRECT_URI", "").strip()
+MICROSOFT_AUTH_ALLOWED_DOMAINS: list[str] = [
+    domain.strip().lower().lstrip("@")
+    for domain in os.environ.get(
+        "MICROSOFT_AUTH_ALLOWED_DOMAINS",
+        "sensorpoint.pt,sensorpoint.com",
+    ).split(",")
+    if domain.strip()
+]
+
+# ---------------------------------------------------------------------------
+# Envio das folhas finalizadas por Microsoft Graph
+# ---------------------------------------------------------------------------
+
+MAIL_ENABLED: bool = _env_flag("FS_MAIL_ENABLED", False)
+MAIL_SENDER: str = os.environ.get("FS_MAIL_SENDER", "").strip()
+MAIL_TEST_RECIPIENT: str = os.environ.get("FS_MAIL_TEST_RECIPIENT", "").strip()
+
+# Imagem distribuída com a aplicação; 20,96 × 6,09 cm a 96 píxeis/polegada.
+MAIL_SIGNATURE_PATH: Path = (
+    Path(__file__).resolve().parent / "web" / "static" / "img" / "assinatura-dora.jpg"
+)
+MAIL_SIGNATURE_CONTENT_ID: str = "assinatura-dora@sensorpoint.pt"
+MAIL_SIGNATURE_WIDTH_PX: int = 792
+MAIL_SIGNATURE_HEIGHT_PX: int = 230
+
+# O destino (canal ou chat) é escolhido no Workflow do Teams associado ao URL.
+TEAMS_NOTIFICATIONS_ENABLED: bool = _env_flag("FS_TEAMS_NOTIFICATIONS_ENABLED", False)
+TEAMS_WEBHOOK_URL: str = os.environ.get("FS_TEAMS_WEBHOOK_URL", "").strip()
+
+# ---------------------------------------------------------------------------
+# Backend de armazenamento
+# ---------------------------------------------------------------------------
+
+STORAGE_BACKEND: str = os.environ.get("FS_STORAGE_BACKEND", "local").strip().lower()
+
+
+def _warn_implicit_environment() -> None:
+    """Avisa uma configuração incompleta sem ativar transportes ou produção."""
+    if "FS_ENVIRONMENT" not in os.environ and (
+        AUTH_PROVIDER == "microsoft" or STORAGE_BACKEND == "graph"
+    ):
+        logging.getLogger(__name__).warning(
+            "FS_ENVIRONMENT ausente com Microsoft/Graph configurado. "
+            "Mantém-se development: cookies sem Secure e transportes externos "
+            "bloqueados. Defina o modo explicitamente no ambiente de destino."
+        )
+
+
+_warn_implicit_environment()
+
+# Em alojamento WSGI/Passenger, usar False e executar ``python -m src.queue_worker``
+# num processo ou tarefa agendada independente.
+GRAPH_QUEUE_IN_WEB: bool = _env_flag("FS_GRAPH_QUEUE_IN_WEB", True)
+
+GRAPH_SITE_ID: str = os.environ.get("GRAPH_SITE_ID", "").strip()
+GRAPH_DRIVE_ID: str = os.environ.get("GRAPH_DRIVE_ID", "").strip()
+GRAPH_ACTIVE_PATH: str = os.environ.get("GRAPH_ACTIVE_PATH", "Activas").strip().strip("/")
+GRAPH_ARCHIVE_PATH: str = os.environ.get("GRAPH_ARCHIVE_PATH", "Arquivadas").strip().strip("/")
+GRAPH_CACHE_DIR: Path = Path(os.environ.get("GRAPH_CACHE_DIR", str(APP_DATA_DIR / "graph-cache")))
+GRAPH_WORKS_PATH: str = os.environ.get(
+    "GRAPH_WORKS_PATH",
+    "07-Obras/Obras a realizar",
+).strip().strip("/")
+GRAPH_WORKS_CACHE_SECONDS: int = _env_int("GRAPH_WORKS_CACHE_SECONDS", 300)
+GRAPH_SHAREPOINT_HOSTNAME: str = os.environ.get(
+    "GRAPH_SHAREPOINT_HOSTNAME",
+    GRAPH_SITE_ID.partition(",")[0] or "sensorpointpt.sharepoint.com",
+).strip().lower()
+
+# ---------------------------------------------------------------------------
+# Subpastas do projecto
+# ---------------------------------------------------------------------------
+
+_DEFAULT_EXCEL_ROOT: Path = GRAPH_CACHE_DIR / "Excel" if STORAGE_BACKEND == "graph" else BASE_PATH / "Excel"
+_EXCEL_ROOT: Path = Path(os.environ.get("FS_EXCEL_ROOT", str(_DEFAULT_EXCEL_ROOT)))
+
+EXCEL_ACTIVAS_DIR: Path = _EXCEL_ROOT / "Activas"
+EXCEL_ARQUIVADAS_DIR: Path = _EXCEL_ROOT / "Arquivadas"
+EXCEL_CANCELADAS_DIR: Path = _EXCEL_ROOT / "Canceladas"
+
+ALL_DIRS: list[Path] = [
+    EXCEL_ACTIVAS_DIR,
+    EXCEL_ARQUIVADAS_DIR,
+    EXCEL_CANCELADAS_DIR,
+]
+
+# ---------------------------------------------------------------------------
+# Nomes obrigatórios das sheets no Excel
+# ---------------------------------------------------------------------------
+
+SHEET_LINK: str = "LINK"
+SHEET_TEMPLATE: str = "FS"
+
+REQUIRED_SHEETS: list[str] = [SHEET_LINK, SHEET_TEMPLATE]
+
+# ---------------------------------------------------------------------------
+# Estrutura do LINK
+# ---------------------------------------------------------------------------
+
+# Linha onde estão os labels dos campos (1-indexed, como no Excel)
+LINK_LABELS_ROW: int = 2
+
+# Linha onde estão os dados (1-indexed)
+LINK_DATA_ROW: int = 3
+
+# ---------------------------------------------------------------------------
+# Naming de ficheiros
+# ---------------------------------------------------------------------------
+
+# Extensão esperada dos ficheiros Excel
+EXCEL_EXTENSION: str = ".xlsx"
+
+# ---------------------------------------------------------------------------
+# Inicialização — criação automática de pastas
+# ---------------------------------------------------------------------------
+
+
+def ensure_directories() -> None:
+    """Cria as pastas do projecto se ainda não existirem."""
+    for directory in ALL_DIRS:
+        directory.mkdir(parents=True, exist_ok=True)

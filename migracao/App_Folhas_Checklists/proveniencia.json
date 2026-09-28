@@ -1,0 +1,821 @@
+{
+  "created": "2026-09-28",
+  "basis": "Estado local de trabalho, incluindo alterações preexistentes; não representa produção nem commit limpo.",
+  "files": [
+    {
+      "source": "src/web/templates/document_preview.html",
+      "destination": "aplicacao/src/web/templates/document_preview.html",
+      "source_sha256": "5f33c68602e697e1810faf3e059e2b205adc35001a3c88f999a22a297a07de62",
+      "copied_sha256": "5f33c68602e697e1810faf3e059e2b205adc35001a3c88f999a22a297a07de62",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/templates/field_app.html",
+      "destination": "aplicacao/src/web/templates/field_app.html",
+      "source_sha256": "e87ef7f6501210056f44122b159452239471be391834cb0df77d45f398bf7aec",
+      "copied_sha256": "e87ef7f6501210056f44122b159452239471be391834cb0df77d45f398bf7aec",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/templates/login.html",
+      "destination": "aplicacao/src/web/templates/login.html",
+      "source_sha256": "8da22b5f7e6c61df5b76465fed90c1f0c7e6c6254fde9fd0d9d7e5d5b5b13773",
+      "copied_sha256": "001dcb965bc7d66b781007e616d7d711b2571a24fc9fffd8b0afcd313c8c7e71",
+      "adaptation": "Exemplos dos atributos placeholder removidos por privacidade."
+    },
+    {
+      "source": "src/web/templates/maintenance_bundle.html",
+      "destination": "aplicacao/src/web/templates/maintenance_bundle.html",
+      "source_sha256": "2590e4313829919c23db2df1615161bf8ca3e13a92953706d8a60808cc503ef7",
+      "copied_sha256": "2590e4313829919c23db2df1615161bf8ca3e13a92953706d8a60808cc503ef7",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/templates/maintenance_document.html",
+      "destination": "aplicacao/src/web/templates/maintenance_document.html",
+      "source_sha256": "c281d8b072bf36655af6f54af450aa36c4a3757452065710627f41707480cfb5",
+      "copied_sha256": "c281d8b072bf36655af6f54af450aa36c4a3757452065710627f41707480cfb5",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/templates/partials/active_file_list.html",
+      "destination": "aplicacao/src/web/templates/partials/active_file_list.html",
+      "source_sha256": "15e05641d8ec84b6b68729258faf3576f5ccc8910912a7c97a60bc49cc789ae6",
+      "copied_sha256": "15e05641d8ec84b6b68729258faf3576f5ccc8910912a7c97a60bc49cc789ae6",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/templates/partials/document_header.html",
+      "destination": "aplicacao/src/web/templates/partials/document_header.html",
+      "source_sha256": "ed18f15ad469324e2393781419accef8debec367a703087a9c051b8e2a2244f9",
+      "copied_sha256": "ed18f15ad469324e2393781419accef8debec367a703087a9c051b8e2a2244f9",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/templates/service_document.html",
+      "destination": "aplicacao/src/web/templates/service_document.html",
+      "source_sha256": "f845bccc8ba538ad1b12bb84967a5c145fbb3f3f7db45b43cc6a4bbbafb47e08",
+      "copied_sha256": "f845bccc8ba538ad1b12bb84967a5c145fbb3f3f7db45b43cc6a4bbbafb47e08",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/templates/work_folder_error.html",
+      "destination": "aplicacao/src/web/templates/work_folder_error.html",
+      "source_sha256": "86bf837f348e8071c003b8166fa62557990164dde33438b4373c7f6153f6a578",
+      "copied_sha256": "86bf837f348e8071c003b8166fa62557990164dde33438b4373c7f6153f6a578",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/css/auth.css",
+      "destination": "aplicacao/src/web/static/css/auth.css",
+      "source_sha256": "61052314e83165adb692a10a5bfabbeb465c30b2a99277500a6db13b183005bf",
+      "copied_sha256": "61052314e83165adb692a10a5bfabbeb465c30b2a99277500a6db13b183005bf",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/css/document-editor.css",
+      "destination": "aplicacao/src/web/static/css/document-editor.css",
+      "source_sha256": "3460de3127b7c565e461646f6dd2763ad13c177ac9004389675acf51dbedfa7d",
+      "copied_sha256": "3460de3127b7c565e461646f6dd2763ad13c177ac9004389675acf51dbedfa7d",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/css/editing-state.css",
+      "destination": "aplicacao/src/web/static/css/editing-state.css",
+      "source_sha256": "604391637909604a109c6a6b5226755ab49069a18f985b0be0018b1d37e183e5",
+      "copied_sha256": "604391637909604a109c6a6b5226755ab49069a18f985b0be0018b1d37e183e5",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/css/field-app.css",
+      "destination": "aplicacao/src/web/static/css/field-app.css",
+      "source_sha256": "2259dd4440f83372924ec110e644759051acd3eda9d96916aaa11bf96dee16ea",
+      "copied_sha256": "2259dd4440f83372924ec110e644759051acd3eda9d96916aaa11bf96dee16ea",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/css/maintenance-document.css",
+      "destination": "aplicacao/src/web/static/css/maintenance-document.css",
+      "source_sha256": "33f4ec2e504ea80f159732dca9895132a9c7c93cd54c121b593c82c068f9100b",
+      "copied_sha256": "33f4ec2e504ea80f159732dca9895132a9c7c93cd54c121b593c82c068f9100b",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/css/maintenance.css",
+      "destination": "aplicacao/src/web/static/css/maintenance.css",
+      "source_sha256": "702879f75f18b02ddf951d3958c9c9944898cd2095f8b8018fd6414e5bf35afc",
+      "copied_sha256": "702879f75f18b02ddf951d3958c9c9944898cd2095f8b8018fd6414e5bf35afc",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/css/service-document.css",
+      "destination": "aplicacao/src/web/static/css/service-document.css",
+      "source_sha256": "87a9e973d881c446ec33b18106ee658a283e6f886a7e0e9c48b771fe7384e5e3",
+      "copied_sha256": "87a9e973d881c446ec33b18106ee658a283e6f886a7e0e9c48b771fe7384e5e3",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/img/pwa/icon-192.png",
+      "destination": "aplicacao/src/web/static/img/pwa/icon-192.png",
+      "source_sha256": "9ac59d0a9b7ed0dd82a3309feb0f03c031d647f8d09c4e6f2896370813196fd2",
+      "copied_sha256": "9ac59d0a9b7ed0dd82a3309feb0f03c031d647f8d09c4e6f2896370813196fd2",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/img/pwa/icon-512.png",
+      "destination": "aplicacao/src/web/static/img/pwa/icon-512.png",
+      "source_sha256": "419f19bfce11ccd305be5b66991800fb8500fdddb6d212dc1cfe1ec392e0e633",
+      "copied_sha256": "419f19bfce11ccd305be5b66991800fb8500fdddb6d212dc1cfe1ec392e0e633",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/img/pwa/icon-maskable-512.png",
+      "destination": "aplicacao/src/web/static/img/pwa/icon-maskable-512.png",
+      "source_sha256": "101707161e0ac3d1420ad44a628840742dd7955497e22c43ef69bd7ec22f0c29",
+      "copied_sha256": "101707161e0ac3d1420ad44a628840742dd7955497e22c43ef69bd7ec22f0c29",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/img/sensorpoint-logo.png",
+      "destination": "aplicacao/src/web/static/img/sensorpoint-logo.png",
+      "source_sha256": "695d763e5847e16328f98dd0a40ff9435b627649c46f3261806af3ba9cf11304",
+      "copied_sha256": "695d763e5847e16328f98dd0a40ff9435b627649c46f3261806af3ba9cf11304",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/js/document-editor.js",
+      "destination": "aplicacao/src/web/static/js/document-editor.js",
+      "source_sha256": "7c718040b3844ab5e1193c32b8842c1fcbd246ded520385e58d7481ab8dbd151",
+      "copied_sha256": "7c718040b3844ab5e1193c32b8842c1fcbd246ded520385e58d7481ab8dbd151",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/js/document-validation.js",
+      "destination": "aplicacao/src/web/static/js/document-validation.js",
+      "source_sha256": "cffcdb40d6a1d974a427747a3fb01756987519b83ebfe824a87b6ed4a5726603",
+      "copied_sha256": "cffcdb40d6a1d974a427747a3fb01756987519b83ebfe824a87b6ed4a5726603",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/js/editing-coordinator.js",
+      "destination": "aplicacao/src/web/static/js/editing-coordinator.js",
+      "source_sha256": "52aaa002be1c38598802f3aac01d9b01a229968b2914e589c0f54bbd01b34d01",
+      "copied_sha256": "52aaa002be1c38598802f3aac01d9b01a229968b2914e589c0f54bbd01b34d01",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/js/field-app.js",
+      "destination": "aplicacao/src/web/static/js/field-app.js",
+      "source_sha256": "3523dfb40417c5c63d07a7333bab6def1c67bfea4499b58acdffbdbe19576601",
+      "copied_sha256": "3523dfb40417c5c63d07a7333bab6def1c67bfea4499b58acdffbdbe19576601",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/js/mail-job-monitor.js",
+      "destination": "aplicacao/src/web/static/js/mail-job-monitor.js",
+      "source_sha256": "5cb73154089cedcc22072f244e1620d49d758b49fd2d0cfb81a8103421a078bc",
+      "copied_sha256": "5cb73154089cedcc22072f244e1620d49d758b49fd2d0cfb81a8103421a078bc",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/js/maintenance-editor.js",
+      "destination": "aplicacao/src/web/static/js/maintenance-editor.js",
+      "source_sha256": "1ea499cee6c982c91eae1830d2807a3ebac419e61c304148d81d00cfca1cb9ee",
+      "copied_sha256": "1ea499cee6c982c91eae1830d2807a3ebac419e61c304148d81d00cfca1cb9ee",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/js/maintenance-model.js",
+      "destination": "aplicacao/src/web/static/js/maintenance-model.js",
+      "source_sha256": "aeb79683c5f7be5d813416eafa46504445dbb8bccc3980bf73e7529d7ddf689e",
+      "copied_sha256": "aeb79683c5f7be5d813416eafa46504445dbb8bccc3980bf73e7529d7ddf689e",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/js/pwa.js",
+      "destination": "aplicacao/src/web/static/js/pwa.js",
+      "source_sha256": "e95e7396817fe292c4af7501cb66a513440f70c0040750fd8128ad984adc7a7e",
+      "copied_sha256": "e95e7396817fe292c4af7501cb66a513440f70c0040750fd8128ad984adc7a7e",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/manifest.webmanifest",
+      "destination": "aplicacao/src/web/static/manifest.webmanifest",
+      "source_sha256": "3a14785cf194064512c9fa4b0767e500367e0d612cfb665eda9d2fac40413dac",
+      "copied_sha256": "3a14785cf194064512c9fa4b0767e500367e0d612cfb665eda9d2fac40413dac",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/offline.html",
+      "destination": "aplicacao/src/web/static/offline.html",
+      "source_sha256": "55a5db36225719a49898ed06d159a761c6a9fba06a66c6c52baddf598e91ed3a",
+      "copied_sha256": "55a5db36225719a49898ed06d159a761c6a9fba06a66c6c52baddf598e91ed3a",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/web/static/service-worker.js",
+      "destination": "aplicacao/src/web/static/service-worker.js",
+      "source_sha256": "be09674ee748819f017b323ff51d83955f42120eb5eef2ac73b6389839ff727a",
+      "copied_sha256": "be09674ee748819f017b323ff51d83955f42120eb5eef2ac73b6389839ff727a",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "tests/js/active-file-list.test.cjs",
+      "destination": "aplicacao/tests/js/active-file-list.test.cjs",
+      "source_sha256": "525f4e5915bed7cf638f94b43aa9bff7b8c7a67e5605cdfa90fc7460c43bce56",
+      "copied_sha256": "525f4e5915bed7cf638f94b43aa9bff7b8c7a67e5605cdfa90fc7460c43bce56",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "tests/js/document-validation.test.cjs",
+      "destination": "aplicacao/tests/js/document-validation.test.cjs",
+      "source_sha256": "a5c0f2d14921b79a49826d15bd2340f9a3c466476f0310dbe5f8381177aae01e",
+      "copied_sha256": "a5c0f2d14921b79a49826d15bd2340f9a3c466476f0310dbe5f8381177aae01e",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "tests/js/editing-coordinator.test.cjs",
+      "destination": "aplicacao/tests/js/editing-coordinator.test.cjs",
+      "source_sha256": "f91929dfff59bd074e1feb6141f4164e19cc2718faaf5bf783f7f7f80a5c7f1e",
+      "copied_sha256": "f91929dfff59bd074e1feb6141f4164e19cc2718faaf5bf783f7f7f80a5c7f1e",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "tests/js/mail-job-monitor.test.cjs",
+      "destination": "aplicacao/tests/js/mail-job-monitor.test.cjs",
+      "source_sha256": "103734674fb2756959a0408f765212590d1ad98cf895a75ea7a8fa871eeb9f54",
+      "copied_sha256": "103734674fb2756959a0408f765212590d1ad98cf895a75ea7a8fa871eeb9f54",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "tests/js/maintenance-model.test.cjs",
+      "destination": "aplicacao/tests/js/maintenance-model.test.cjs",
+      "source_sha256": "de336ad1b369f7b96afeb3e7bca8c5d8d5b0887c52ac639e8fe6cf86126cbdaf",
+      "copied_sha256": "de336ad1b369f7b96afeb3e7bca8c5d8d5b0887c52ac639e8fe6cf86126cbdaf",
+      "adaptation": "Cópia integral da versão local de trabalho."
+    },
+    {
+      "source": "src/__init__.py",
+      "destination": "aplicacao/src/__init__.py",
+      "source_sha256": "1756b4475f5082ca4e92e2ecaa948f90dc338cb6c5d39b073155cdcfc80af779",
+      "copied_sha256": "1756b4475f5082ca4e92e2ecaa948f90dc338cb6c5d39b073155cdcfc80af779",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/config.py",
+      "destination": "aplicacao/src/config.py",
+      "source_sha256": "039fbead1ffdbd57e1cec182534fb5416e9b05dfe5800b3cec535ed3b522705c",
+      "copied_sha256": "15622507098f987c12d7c0c9e1c389de7933b0170db6fd7088bb537541115db9",
+      "adaptation": "Caminhos por defeito portáveis e independentes do armazenamento/filas originais."
+    },
+    {
+      "source": "src/document_schema.py",
+      "destination": "aplicacao/src/document_schema.py",
+      "source_sha256": "83fadebd1fed9ac9520fe092f23765156138a640ceba6765904a3ef10f9cec43",
+      "copied_sha256": "5eb3f86396d3e8057eb6ea8f100b7edcfcdbf5d19d161fb09158e7703139dfa8",
+      "adaptation": "Catálogo de técnicos substituído por duas opções fictícias; regras funcionais preservadas."
+    },
+    {
+      "source": "src/field_map.py",
+      "destination": "aplicacao/src/field_map.py",
+      "source_sha256": "d97ac59734f8763ff1550f1d7d66e387b57fd5e612ab631c9a949c1dbf3b9ecc",
+      "copied_sha256": "d97ac59734f8763ff1550f1d7d66e387b57fd5e612ab631c9a949c1dbf3b9ecc",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/logging_config.py",
+      "destination": "aplicacao/src/logging_config.py",
+      "source_sha256": "18cd371d52ff4f3abb5f0d22e79a369f1598b9fdd4d0df1e1cbf53c3f523f27c",
+      "copied_sha256": "18cd371d52ff4f3abb5f0d22e79a369f1598b9fdd4d0df1e1cbf53c3f523f27c",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/main.py",
+      "destination": "aplicacao/src/main.py",
+      "source_sha256": "5c9686ba50a1c83253a533493c4ee507c4f2f7cb45755618571c813639ae8040",
+      "copied_sha256": "5c9686ba50a1c83253a533493c4ee507c4f2f7cb45755618571c813639ae8040",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/maintenance_schema.py",
+      "destination": "aplicacao/src/maintenance_schema.py",
+      "source_sha256": "55f701cddcb686482c740dc0e3c20558fe3269ea4c2c65c31b3567cb7e2c98e1",
+      "copied_sha256": "55f701cddcb686482c740dc0e3c20558fe3269ea4c2c65c31b3567cb7e2c98e1",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/queue_worker.py",
+      "destination": "aplicacao/src/queue_worker.py",
+      "source_sha256": "e4c18b54693c85755a0309e8c7f51b8bf237ed02d1af00f6477748909175dc97",
+      "copied_sha256": "e4c18b54693c85755a0309e8c7f51b8bf237ed02d1af00f6477748909175dc97",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/__init__.py",
+      "destination": "aplicacao/src/services/__init__.py",
+      "source_sha256": "ffa5220d3245550005be155a70feb669ee747105a1648ed9b314bb157676bf28",
+      "copied_sha256": "ffa5220d3245550005be155a70feb669ee747105a1648ed9b314bb157676bf28",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/active_file_index.py",
+      "destination": "aplicacao/src/services/active_file_index.py",
+      "source_sha256": "da8aec0c2d91de7b937ffbb3c2426c727dfb8f201c4330cffaebe265495c4c60",
+      "copied_sha256": "da8aec0c2d91de7b937ffbb3c2426c727dfb8f201c4330cffaebe265495c4c60",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/archive_service.py",
+      "destination": "aplicacao/src/services/archive_service.py",
+      "source_sha256": "22ad1aa58dc6879adc04bab55afb5e1ccc00204214bdcec1904c782923324e87",
+      "copied_sha256": "22ad1aa58dc6879adc04bab55afb5e1ccc00204214bdcec1904c782923324e87",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/document_artifact_service.py",
+      "destination": "aplicacao/src/services/document_artifact_service.py",
+      "source_sha256": "d60f4566bb12a514a3287ca21b3e0aaad494ef08d028ae874d917ca890157434",
+      "copied_sha256": "d60f4566bb12a514a3287ca21b3e0aaad494ef08d028ae874d917ca890157434",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/document_data_service.py",
+      "destination": "aplicacao/src/services/document_data_service.py",
+      "source_sha256": "ba57161fec26115f6dc1663ce386e738c138580a1611eac004f50ea94619c9ae",
+      "copied_sha256": "ba57161fec26115f6dc1663ce386e738c138580a1611eac004f50ea94619c9ae",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/document_style_service.py",
+      "destination": "aplicacao/src/services/document_style_service.py",
+      "source_sha256": "086221550e82d52814e0d000645e5499d07bcaa8a05093c64a14eea33fa6c763",
+      "copied_sha256": "086221550e82d52814e0d000645e5499d07bcaa8a05093c64a14eea33fa6c763",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/editing_state_repository.py",
+      "destination": "aplicacao/src/services/editing_state_repository.py",
+      "source_sha256": "ad09288ae6476ffffed1be25049bf8801189ba1c5ff64c21256ff9fe4c31ec84",
+      "copied_sha256": "ad09288ae6476ffffed1be25049bf8801189ba1c5ff64c21256ff9fe4c31ec84",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/editing_state_service.py",
+      "destination": "aplicacao/src/services/editing_state_service.py",
+      "source_sha256": "cb6e92acee37d6b45d1e1eebc843b439ab88432eb47c16ca73c5d493f767d70f",
+      "copied_sha256": "cb6e92acee37d6b45d1e1eebc843b439ab88432eb47c16ca73c5d493f767d70f",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/excel_service.py",
+      "destination": "aplicacao/src/services/excel_service.py",
+      "source_sha256": "8641ab8ba472f00cd7c706fdd5c319b29575f4da232d1371ae3bcfe46b16ddb5",
+      "copied_sha256": "8641ab8ba472f00cd7c706fdd5c319b29575f4da232d1371ae3bcfe46b16ddb5",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/file_diagnostics.py",
+      "destination": "aplicacao/src/services/file_diagnostics.py",
+      "source_sha256": "fcfbcdca02d51314b43baa9b9c317f0a397b4cd5fbac98172964611d0fb210e6",
+      "copied_sha256": "fcfbcdca02d51314b43baa9b9c317f0a397b4cd5fbac98172964611d0fb210e6",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/file_mutex.py",
+      "destination": "aplicacao/src/services/file_mutex.py",
+      "source_sha256": "c953a5b46d3e60372847bf6e04e01b07e44689b27efe6ca142e9f618bbd6d81c",
+      "copied_sha256": "c953a5b46d3e60372847bf6e04e01b07e44689b27efe6ca142e9f618bbd6d81c",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/file_service.py",
+      "destination": "aplicacao/src/services/file_service.py",
+      "source_sha256": "0ae7b4de14da92456793a3ffe0987c11d4ce07ca49aab22238dacbd78a7b7a2a",
+      "copied_sha256": "0ae7b4de14da92456793a3ffe0987c11d4ce07ca49aab22238dacbd78a7b7a2a",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/finalization_service.py",
+      "destination": "aplicacao/src/services/finalization_service.py",
+      "source_sha256": "4a47bee25f63083646583fc09b5885a36a792f92caa9905cfb80111aa4baf47b",
+      "copied_sha256": "4a47bee25f63083646583fc09b5885a36a792f92caa9905cfb80111aa4baf47b",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/graph_mail_service.py",
+      "destination": "aplicacao/src/services/graph_mail_service.py",
+      "source_sha256": "1932004f1ce065e1de47f3206dde3db1850b1c5149a0fc7be2cda4702ce891cc",
+      "copied_sha256": "1932004f1ce065e1de47f3206dde3db1850b1c5149a0fc7be2cda4702ce891cc",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/graph_storage_service.py",
+      "destination": "aplicacao/src/services/graph_storage_service.py",
+      "source_sha256": "596a520ce2d194e1181ed6ff6251769a846dad4dd488a682a7878102b6c5e6bb",
+      "copied_sha256": "596a520ce2d194e1181ed6ff6251769a846dad4dd488a682a7878102b6c5e6bb",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/graph_sync_coordinator.py",
+      "destination": "aplicacao/src/services/graph_sync_coordinator.py",
+      "source_sha256": "9ede936e7d75e75cb0c298f3cd82979f405162faaa476fe89a1e9c50cd80aeb1",
+      "copied_sha256": "9ede936e7d75e75cb0c298f3cd82979f405162faaa476fe89a1e9c50cd80aeb1",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/graph_sync_queue.py",
+      "destination": "aplicacao/src/services/graph_sync_queue.py",
+      "source_sha256": "c8228067aa2052452e3968120063cc91aec7dfa2996eb03454dc67030fa6fbba",
+      "copied_sha256": "c8228067aa2052452e3968120063cc91aec7dfa2996eb03454dc67030fa6fbba",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/local_changes.py",
+      "destination": "aplicacao/src/services/local_changes.py",
+      "source_sha256": "b4fc63e6b05debd394fe096cf9fe1386a1e3480e7490be3d13896d020484b3e5",
+      "copied_sha256": "b4fc63e6b05debd394fe096cf9fe1386a1e3480e7490be3d13896d020484b3e5",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/local_pdf_service.py",
+      "destination": "aplicacao/src/services/local_pdf_service.py",
+      "source_sha256": "e9f02ab73675b4de7bb9580385079f7bc83b633e851d3dd03c53b22759590e71",
+      "copied_sha256": "e9f02ab73675b4de7bb9580385079f7bc83b633e851d3dd03c53b22759590e71",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/maintenance_artifact_service.py",
+      "destination": "aplicacao/src/services/maintenance_artifact_service.py",
+      "source_sha256": "369217c9c6a1ad51741faa76b60d97e270ff3e19f355582a410d19a5fb6bd5aa",
+      "copied_sha256": "369217c9c6a1ad51741faa76b60d97e270ff3e19f355582a410d19a5fb6bd5aa",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/microsoft_auth_service.py",
+      "destination": "aplicacao/src/services/microsoft_auth_service.py",
+      "source_sha256": "3c92b3427a022ff5998882187b10fd5224566cbd5dfc4da185f125f88f94b555",
+      "copied_sha256": "3c92b3427a022ff5998882187b10fd5224566cbd5dfc4da185f125f88f94b555",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/photo_attachment_service.py",
+      "destination": "aplicacao/src/services/photo_attachment_service.py",
+      "source_sha256": "95bb87bb6ef46e9d0844a44b3ae27f26ba8668c2d925ba3b0c7b0b19e6e03637",
+      "copied_sha256": "95bb87bb6ef46e9d0844a44b3ae27f26ba8668c2d925ba3b0c7b0b19e6e03637",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/runtime_safety.py",
+      "destination": "aplicacao/src/services/runtime_safety.py",
+      "source_sha256": "d7a7131938448d438d6f7ca1e848983aed8eabf87f98a6c8ee5a75ccb470f687",
+      "copied_sha256": "d7a7131938448d438d6f7ca1e848983aed8eabf87f98a6c8ee5a75ccb470f687",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/signature_service.py",
+      "destination": "aplicacao/src/services/signature_service.py",
+      "source_sha256": "b4384166712169450d1a941b9febb2c8ad206dbcdb1e1322ad5cda6d72577420",
+      "copied_sha256": "b4384166712169450d1a941b9febb2c8ad206dbcdb1e1322ad5cda6d72577420",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/teams_notification_service.py",
+      "destination": "aplicacao/src/services/teams_notification_service.py",
+      "source_sha256": "83c81f35cf4aea976d05675a945160378be32105324b347d8002f8b8dfe76eaa",
+      "copied_sha256": "83c81f35cf4aea976d05675a945160378be32105324b347d8002f8b8dfe76eaa",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/services/work_folder_service.py",
+      "destination": "aplicacao/src/services/work_folder_service.py",
+      "source_sha256": "561ec0562a126950cfeb548c1023f46fcdf4de0679293f89255d5e499a368a22",
+      "copied_sha256": "561ec0562a126950cfeb548c1023f46fcdf4de0679293f89255d5e499a368a22",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/web/app.py",
+      "destination": "aplicacao/src/web/app.py",
+      "source_sha256": "6551562dca601c555c9b9067c913c105f2de2be12508e6fcda2359ed586259a1",
+      "copied_sha256": "6551562dca601c555c9b9067c913c105f2de2be12508e6fcda2359ed586259a1",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/web/application.py",
+      "destination": "aplicacao/src/web/application.py",
+      "source_sha256": "48cce6f6be84da2d29e6e49f97a2143900984fac7897f8d505f3b87ed2514265",
+      "copied_sha256": "48cce6f6be84da2d29e6e49f97a2143900984fac7897f8d505f3b87ed2514265",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "tools/test_runtime.py",
+      "destination": "aplicacao/tools/test_runtime.py",
+      "source_sha256": "cbbd6556e6a00420e2f9be80e22cefd835f30f848998abbcf90c707c587e1bc9",
+      "copied_sha256": "cbbd6556e6a00420e2f9be80e22cefd835f30f848998abbcf90c707c587e1bc9",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "tools/run_test_version.py",
+      "destination": "aplicacao/tools/run_test_version.py",
+      "source_sha256": "49af22eab697ef7864a955f8d50387ea8701cd6eda8b42afb50e2aa150332f5f",
+      "copied_sha256": "49af22eab697ef7864a955f8d50387ea8701cd6eda8b42afb50e2aa150332f5f",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "passenger_wsgi.py",
+      "destination": "aplicacao/passenger_wsgi.py",
+      "source_sha256": "58213abfabbf35a68af72a48cffd198899b0d689d8c4cb36762402dfb6519a2a",
+      "copied_sha256": "58213abfabbf35a68af72a48cffd198899b0d689d8c4cb36762402dfb6519a2a",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "requirements.txt",
+      "destination": "aplicacao/requirements.txt",
+      "source_sha256": "2312f9f67578467fff50ca7282905de3cca1c54d85de68c8b63f0f2569e6d57a",
+      "copied_sha256": "7a215ae54e8bb06e3726894150c0529e773800a2e2876e77ca132f8f0940d2c0",
+      "adaptation": "pywin32 limitado a Windows por marcador de plataforma."
+    },
+    {
+      "source": "requirements-server.txt",
+      "destination": "aplicacao/requirements-server.txt",
+      "source_sha256": "c2494f6a2c188cbf3b4a1b6fc939b4441c1d04a24bbf4fce34c2632c7b7741c2",
+      "copied_sha256": "c2494f6a2c188cbf3b4a1b6fc939b4441c1d04a24bbf4fce34c2632c7b7741c2",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "Dockerfile",
+      "destination": "aplicacao/Dockerfile",
+      "source_sha256": "b34c144d667cc6cf4f7fcb905e3e79110d26369518ebdb280c13ceb870785490",
+      "copied_sha256": "b34c144d667cc6cf4f7fcb905e3e79110d26369518ebdb280c13ceb870785490",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "docker-compose.yml",
+      "destination": "aplicacao/docker-compose.yml",
+      "source_sha256": "eca2e0bc144016a60c2d8af9c0e8acca89542ca889568292e9adeb0c209fdbf0",
+      "copied_sha256": "eca2e0bc144016a60c2d8af9c0e8acca89542ca889568292e9adeb0c209fdbf0",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "src/web/static/img/assinatura-dora.jpg",
+      "destination": "aplicacao/src/web/static/img/assinatura-dora.jpg",
+      "source_sha256": "a885e8e3322e6779fcbd4af679bbbca8ea3f7f79f17b0bb66255b7f1481f1dde",
+      "copied_sha256": "a885e8e3322e6779fcbd4af679bbbca8ea3f7f79f17b0bb66255b7f1481f1dde",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "tests/__init__.py",
+      "destination": "aplicacao/tests/__init__.py",
+      "source_sha256": "5d933ac648400caa7c926835ba690b971d91e003492f9a79332f4a1b2ec19c01",
+      "copied_sha256": "5d933ac648400caa7c926835ba690b971d91e003492f9a79332f4a1b2ec19c01",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "tests/conftest.py",
+      "destination": "aplicacao/tests/conftest.py",
+      "source_sha256": "fa36dcff1eb5bb104b5ece27cef36b8de937e1e6d5bdf99607fefcd824f4e058",
+      "copied_sha256": "fa36dcff1eb5bb104b5ece27cef36b8de937e1e6d5bdf99607fefcd824f4e058",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "tests/test_active_file_index.py",
+      "destination": "aplicacao/tests/test_active_file_index.py",
+      "source_sha256": "367b2498f313ad394fbdb23842c1a15b97d757367cda7fef4ddab8f11b81a3f3",
+      "copied_sha256": "367b2498f313ad394fbdb23842c1a15b97d757367cda7fef4ddab8f11b81a3f3",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "tests/test_archive_and_web.py",
+      "destination": "aplicacao/tests/test_archive_and_web.py",
+      "source_sha256": "fa69e13a07c8f3d19a6a622a9dd0c3e20d51863b01603ec48abad08002a18f8a",
+      "copied_sha256": "30a18e63b46af9353522a230d022aab9b679290f197b9a772d1998c73c6e49e2",
+      "adaptation": "Exemplos anonimizados, fixture sintética e expectativas do catálogo/caminhos de migração ajustadas; cenários funcionais preservados."
+    },
+    {
+      "source": "tests/test_config.py",
+      "destination": "aplicacao/tests/test_config.py",
+      "source_sha256": "d1388316ece8704111880067bfdd1d75a315c3d9b115b7abb2b698244ee4a186",
+      "copied_sha256": "e351ac7566807ce794931f0011f9a2a351f115e5c822babf0c928fa8e4564e56",
+      "adaptation": "Exemplos anonimizados, fixture sintética e expectativas do catálogo/caminhos de migração ajustadas; cenários funcionais preservados."
+    },
+    {
+      "source": "tests/test_document_schema.py",
+      "destination": "aplicacao/tests/test_document_schema.py",
+      "source_sha256": "8b981eee66483d431d8cf9ac822febfae284ebfc03d1c9926a1427e18f7b2860",
+      "copied_sha256": "f480e90ad5b2318974e4be90020b68cacc789bf4fa163bce8104c173061e6cc0",
+      "adaptation": "Exemplos anonimizados, fixture sintética e expectativas do catálogo/caminhos de migração ajustadas; cenários funcionais preservados."
+    },
+    {
+      "source": "tests/test_editing_state_service.py",
+      "destination": "aplicacao/tests/test_editing_state_service.py",
+      "source_sha256": "596d4581aa086bb5ade3643e96337d89b601183a41dfc716bb6528f2b6e47a35",
+      "copied_sha256": "596d4581aa086bb5ade3643e96337d89b601183a41dfc716bb6528f2b6e47a35",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "tests/test_excel_service.py",
+      "destination": "aplicacao/tests/test_excel_service.py",
+      "source_sha256": "7e612ddd3868cc6973d607a91e6586977f6c26a002304274c71734e71d02b696",
+      "copied_sha256": "951a23a9b55336b056b3381ab7195ebbd77d5af0084a393d475a7a9f655778d8",
+      "adaptation": "Exemplos anonimizados, fixture sintética e expectativas do catálogo/caminhos de migração ajustadas; cenários funcionais preservados."
+    },
+    {
+      "source": "tests/test_file_diagnostics.py",
+      "destination": "aplicacao/tests/test_file_diagnostics.py",
+      "source_sha256": "ad6b60aee77285609663f96f6da5cf1da95bd057baaae9f73f32d391b7909a55",
+      "copied_sha256": "ad6b60aee77285609663f96f6da5cf1da95bd057baaae9f73f32d391b7909a55",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "tests/test_graph_mail_service.py",
+      "destination": "aplicacao/tests/test_graph_mail_service.py",
+      "source_sha256": "92ad538c637e5c287979838e6fb195376b827d2d1d2a930070a20fd44596b422",
+      "copied_sha256": "92ad538c637e5c287979838e6fb195376b827d2d1d2a930070a20fd44596b422",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "tests/test_logging_config.py",
+      "destination": "aplicacao/tests/test_logging_config.py",
+      "source_sha256": "78f0db001ef4f5cba9204bcc345522e82b05157b1b1a95ead6caf3e60022e492",
+      "copied_sha256": "78f0db001ef4f5cba9204bcc345522e82b05157b1b1a95ead6caf3e60022e492",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "tests/test_main.py",
+      "destination": "aplicacao/tests/test_main.py",
+      "source_sha256": "fa4776e58458ba66f90f8755a61429acf787212981e978d9ab345a8875175615",
+      "copied_sha256": "fa4776e58458ba66f90f8755a61429acf787212981e978d9ab345a8875175615",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "tests/test_maintenance.py",
+      "destination": "aplicacao/tests/test_maintenance.py",
+      "source_sha256": "4699b05a8d18e3c7838edd3d4644d8f5846c8fb44e0af277a33dc84060eab209",
+      "copied_sha256": "4699b05a8d18e3c7838edd3d4644d8f5846c8fb44e0af277a33dc84060eab209",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "tests/test_photo_attachments.py",
+      "destination": "aplicacao/tests/test_photo_attachments.py",
+      "source_sha256": "25c28f5b3e9507816db8c3e37d6caad867f9834904a2cfaa8ea800d74df6ef7c",
+      "copied_sha256": "bce0ed3a7c6a03407afa0edc1f00e4581c062649b53f23676e983d5dbbb41120",
+      "adaptation": "Exemplos anonimizados, fixture sintética e expectativas do catálogo/caminhos de migração ajustadas; cenários funcionais preservados."
+    },
+    {
+      "source": "tests/test_required_fields.py",
+      "destination": "aplicacao/tests/test_required_fields.py",
+      "source_sha256": "c7e05298a58dae1d0ff07c6eb9ade249b5b49460b96c450ed4986e468c025931",
+      "copied_sha256": "c7e05298a58dae1d0ff07c6eb9ade249b5b49460b96c450ed4986e468c025931",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "tests/test_safety_regressions.py",
+      "destination": "aplicacao/tests/test_safety_regressions.py",
+      "source_sha256": "2a027c8946187d1454c30c9f0357df6f56288c74428229d3cb75b780d0370416",
+      "copied_sha256": "2a027c8946187d1454c30c9f0357df6f56288c74428229d3cb75b780d0370416",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "tests/test_sync_v2.py",
+      "destination": "aplicacao/tests/test_sync_v2.py",
+      "source_sha256": "fe161f807e695b1f5c43b96f5494564989b75eb7158eec20f4e2b5af7c35a111",
+      "copied_sha256": "fe161f807e695b1f5c43b96f5494564989b75eb7158eec20f4e2b5af7c35a111",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "tests/test_teams_notification_service.py",
+      "destination": "aplicacao/tests/test_teams_notification_service.py",
+      "source_sha256": "1b8e998b106308267900c1e7d43c1855d93e1cb05a678858f8a67400d9b157a5",
+      "copied_sha256": "1b8e998b106308267900c1e7d43c1855d93e1cb05a678858f8a67400d9b157a5",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "tests/test_work_folder_service.py",
+      "destination": "aplicacao/tests/test_work_folder_service.py",
+      "source_sha256": "713734df6c9e39cfdd11791dcc0dabd0db960ba37d9dd2af63dc1a13f5b712fb",
+      "copied_sha256": "713734df6c9e39cfdd11791dcc0dabd0db960ba37d9dd2af63dc1a13f5b712fb",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    },
+    {
+      "source": "tests/test_work_folder_web.py",
+      "destination": "aplicacao/tests/test_work_folder_web.py",
+      "source_sha256": "8590f16581f8647dbee5fb8feb28957ffeefa05338b98c3fc93df8f447b0869f",
+      "copied_sha256": "8590f16581f8647dbee5fb8feb28957ffeefa05338b98c3fc93df8f447b0869f",
+      "adaptation": "Cópia local do backend da app; administração excluída."
+    }
+  ],
+  "excluded": [
+    ".env e credenciais do pacote público (handoff separado em Configuracao_Privada)",
+    "registo administrativo, faturação, macros admin e scripts/testes admin",
+    "dados operacionais, filas, caches, bases de dados e logs",
+    "ficheiro Excel de teste original (substituído por fixture sintética)",
+    "catálogo real de técnicos no desenvolvimento (substituído por catálogo demo)"
+  ],
+  "head_at_capture": "548e13785571e189140fb28885a804a48bd688a3",
+  "scope": "Aplicação completa de formulários e checklists (frontend e backend). Exclusão apenas da administração.",
+  "revision": "Âmbito corrigido: backend real dos formulários incluído, apenas administração excluída.",
+  "synthetic_fixture": "aplicacao/tests/fixtures/test_sample.xlsx gerada de raiz por tools/build_synthetic_fixture.py; não copiada da origem.",
+  "validation": {
+    "backend_modules": 36,
+    "python_syntax_files": 40,
+    "python_full_passed": 359,
+    "python_targeted_after_fixture_adjustment_passed": 1,
+    "javascript_passed": 32,
+    "javascript_failed": 0,
+    "smoke_check": "CHECK_OK",
+    "real_external_calls": false
+  },
+  "local_improvements": {
+    "date": "2026-09-28",
+    "baseline_commit": "faa7ef8846b1555a944d1c08c9d7186e51f07eff",
+    "scope": "Melhorias locais de inventário SharePoint, edição móvel/SADI, relatórios, PWA e preparação Docker; sem produção.",
+    "duplicate_frontend_removed": 37,
+    "changed_paths": [
+      "README.md",
+      "aplicacao/.dockerignore",
+      "aplicacao/.env.example",
+      "aplicacao/Dockerfile",
+      "aplicacao/docker-compose.yml",
+      "aplicacao/requirements-smoke.txt",
+      "aplicacao/src/config.py",
+      "aplicacao/src/services/active_file_index.py",
+      "aplicacao/src/services/document_style_service.py",
+      "aplicacao/src/services/graph_storage_service.py",
+      "aplicacao/src/services/graph_sync_coordinator.py",
+      "aplicacao/src/services/maintenance_artifact_service.py",
+      "aplicacao/src/web/application.py",
+      "aplicacao/src/web/static/css/editing-state.css",
+      "aplicacao/src/web/static/css/field-app.css",
+      "aplicacao/src/web/static/css/maintenance-document.css",
+      "aplicacao/src/web/static/css/maintenance.css",
+      "aplicacao/src/web/static/css/service-document.css",
+      "aplicacao/src/web/static/js/document-editor.js",
+      "aplicacao/src/web/static/js/maintenance-editor.js",
+      "aplicacao/src/web/static/js/maintenance-model.js",
+      "aplicacao/src/web/static/offline.html",
+      "aplicacao/src/web/static/service-worker.js",
+      "aplicacao/src/web/templates/field_app.html",
+      "aplicacao/src/web/templates/service_document.html",
+      "aplicacao/tests/js/active-file-list.test.cjs",
+      "aplicacao/tests/js/maintenance-model.test.cjs",
+      "aplicacao/tests/js/service-worker.test.cjs",
+      "aplicacao/tests/test_active_file_index.py",
+      "aplicacao/tests/test_document_reports.py",
+      "aplicacao/tests/test_editing_state_service.py",
+      "aplicacao/tests/test_file_refresh_api.py",
+      "aplicacao/tests/test_graph_refresh_coordinator.py",
+      "aplicacao/tests/test_hosting_readiness.py",
+      "aplicacao/tools/smoke_pdf.py",
+      "aplicacao/tools/validate_reports.py",
+      "documentacao/05_PLANO_E_ACEITACAO.md",
+      "documentacao/07_VALIDACAO_DA_ENTREGA.md",
+      "documentacao/08_BACKEND_FORMULARIOS.md",
+      "documentacao/09_MELHORIAS_E_VALIDACAO.md",
+      "documentacao/10_ALOJAMENTO_DOCKER.md",
+      "documentacao/11_REVISAO_INDEPENDENTE.md",
+      "documentacao/12_QA_INTERFACE.md",
+      "frontend/src/web/static/css/auth.css",
+      "frontend/src/web/static/css/document-editor.css",
+      "frontend/src/web/static/css/editing-state.css",
+      "frontend/src/web/static/css/field-app.css",
+      "frontend/src/web/static/css/maintenance-document.css",
+      "frontend/src/web/static/css/maintenance.css",
+      "frontend/src/web/static/css/service-document.css",
+      "frontend/src/web/static/img/pwa/icon-192.png",
+      "frontend/src/web/static/img/pwa/icon-512.png",
+      "frontend/src/web/static/img/pwa/icon-maskable-512.png",
+      "frontend/src/web/static/img/sensorpoint-logo.png",
+      "frontend/src/web/static/js/document-editor.js",
+      "frontend/src/web/static/js/document-validation.js",
+      "frontend/src/web/static/js/editing-coordinator.js",
+      "frontend/src/web/static/js/field-app.js",
+      "frontend/src/web/static/js/mail-job-monitor.js",
+      "frontend/src/web/static/js/maintenance-editor.js",
+      "frontend/src/web/static/js/maintenance-model.js",
+      "frontend/src/web/static/js/pwa.js",
+      "frontend/src/web/static/manifest.webmanifest",
+      "frontend/src/web/static/offline.html",
+      "frontend/src/web/static/service-worker.js",
+      "frontend/src/web/templates/document_preview.html",
+      "frontend/src/web/templates/field_app.html",
+      "frontend/src/web/templates/login.html",
+      "frontend/src/web/templates/maintenance_bundle.html",
+      "frontend/src/web/templates/maintenance_document.html",
+      "frontend/src/web/templates/partials/active_file_list.html",
+      "frontend/src/web/templates/partials/document_header.html",
+      "frontend/src/web/templates/service_document.html",
+      "frontend/src/web/templates/work_folder_error.html",
+      "frontend/tests/js/active-file-list.test.cjs",
+      "frontend/tests/js/document-validation.test.cjs",
+      "frontend/tests/js/editing-coordinator.test.cjs",
+      "frontend/tests/js/mail-job-monitor.test.cjs",
+      "frontend/tests/js/maintenance-model.test.cjs",
+      "frontend/tests/js/migration-fixtures.test.cjs"
+    ],
+    "original_capture_hashes_preserved": true,
+    "text_line_endings": "LF, enforced by root .gitattributes for stable SHA-256 after checkout",
+    "validation_report": "documentacao/09_MELHORIAS_E_VALIDACAO.md",
+    "independent_review": "documentacao/11_REVISAO_INDEPENDENTE.md",
+    "real_external_calls": false,
+    "deployed": false
+  }
+}

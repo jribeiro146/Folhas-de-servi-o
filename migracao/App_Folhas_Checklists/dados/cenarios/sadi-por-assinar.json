@@ -1,0 +1,207 @@
+{
+  "document_language": "pt",
+  "service_number": "DEMO-0001",
+  "customer_name": "Cliente Demonstração",
+  "requested_by": "Contacto Demonstração",
+  "request_date": "",
+  "customer_number": "",
+  "nif_number": "",
+  "vat_number": "",
+  "customer_email": "",
+  "customer_phone": "",
+  "site_contact": "",
+  "site_phone": "",
+  "local_store": "Instalação Fictícia",
+  "work_number": "0042",
+  "contract_number": "",
+  "address": "",
+  "store_number": "",
+  "requested_tasks": "Verificação demonstrativa do sistema.",
+  "intervention_report": "Exemplo sintético para desenvolvimento da interface.",
+  "customer_signer_name": "Cliente Demonstração",
+  "customer_signature_date": "2026-09-28",
+  "service_types": {
+    "piquete": false,
+    "assistencia": false,
+    "manutencao": true,
+    "formacao": false,
+    "colocacao_servico": false,
+    "reparacao_oficina": false,
+    "garantia": false,
+    "instalacao": false
+  },
+  "equipments": {
+    "sadi": true,
+    "vss": false,
+    "sadco": false,
+    "sadir": false,
+    "sadei": false,
+    "sca": false,
+    "eas": false,
+    "sadg": false,
+    "sch": false,
+    "other": false
+  },
+  "materials_used": false,
+  "materials": [
+    {
+      "ref": "",
+      "description": "",
+      "qty": ""
+    }
+  ],
+  "technician_records": [
+    {
+      "technician": "Técnico Demonstração A",
+      "start_time": "09:00",
+      "end_time": "10:30",
+      "total_hours": "1 h 30 min",
+      "total_hours_overridden": false,
+      "date": "2026-09-28"
+    }
+  ],
+  "client_not_present": false,
+  "maintenance_checklists": [
+    {
+      "id": "site-demo-0001",
+      "version": "sadi-2",
+      "location": "Local Fictício A",
+      "date": "2026-09-28",
+      "technician": "Técnico Demonstração A",
+      "scie": "",
+      "departure": "",
+      "period": "annual",
+      "period_other": "",
+      "observations": "",
+      "final_observations": "",
+      "peripheral_observations": "",
+      "coverage_percent": "",
+      "coverage_areas": "",
+      "general": {
+        "B22": {
+          "answer": "OK",
+          "justification": ""
+        },
+        "B23": {
+          "answer": "OK",
+          "justification": ""
+        }
+      },
+      "peripherals": {
+        "B107": {
+          "answer": "OK",
+          "justification": ""
+        },
+        "B108": {
+          "answer": "OK",
+          "justification": ""
+        },
+        "B109": {
+          "answer": "OK",
+          "justification": ""
+        },
+        "B110": {
+          "answer": "OK",
+          "justification": ""
+        },
+        "B111": {
+          "answer": "OK",
+          "justification": ""
+        },
+        "B112": {
+          "answer": "OK",
+          "justification": ""
+        },
+        "B113": {
+          "answer": "OK",
+          "justification": ""
+        },
+        "B115": {
+          "answer": "OK",
+          "justification": ""
+        }
+      },
+      "trials": {
+        "B121": {
+          "answer": "OK",
+          "justification": ""
+        },
+        "B122": {
+          "answer": "OK",
+          "justification": ""
+        },
+        "B123": {
+          "answer": "OK",
+          "justification": ""
+        },
+        "B124": {
+          "answer": "OK",
+          "justification": ""
+        },
+        "B125": {
+          "answer": "OK",
+          "justification": ""
+        },
+        "B126": {
+          "answer": "OK",
+          "justification": ""
+        },
+        "B127": {
+          "answer": "OK",
+          "justification": ""
+        }
+      },
+      "configuration": {
+        "conventional": true,
+        "addressable": false,
+        "repeater": false
+      },
+      "conventional": [
+        {
+          "id": "unit-demo-0001",
+          "brand": "Marca Fictícia",
+          "model": "Modelo Demo",
+          "location": "Receção fictícia",
+          "total": "4",
+          "used": "2",
+          "detectors": "12",
+          "buttons": "2",
+          "sirens": "2",
+          "observations": "",
+          "checks": {
+            "B44": {
+              "answer": "OK",
+              "justification": ""
+            },
+            "B45": {
+              "answer": "OK",
+              "justification": ""
+            },
+            "B46": {
+              "answer": "OK",
+              "justification": ""
+            },
+            "B47": {
+              "answer": "OK",
+              "justification": ""
+            },
+            "B48": {
+              "answer": "OK",
+              "justification": ""
+            },
+            "B49": {
+              "answer": "OK",
+              "justification": ""
+            }
+          }
+        }
+      ],
+      "addressable": [],
+      "repeater": [],
+      "photos": [],
+      "signatures": {},
+      "signature_drafts": {},
+      "peripheral_history": []
+    }
+  ]
+}

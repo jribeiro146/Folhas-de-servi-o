@@ -1,0 +1,568 @@
+{
+  "sheet": "LINK",
+  "header_row": 2,
+  "data_row": 3,
+  "note": "Contrato de interoperabilidade; não implementa leitura/escrita Excel. BS é chave lógica: localizar obra pelo cabeçalho, não fixar posição física. BI está ausente do mapa original. Requisitos LINK não substituem validação do documento.",
+  "fields": [
+    {
+      "column": "A",
+      "label": "Folha nº",
+      "type": "text",
+      "group": "Identificação",
+      "required": true,
+      "read_only": true
+    },
+    {
+      "column": "B",
+      "label": "Pedido por",
+      "type": "text",
+      "group": "Identificação",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "C",
+      "label": "Email",
+      "type": "text",
+      "group": "Contacto",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "D",
+      "label": "Telefone",
+      "type": "text",
+      "group": "Contacto",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "E",
+      "label": "Contacto",
+      "type": "text",
+      "group": "Contacto",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "F",
+      "label": "Telefone (2)",
+      "type": "text",
+      "group": "Contacto",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "G",
+      "label": "Contrato nº",
+      "type": "text",
+      "group": "Contrato / Cliente",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "H",
+      "label": "Loja nº",
+      "type": "text",
+      "group": "Contrato / Cliente",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "I",
+      "label": "Data pedido",
+      "type": "date",
+      "group": "Contrato / Cliente",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "J",
+      "label": "Cliente nº",
+      "type": "text",
+      "group": "Contrato / Cliente",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "K",
+      "label": "Ident",
+      "type": "text",
+      "group": "Contrato / Cliente",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "L",
+      "label": "ASSIST",
+      "type": "checkbox",
+      "group": "Tipo de Serviço",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "M",
+      "label": "MAN",
+      "type": "checkbox",
+      "group": "Tipo de Serviço",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "N",
+      "label": "COL.SERV",
+      "type": "checkbox",
+      "group": "Tipo de Serviço",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "O",
+      "label": "GAR",
+      "type": "checkbox",
+      "group": "Tipo de Serviço",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "P",
+      "label": "INST",
+      "type": "checkbox",
+      "group": "Tipo de Serviço",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "Q",
+      "label": "PIQ",
+      "type": "checkbox",
+      "group": "Tipo de Serviço",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "R",
+      "label": "FORM",
+      "type": "checkbox",
+      "group": "Tipo de Serviço",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "S",
+      "label": "REP.OF",
+      "type": "checkbox",
+      "group": "Tipo de Serviço",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "T",
+      "label": "ACOMP.COM",
+      "type": "checkbox",
+      "group": "Tipo de Serviço",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "U",
+      "label": "SADI",
+      "type": "checkbox",
+      "group": "Sistemas",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "V",
+      "label": "CCTV",
+      "type": "checkbox",
+      "group": "Sistemas",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "W",
+      "label": "PA/VA",
+      "type": "checkbox",
+      "group": "Sistemas",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "X",
+      "label": "SAI",
+      "type": "checkbox",
+      "group": "Sistemas",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "Y",
+      "label": "EXT",
+      "type": "checkbox",
+      "group": "Sistemas",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "Z",
+      "label": "SCA",
+      "type": "checkbox",
+      "group": "Sistemas",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AA",
+      "label": "EAS",
+      "type": "checkbox",
+      "group": "Sistemas",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AB",
+      "label": "SADG",
+      "type": "checkbox",
+      "group": "Sistemas",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AC",
+      "label": "SCH",
+      "type": "checkbox",
+      "group": "Sistemas",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AD",
+      "label": "OTHER",
+      "type": "checkbox",
+      "group": "Sistemas",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AE",
+      "label": "Cliente nome",
+      "type": "text",
+      "group": "Cliente",
+      "required": true,
+      "read_only": false
+    },
+    {
+      "column": "AF",
+      "label": "Local",
+      "type": "text",
+      "group": "Cliente",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AG",
+      "label": "Morada",
+      "type": "text",
+      "group": "Cliente",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AH",
+      "label": "Cód. Postal",
+      "type": "text",
+      "group": "Cliente",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AI",
+      "label": "CP",
+      "type": "text",
+      "group": "Cliente",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AJ",
+      "label": "NIF",
+      "type": "text",
+      "group": "Cliente",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AK",
+      "label": "Avaria reportada",
+      "type": "multiline",
+      "group": "Avaria",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AL",
+      "label": "Data serviço",
+      "type": "text",
+      "group": "Agendamento",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AM",
+      "label": "Mês",
+      "type": "text",
+      "group": "Agendamento",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AN",
+      "label": "Relatório Técnico",
+      "type": "multiline",
+      "group": "Relatório Técnico",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AO",
+      "label": "Técnico(s)",
+      "type": "text",
+      "group": "Técnico / Tempos",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AP",
+      "label": "Cód. Trabalho",
+      "type": "text",
+      "group": "Técnico / Tempos",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AQ",
+      "label": "T.Viagem",
+      "type": "text",
+      "group": "Técnico / Tempos",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AR",
+      "label": "T.Trabalho",
+      "type": "text",
+      "group": "Técnico / Tempos",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AS",
+      "label": "Fim",
+      "type": "text",
+      "group": "Técnico / Tempos",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AT",
+      "label": "T.Total trabalho",
+      "type": "text",
+      "group": "Técnico / Tempos",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AU",
+      "label": "T.Total h",
+      "type": "number",
+      "group": "Técnico / Tempos",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AV",
+      "label": "T.Total m",
+      "type": "number",
+      "group": "Técnico / Tempos",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AW",
+      "label": "T.Total h (2)",
+      "type": "text",
+      "group": "Técnico / Tempos",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AX",
+      "label": "T.Total m (2)",
+      "type": "text",
+      "group": "Técnico / Tempos",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AY",
+      "label": "Valor (hora)",
+      "type": "currency",
+      "group": "Facturação",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "AZ",
+      "label": "Valores a faturar",
+      "type": "currency",
+      "group": "Facturação",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "BA",
+      "label": "Deslocação Lx/Pt/Fun",
+      "type": "currency",
+      "group": "Facturação",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "BB",
+      "label": "Deslocação Kms",
+      "type": "currency",
+      "group": "Facturação",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "BC",
+      "label": "Deslocação custo/km",
+      "type": "currency",
+      "group": "Facturação",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "BD",
+      "label": "Piquete",
+      "type": "currency",
+      "group": "Facturação",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "BE",
+      "label": "Material",
+      "type": "currency",
+      "group": "Facturação",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "BF",
+      "label": "Plataforma",
+      "type": "currency",
+      "group": "Facturação",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "BG",
+      "label": "Plataforma custo",
+      "type": "currency",
+      "group": "Facturação",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "BH",
+      "label": "Manutenção",
+      "type": "currency",
+      "group": "Facturação",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "BJ",
+      "label": "Acerto de valor",
+      "type": "currency",
+      "group": "Facturação",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "BK",
+      "label": "TOTAL",
+      "type": "currency",
+      "group": "Facturação",
+      "required": false,
+      "read_only": true
+    },
+    {
+      "column": "BL",
+      "label": "TOTAL s/ MAT/PLAF",
+      "type": "currency",
+      "group": "Facturação",
+      "required": false,
+      "read_only": true
+    },
+    {
+      "column": "BM",
+      "label": "Descrição do trabalho executado",
+      "type": "multiline",
+      "group": "Descrição / Notas",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "BN",
+      "label": "Orçamento nº",
+      "type": "text",
+      "group": "Descrição / Notas",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "BO",
+      "label": "Nota de encomenda",
+      "type": "text",
+      "group": "Descrição / Notas",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "BP",
+      "label": "Faturado?",
+      "type": "text",
+      "group": "Descrição / Notas",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "BQ",
+      "label": "Material que falta",
+      "type": "multiline",
+      "group": "Descrição / Notas",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "BR",
+      "label": "Observações",
+      "type": "multiline",
+      "group": "Descrição / Notas",
+      "required": false,
+      "read_only": false
+    },
+    {
+      "column": "BS",
+      "label": "N.º de obra",
+      "type": "text",
+      "group": "Contrato / Cliente",
+      "required": false,
+      "read_only": true
+    }
+  ]
+}

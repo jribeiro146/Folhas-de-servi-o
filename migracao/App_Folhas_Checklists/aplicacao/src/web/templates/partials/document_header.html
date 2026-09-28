@@ -1,0 +1,16 @@
+<header class="sheet-header">
+    <div class="brand-block">
+        {% if logo_src %}
+        <img class="sheet-logo" src="{{ logo_src }}" alt="Sensorpoint">
+        {% endif %}
+        <div class="brand-copy">
+            <p class="sheet-kicker">{{ sheet_kicker }}</p>
+            <h1>{{ sheet_title }}</h1>
+        </div>
+    </div>
+    <div class="sheet-id-card">
+        <span class="id-label">{{ sheet_number_label }}</span>
+        <strong>{{ document.service_number or file_name | default('-') }}</strong>
+        <small>{{ sheet_date or '-' }}</small>
+    </div>
+</header>

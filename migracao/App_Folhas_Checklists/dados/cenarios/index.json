@@ -1,0 +1,102 @@
+[
+  {
+    "id": "folha-valida",
+    "title": "Folha com campos completos",
+    "expected": {
+      "documentMissing": 0,
+      "documentInvalid": 0,
+      "siteErrors": []
+    },
+    "note": "A validação de campos JS não comprova assinatura, arquivo ou finalização."
+  },
+  {
+    "id": "folha-incompleta",
+    "title": "Folha por preencher",
+    "expected": {
+      "documentMissing": 8,
+      "documentInvalid": 0,
+      "siteErrors": []
+    },
+    "note": "Rascunhos admitem campos em falta; finalizar exige corrigir."
+  },
+  {
+    "id": "cliente-ausente",
+    "title": "Folha com cliente ausente",
+    "expected": {
+      "documentMissing": 0,
+      "documentInvalid": 0,
+      "siteErrors": []
+    },
+    "note": "Dispensa detalhes de assinatura da FS; não dispensa assinaturas SADI."
+  },
+  {
+    "id": "sadi-por-assinar",
+    "title": "SADI completa nos campos, por assinar",
+    "expected": {
+      "documentMissing": 0,
+      "documentInvalid": 0,
+      "siteErrors": [
+        0
+      ],
+      "siteStatus": [
+        "Por assinar"
+      ]
+    },
+    "note": "Não contém imagens nem tokens de assinatura."
+  },
+  {
+    "id": "sadi-nc-sem-justificacao",
+    "title": "SADI com NC sem justificação",
+    "expected": {
+      "documentMissing": 0,
+      "documentInvalid": 0,
+      "siteErrors": [
+        1
+      ],
+      "siteStatus": [
+        "Em preenchimento"
+      ]
+    },
+    "note": "Cada resposta NC precisa da sua justificação; não bloqueia por ser NC quando justificada."
+  },
+  {
+    "id": "sadi-mensal-sem-cobertura",
+    "title": "SADI mensal sem cobertura",
+    "expected": {
+      "documentMissing": 0,
+      "documentInvalid": 0,
+      "siteErrors": [
+        1
+      ],
+      "siteStatus": [
+        "Em preenchimento"
+      ]
+    },
+    "note": "Indicar percentagem ou áreas testadas."
+  },
+  {
+    "id": "sadi-cobertura-zero",
+    "title": "SADI com cobertura 0%",
+    "expected": {
+      "documentMissing": 0,
+      "documentInvalid": 0,
+      "siteErrors": [
+        0
+      ],
+      "siteStatus": [
+        "Por assinar"
+      ]
+    },
+    "note": "O modelo atual aceita zero; adequação funcional identificada para decisão no backlog."
+  },
+  {
+    "id": "data-impossivel",
+    "title": "Folha com data impossível",
+    "expected": {
+      "documentMissing": 0,
+      "documentInvalid": 1,
+      "siteErrors": []
+    },
+    "note": "Uma data preenchida mas impossível deve gerar erro."
+  }
+]

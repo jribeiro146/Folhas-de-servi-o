@@ -1,0 +1,600 @@
+import json
+import shutil
+from http.cookies import SimpleCookie
+from pathlib import Path
+
+import pytest
+
+from src.services.archive_service import ArchiveService
+from src.services.editing_state_service import (
+    EditingStateService,
+    EditorIdentity,
+    LeaseConflictError,
+    RevisionConflictError,
+)
+from src.services.file_service import FileService
+from src.services.graph_storage_service import GraphConfig, GraphStorageService
+from src.web.application import create_app
+
+
+FIXTURE = Path(__file__).parent / "fixtures" / "test_sample.xlsx"
+
+
+@pytest.fixture(autouse=True)
+def disable_web_auth(monkeypatch):
+    """Keep web tests independent from the developer's local .env file."""
+    import src.web.application as application_module
+
+    monkeypatch.setattr(application_module, "ACTIVE_AUTH_PROVIDER", "none")
+    monkeypatch.setattr(application_module, "AUTH_ENABLED", False)
+    monkeypatch.setattr(application_module, "STORAGE_BACKEND", "local")
+
+
+def make_active_file(root: Path, name: str) -> Path:
+    active = root / "Excel" / "Activas"
+    active.mkdir(parents=True, exist_ok=True)
+    destination = active / f"{name}.xlsx"
+    shutil.copy2(FIXTURE, destination)
+    return destination
+
+
+def test_draft_owner_blocks_other_user_but_same_owner_can_resume(tmp_path):
+    path = make_active_file(tmp_path, "2026_5001")
+    service = EditingStateService(tmp_path / "editing", lease_seconds=120)
+    first_user = EditorIdentity("user-a", "Utilizador A")
+
+    first = service.acquire_lease(path, first_user, "tab-a")
+
+    with pytest.raises(LeaseConflictError):
+        service.acquire_lease(path, EditorIdentity("user-b", "Utilizador B"), "tab-b")
+    second_session = service.acquire_lease(path, first_user, "second-tab")
+    assert second_session["lease"]["owner_id"] == "user-a"
+    assert second_session["lease"]["token"] != first["lease"]["token"]
+
+    assert first["lease"]["owner_name"] == "Utilizador A"
+    assert first["lease"]["token"]
+
+
+def test_local_demos_keep_identity_when_browser_visits_another_port(tmp_path, monkeypatch):
+    """Cookies share a host across ports; another demo must not replace our identity."""
+    clients = []
+    name = "2026_5999_2026-09-18_TT"
+    for index in range(2):
+        root = tmp_path / str(index)
+        path = make_active_file(root, name)
+        monkeypatch.setenv("FS_SECRET_KEY", f"synthetic-demo-{index}-" + "x" * 40)
+        app = create_app(
+            file_service=FileService(path.parent),
+            editing_state_service=EditingStateService(root / "editing"),
+        )
+        clients.append(app.test_client(use_cookies=False))
+
+    cookies = SimpleCookie()
+
+    def request(index, method, endpoint, **kwargs):
+        response = clients[index].open(
+            endpoint, method=method,
+            headers={"Cookie": "; ".join(f"{key}={value.value}" for key, value in cookies.items())},
+            **kwargs,
+        )
+        for header in response.headers.getlist("Set-Cookie"):
+            cookies.load(header)
+        return response
+
+    bootstrap = f"/api/file/{name}/bootstrap?client_id=browser-tab"
+    first = request(0, "GET", bootstrap).get_json()["editing"]
+    for attempt in range(3):
+        assert request(1, "GET", bootstrap).status_code == 200
+        response = request(0, "POST", f"/api/file/{name}/autosave", json={
+            "document": {"intervention_report": f"Texto preservado {attempt}"},
+            "_edit": {
+                "document_id": first["document_id"], "client_id": "browser-tab",
+                "lease_token": first["lease"]["token"], "base_revision": first["revision"],
+                "idempotency_key": f"save-{attempt}",
+            },
+        })
+        assert response.status_code == 200, response.get_json().get("code")
+        saved = response.get_json()["editing"]
+        assert saved["owner"]["owner_id"] == first["owner"]["owner_id"]
+        first = saved
+    resumed = request(0, "GET", bootstrap).get_json()
+    assert resumed["document"]["intervention_report"] == "Texto preservado 2"
+
+    # Isolation does not make a private draft available to another browser/user.
+    outsider = clients[0].get(bootstrap)
+    assert outsider.status_code == 423
+    assert outsider.get_json()["code"] == "lease_conflict"
+
+
+def test_synthetic_demo_resumes_same_technician_across_browsers(tmp_path):
+    path = make_active_file(tmp_path, "2026_5998_2026-09-18_TT")
+    app = create_app(
+        file_service=FileService(path.parent),
+        editing_state_service=EditingStateService(tmp_path / "editing"),
+        test_editor_identity=EditorIdentity("demo:technician", "Técnico de teste"),
+    )
+    first, second = app.test_client(), app.test_client()
+    url = f"/api/file/{path.stem}"
+    original = first.get(url + "/bootstrap?client_id=chrome").get_json()["editing"]
+    resumed = second.get(url + "/bootstrap?client_id=app").get_json()["editing"]
+    assert original["owner"] == resumed["owner"]
+    assert original["lease"]["token"] != resumed["lease"]["token"]
+
+    def save(client, editing, browser, text):
+        return client.post(url + "/autosave", json={
+            "document": {"intervention_report": text},
+            "_edit": {"document_id": editing["document_id"], "client_id": browser,
+                      "lease_token": editing["lease"]["token"], "base_revision": editing["revision"],
+                      "idempotency_key": text},
+        })
+
+    assert save(first, original, "chrome", "Preenchido no Chrome").status_code == 200
+    stale = save(second, resumed, "app", "Revisão antiga")
+    assert stale.status_code == 409
+    assert stale.get_json()["code"] == "revision_conflict"
+    reopened = second.get(url + "/bootstrap?client_id=app").get_json()
+    assert reopened["document"]["intervention_report"] == "Preenchido no Chrome"
+    assert save(second, reopened["editing"], "app", "Retomado na aplicação").status_code == 200
+
+
+@pytest.mark.parametrize("mode", ["production", "not_synthetic", "authenticated", "graph", "mail"])
+def test_simulated_editor_rejected_outside_isolated_demo(monkeypatch, mode):
+    import src.web.application as application_module
+    if mode == "production":
+        monkeypatch.setenv("FS_ENVIRONMENT", "production")
+    elif mode == "not_synthetic":
+        monkeypatch.setenv("FS_TEST_SYNTHETIC", "false")
+    elif mode == "authenticated":
+        monkeypatch.setattr(application_module, "AUTH_ENABLED", True)
+    elif mode == "graph":
+        monkeypatch.setattr(application_module, "STORAGE_BACKEND", "graph")
+    elif mode == "mail":
+        monkeypatch.setattr(application_module, "MAIL_ENABLED", True)
+    with pytest.raises(ValueError, match="técnico simulado"):
+        create_app(test_editor_identity=EditorIdentity("demo:technician", "Técnico de teste"))
+
+
+def test_private_workspaces_isolate_same_source_and_recover_per_session(tmp_path):
+    path = make_active_file(tmp_path, "2026_5008")
+    service = EditingStateService(tmp_path / "editing")
+    first_identity = EditorIdentity("user-a", "Utilizador A")
+    second_identity = EditorIdentity("user-b", "Utilizador B")
+
+    first = service.acquire_private_workspace(path, first_identity, "tab-a")
+    second = service.acquire_private_workspace(path, second_identity, "tab-b")
+
+    assert first["document_id"] != second["document_id"]
+    assert first["lease"]["owner_id"] == "user-a"
+    assert second["lease"]["owner_id"] == "user-b"
+
+    first_saved = service.save_autosave(
+        document_id=first["document_id"],
+        identity=first_identity,
+        client_id="tab-a",
+        lease_token=first["lease"]["token"],
+        base_revision=first["revision"],
+        idempotency_key="private-save-a",
+        document={"intervention_report": "Rascunho A"},
+    )
+    second_saved = service.save_autosave(
+        document_id=second["document_id"],
+        identity=second_identity,
+        client_id="tab-b",
+        lease_token=second["lease"]["token"],
+        base_revision=second["revision"],
+        idempotency_key="private-save-b",
+        document={"intervention_report": "Rascunho B"},
+    )
+
+    assert first_saved["server_document"]["intervention_report"] == "Rascunho A"
+    assert second_saved["server_document"]["intervention_report"] == "Rascunho B"
+    assert service.snapshot(path)["server_document"] is None
+    assert (
+        service.acquire_private_workspace(path, first_identity, "tab-a")["server_document"]
+        ["intervention_report"]
+        == "Rascunho A"
+    )
+
+def test_private_workspace_does_not_inherit_old_shared_autosave(tmp_path):
+    path = make_active_file(tmp_path, "2026_5009")
+    service = EditingStateService(tmp_path / "editing")
+    identity = EditorIdentity("user-a", "Utilizador A")
+    shared = service.acquire_lease(path, identity, "old-shared-tab")
+    service.save_autosave(
+        document_id=shared["document_id"],
+        identity=identity,
+        client_id="old-shared-tab",
+        lease_token=shared["lease"]["token"],
+        base_revision=shared["revision"],
+        idempotency_key="old-shared-save",
+        document={"intervention_report": "Conteúdo antigo partilhado"},
+    )
+
+    private = service.acquire_private_workspace(path, identity, "new-private-tab")
+
+    assert private["server_document"] is None
+    assert private["document_id"] != shared["document_id"]
+
+def test_explicit_logout_closes_sessions_but_retains_draft_owner(tmp_path):
+    first_path = make_active_file(tmp_path, "2026_5004")
+    second_path = make_active_file(tmp_path, "2026_5005")
+    service = EditingStateService(tmp_path / "editing")
+    first_user = EditorIdentity("user-a", "Utilizador A")
+
+    service.acquire_lease(first_path, first_user, "tab-a")
+    service.acquire_lease(second_path, first_user, "tab-b")
+
+    assert service.release_user_leases(first_user.id) == 2
+    with pytest.raises(LeaseConflictError):
+        service.acquire_lease(
+            first_path,
+            EditorIdentity("user-b", "Utilizador B"),
+            "tab-c",
+        )
+    resumed = service.acquire_lease(first_path, first_user, "tab-d")
+    assert resumed["lease"]["owner_id"] == "user-a"
+
+
+def test_expired_session_does_not_transfer_draft_ownership(tmp_path, monkeypatch):
+    import src.services.editing_state_service as editing_module
+
+    path = make_active_file(tmp_path, "2026_5002")
+    service = EditingStateService(tmp_path / "editing", lease_seconds=10)
+    now = {"value": 1000.0}
+    monkeypatch.setattr(editing_module.time, "time", lambda: now["value"])
+
+    service.acquire_lease(path, EditorIdentity("user-a", "Utilizador A"), "tab-a")
+    now["value"] = 1061.0
+    with pytest.raises(LeaseConflictError):
+        service.acquire_lease(path, EditorIdentity("user-b", "Utilizador B"), "tab-b")
+    resumed = service.acquire_lease(path, EditorIdentity("user-a", "Utilizador A"), "tab-c")
+    assert resumed["lease"]["owner_id"] == "user-a"
+
+
+def test_autosave_is_idempotent_and_rejects_stale_revision(tmp_path):
+    path = make_active_file(tmp_path, "2026_5003")
+    service = EditingStateService(tmp_path / "editing")
+    identity = EditorIdentity("user-a", "Utilizador A")
+    lease = service.acquire_lease(path, identity, "tab-a")
+    arguments = {
+        "document_id": lease["document_id"],
+        "identity": identity,
+        "client_id": "tab-a",
+        "lease_token": lease["lease"]["token"],
+        "base_revision": lease["revision"],
+        "idempotency_key": "autosave-1",
+        "document": {"intervention_report": "Versão A"},
+    }
+
+    saved = service.save_autosave(**arguments)
+    replay = service.save_autosave(**arguments)
+
+    assert replay["revision"] == saved["revision"]
+    assert replay["server_document"]["intervention_report"] == "Versão A"
+    with pytest.raises(RevisionConflictError) as conflict:
+        service.save_autosave(
+            **{
+                **arguments,
+                "idempotency_key": "autosave-2",
+                "document": {"intervention_report": "Versão B"},
+            }
+        )
+    assert conflict.value.snapshot["server_document"]["intervention_report"] == "Versão A"
+
+
+def test_close_session_autosaves_and_releases_only_browser_session(tmp_path):
+    path = make_active_file(tmp_path, "2026_5006")
+    service = EditingStateService(tmp_path / "editing", lease_seconds=120)
+    first_user = EditorIdentity("user-a", "Utilizador A")
+    lease = service.acquire_lease(path, first_user, "tab-a")
+
+    closed = service.close_editing_session(
+        document_id=lease["document_id"],
+        identity=first_user,
+        client_id="tab-a",
+        lease_token=lease["lease"]["token"],
+        base_revision=lease["revision"],
+        idempotency_key="close-1",
+        document={"intervention_report": "Guardado ao fechar"},
+    )
+    replacement = service.acquire_lease(
+        path,
+        first_user,
+        "tab-b",
+    )
+
+    assert closed["autosaved"] is True
+    assert closed["released"] is True
+    assert closed["editing"]["lease"]["owner_id"] == "user-a"
+    assert closed["editing"]["lease"]["client_id"] is None
+    assert closed["editing"]["server_document"]["intervention_report"] == "Guardado ao fechar"
+    assert replacement["lease"]["owner_id"] == "user-a"
+
+
+def test_close_session_releases_lease_even_if_revision_is_stale(tmp_path):
+    path = make_active_file(tmp_path, "2026_5007")
+    service = EditingStateService(tmp_path / "editing")
+    identity = EditorIdentity("user-a", "Utilizador A")
+    lease = service.acquire_lease(path, identity, "tab-a")
+    service.save_autosave(
+        document_id=lease["document_id"], identity=identity, client_id="tab-a",
+        lease_token=lease["lease"]["token"], base_revision=lease["revision"],
+        idempotency_key="save-before-close", document={"intervention_report": "Servidor"},
+    )
+    closed = service.close_editing_session(
+        document_id=lease["document_id"], identity=identity, client_id="tab-a",
+        lease_token=lease["lease"]["token"], base_revision=lease["revision"],
+        idempotency_key="stale-close", document={"intervention_report": "Local"},
+    )
+
+    assert closed["revision_conflict"] is True
+    assert closed["editing"]["lease"]["owner_id"] == "user-a"
+    assert closed["editing"]["lease"]["client_id"] is None
+    assert closed["editing"]["server_document"]["intervention_report"] == "Servidor"
+
+
+def test_web_ready_sheet_gives_each_technician_an_isolated_workspace(tmp_path):
+    path = make_active_file(tmp_path, "2026_5100")
+    app = create_app(
+        file_service=FileService(path.parent),
+        archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(tmp_path / "editing"),
+    )
+    first_client = app.test_client()
+    second_client = app.test_client()
+
+    first_response = first_client.post(
+        "/api/file/2026_5100/lease", json={"client_id": "first-tab"}
+    )
+    second_response = second_client.post(
+        "/api/file/2026_5100/lease", json={"client_id": "second-tab"}
+    )
+    first = first_response.get_json()["editing"]
+    second = second_response.get_json()["editing"]
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first["document_id"] != second["document_id"]
+
+    for client, editing, client_id, report in (
+        (first_client, first, "first-tab", "Trabalho do técnico A"),
+        (second_client, second, "second-tab", "Trabalho do técnico B"),
+    ):
+        response = client.post(
+            "/api/file/2026_5100/autosave",
+            json={
+                "document": {"intervention_report": report},
+                "_edit": {
+                    "document_id": editing["document_id"],
+                    "client_id": client_id,
+                    "lease_token": editing["lease"]["token"],
+                    "base_revision": editing["revision"],
+                    "idempotency_key": f"autosave-{client_id}",
+                },
+            },
+        )
+        assert response.status_code == 200
+        assert response.get_json()["editing"]["server_document"]["intervention_report"] == report
+
+    first_recovered = first_client.post(
+        "/api/file/2026_5100/lease", json={"client_id": "first-tab"}
+    ).get_json()["editing"]
+    second_recovered = second_client.post(
+        "/api/file/2026_5100/lease", json={"client_id": "second-tab"}
+    ).get_json()["editing"]
+    assert first_recovered["server_document"]["intervention_report"] == "Trabalho do técnico A"
+    assert second_recovered["server_document"]["intervention_report"] == "Trabalho do técnico B"
+
+def test_web_leases_isolate_files_and_autosave_conflicts(tmp_path):
+    first_path = make_active_file(tmp_path, "2026_5101_2026-07-14_AA")
+    make_active_file(tmp_path, "2026_5102_2026-07-14_BB")
+    app = create_app(
+        file_service=FileService(first_path.parent),
+        archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(tmp_path / "editing"),
+    )
+    first_client = app.test_client()
+    second_client = app.test_client()
+
+    first_lease_response = first_client.post(
+        "/api/file/2026_5101_2026-07-14_AA/lease",
+        json={"client_id": "first-tab"},
+    )
+    first_lease = first_lease_response.get_json()["editing"]
+    locked_response = second_client.post(
+        "/api/file/2026_5101_2026-07-14_AA/lease",
+        json={"client_id": "second-tab"},
+    )
+    other_file_response = second_client.post(
+        "/api/file/2026_5102_2026-07-14_BB/lease",
+        json={"client_id": "second-tab"},
+    )
+
+    assert first_lease_response.status_code == 200
+    assert locked_response.status_code == 423
+    assert locked_response.get_json()["code"] == "lease_conflict"
+    assert other_file_response.status_code == 200
+
+    edit = {
+        "document_id": first_lease["document_id"],
+        "client_id": "first-tab",
+        "lease_token": first_lease["lease"]["token"],
+        "base_revision": first_lease["revision"],
+        "idempotency_key": "web-autosave-1",
+    }
+    autosave_response = first_client.post(
+        "/api/file/2026_5101_2026-07-14_AA/autosave",
+        json={
+            "document": {"intervention_report": "Autosave web"},
+            "_edit": edit,
+        },
+    )
+    replay_response = first_client.post(
+        "/api/file/2026_5101_2026-07-14_AA/autosave",
+        json={
+            "document": {"intervention_report": "Autosave web"},
+            "_edit": edit,
+        },
+    )
+    stale_response = first_client.post(
+        "/api/file/2026_5101_2026-07-14_AA/autosave",
+        json={
+            "document": {"intervention_report": "Revisão obsoleta"},
+            "_edit": {**edit, "idempotency_key": "web-autosave-2"},
+        },
+    )
+
+    assert autosave_response.status_code == 200
+    assert replay_response.status_code == 200
+    assert replay_response.get_json()["editing"]["revision"] == autosave_response.get_json()["editing"]["revision"]
+    assert stale_response.status_code == 409
+    assert stale_response.get_json()["code"] == "revision_conflict"
+    assert stale_response.get_json()["editing"]["server_document"]["intervention_report"] == "Autosave web"
+
+
+def test_web_close_endpoint_autosaves_but_keeps_draft_owner(tmp_path):
+    path = make_active_file(tmp_path, "2026_5103_2026-07-14_CC")
+    app = create_app(
+        file_service=FileService(path.parent),
+        archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(tmp_path / "editing"),
+    )
+    first_client = app.test_client()
+    second_client = app.test_client()
+    lease = first_client.post(
+        "/api/file/2026_5103_2026-07-14_CC/lease",
+        json={"client_id": "closing-tab"},
+    ).get_json()["editing"]
+
+    close_response = first_client.post(
+        "/api/file/2026_5103_2026-07-14_CC/editing/close",
+        json={
+            "document": {"intervention_report": "Fecho seguro"},
+            "_edit": {
+                "document_id": lease["document_id"],
+                "client_id": "closing-tab",
+                "lease_token": lease["lease"]["token"],
+                "base_revision": lease["revision"],
+                "idempotency_key": "web-close-1",
+            },
+        },
+    )
+    replacement_response = second_client.post(
+        "/api/file/2026_5103_2026-07-14_CC/lease",
+        json={"client_id": "next-tab"},
+    )
+
+    assert close_response.status_code == 200
+    assert close_response.get_json()["autosaved"] is True
+    assert close_response.get_json()["released"] is True
+    assert close_response.get_json()["editing"]["lease"]["owner_id"]
+    assert close_response.get_json()["editing"]["lease"]["client_id"] is None
+    assert (
+        close_response.get_json()["editing"]["server_document"]["intervention_report"]
+        == "Fecho seguro"
+    )
+    assert replacement_response.status_code == 423
+    assert replacement_response.get_json()["code"] == "lease_conflict"
+
+
+def test_graph_upload_uses_if_match_and_persists_new_etag(tmp_path, monkeypatch):
+    local_file = tmp_path / "draft.json"
+    local_file.write_text("{}", encoding="utf-8")
+    service = GraphStorageService(
+        GraphConfig("tenant", "client", "secret", "drive")
+    )
+    calls = []
+
+    def fake_graph_bytes(method, path, data=None, content_type=None, headers=None):
+        calls.append({"method": method, "path": path, "headers": headers})
+        return json.dumps({
+            "id": "item-1",
+            "name": "draft.json",
+            "size": 2,
+            "lastModifiedDateTime": "2026-07-10T10:00:00Z",
+            "eTag": '"etag-new"',
+        }).encode("utf-8")
+
+    monkeypatch.setattr(service, "_graph_bytes", fake_graph_bytes)
+    item = service.upload_file(local_file, "Activas/draft.json", expected_etag='"etag-old"')
+    service._write_item_meta(service._item_meta_path(local_file), item)
+    metadata = json.loads(service._item_meta_path(local_file).read_text(encoding="utf-8"))
+
+    assert calls[0]["headers"] == {"If-Match": '"etag-old"'}
+    assert metadata["eTag"] == '"etag-new"'
+
+
+def test_cache_validation_includes_graph_etag(tmp_path):
+    local_file = tmp_path / "cached.xlsx"
+    local_file.write_bytes(b"cache")
+    metadata_path = local_file.with_name(f"{local_file.name}.graph.json")
+    metadata_path.write_text(json.dumps({
+        "id": "item-1",
+        "size": 5,
+        "lastModifiedDateTime": "2026-07-10T10:00:00Z",
+        "eTag": '"etag-old"',
+    }), encoding="utf-8")
+    item = {
+        "id": "item-1",
+        "size": 5,
+        "lastModifiedDateTime": "2026-07-10T10:00:00Z",
+        "eTag": '"etag-new"',
+    }
+
+    assert not GraphStorageService._is_cache_current(local_file, metadata_path, item)
+    item["eTag"] = '"etag-old"'
+    assert GraphStorageService._is_cache_current(local_file, metadata_path, item)
+
+
+def test_feature_five_assets_and_api_are_not_http_cached(tmp_path):
+    path = make_active_file(tmp_path, "2026_5201")
+    app = create_app(
+        file_service=FileService(path.parent),
+        archive_service=ArchiveService(),
+        editing_state_service=EditingStateService(tmp_path / "editing"),
+    )
+    client = app.test_client()
+
+    html = client.get("/?file=2026_5201").get_data(as_text=True)
+    api_response = client.get("/api/file/2026_5201")
+    service_worker = Path("src/web/static/service-worker.js").read_text(encoding="utf-8")
+
+    assert 'id="recovery-panel"' in html
+    document_editor = Path("src/web/static/js/document-editor.js").read_text(encoding="utf-8")
+    assert 'id="autosave-status"' in html
+    assert "editing-coordinator.js" in html
+    assert "no-store" in api_response.headers["Cache-Control"]
+    assert 'requestUrl.pathname.startsWith("/api/")' in service_worker
+    assert 'caches.match("/")' not in service_worker
+    assert "editing-state.css" in service_worker
+    coordinator = Path("src/web/static/js/editing-coordinator.js").read_text(encoding="utf-8")
+    editing_css = Path("src/web/static/css/editing-state.css").read_text(encoding="utf-8")
+    assert ".autosave-status[hidden]" in editing_css
+    assert "Guardado neste dispositivo" in coordinator
+    assert "setCommitActionsEnabled(false)" in coordinator
+    assert ".editing-lock-banner[hidden]" in editing_css
+    assert "const SERVER_SAVE_DELAY = 750" in coordinator
+    assert "HEARTBEAT_DELAY" not in coordinator
+    assert "const MAX_RETRY_DELAY = 30000" in coordinator
+    assert "comparablePayload" in coordinator
+    assert 'window.addEventListener("pagehide"' in coordinator
+    assert 'window.addEventListener("beforeunload", releaseOnPageExit)' not in coordinator
+    assert 'document.addEventListener("freeze"' in coordinator
+    assert 'window.addEventListener("pageshow"' in coordinator
+    assert 'document.addEventListener("resume"' in coordinator
+    assert "prepareOperation" in coordinator
+    assert "requireOperationMetadata" in document_editor
+    assert 'document.addEventListener("visibilitychange", () =>' in coordinator
+    assert "/editing/close" in coordinator
+    assert "/bootstrap?client_id=" in coordinator
+    assert "BroadcastChannel" in coordinator
+    assert "indexedDB.open" in coordinator
+    assert "Guardado no servidor" in coordinator
+    assert "window.history.pushState" not in document_editor
+    assert "const loadFileData" not in document_editor
+    assert "window.location.reload()" in document_editor
+    assert 'id="btn-save-send"' in html and 'data-i18n="save_send" disabled' in html
+    assert 'id="btn-save-draft"' in html and 'data-i18n="save_draft" disabled' in html
+    # This release must invalidate the old static cache on existing PWA clients.
+    assert 'BUILD_VERSION = "20260928-offline-status-v2"' in service_worker
+    assert '/static/js/document-validation.js${VERSION_QUERY}' in service_worker
