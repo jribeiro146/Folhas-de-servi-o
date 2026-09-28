@@ -30,7 +30,8 @@ Aplicar a raiz desta branch; não instalar a cópia sob `migracao/`.
 - Correções da revisão de `73bb3a2`: duas gravações antes do worker reutilizam
   metadados de publicação mais recentes; uploads antigos ultrapassados por uma
   publicação posterior confirmada deixam de bloquear a finalização e de poder
-  republicar conteúdo antigo. O resultado guarda `superseded_by`.
+  republicar conteúdo antigo. O resultado guarda `superseded_by`. Uma publicação
+  posterior parcial impede o retry do instantâneo anterior até ser resolvida.
 - Criação de pasta recuperável após perda da resposta POST/PATCH, através de um
   nome temporário aleatório persistido e confirmação do ID antes da mudança de nome.
   Pastas homónimas sem prova de propriedade continuam protegidas contra adoção.
@@ -39,6 +40,7 @@ Aplicar a raiz desta branch; não instalar a cópia sob `migracao/`.
   recupera cópias importadas sem apagar marcadores de edições locais.
 - Trabalhos sem confirmação de commit expiram para revisão após uma hora
   (configurável), sem executar efeitos externos. Repetir volta a validar o commit.
+  A expiração preserva os comprovativos de email já aceite.
   Estado malformado de um trabalho não interrompe a verificação dos restantes.
 - Contenção do mutex recebe HTTP 503 com `Retry-After: 2`, em vez de erro 500.
   Conflitos reais 409/412, também no arquivo, continuam a exigir reconciliação.

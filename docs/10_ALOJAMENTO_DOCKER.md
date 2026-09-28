@@ -129,6 +129,10 @@ confirmada do mesmo rascunho encerra uploads anteriores pendentes/falhados com
 `result.superseded_by`, mantendo payload e instantâneos anteriores para auditoria.
 Um upload falhado mais recente, ou de outro rascunho, continua pendente de resolução;
 não apagar a base SQLite nem marcar trabalhos manualmente como concluídos.
+Se uma gravação posterior já iniciou a publicação mas falhou parcialmente, os
+retries dos instantâneos anteriores ficam retidos com `blocked_by_newer_upload`.
+Repetir apenas a gravação mais recente: a anterior não pode sobrescrever conteúdo
+novo já publicado. Quando a mais recente termina, as anteriores ficam substituídas.
 
 Durante o refresh, metadados remotos deixam de ser descarregados para a cache.
 Os ficheiros remotos `.fs-local-dirty` e `.fs-local-dirty.tmp`, publicados por
@@ -137,7 +141,13 @@ Um conflito ou falha adia a limpeza e regista `graph_legacy_marker_cleanup_defer
 a próxima atualização volta a tentar. Não se eliminam documentos nem pastas.
 Uma cópia local importada do marcador só é removida quando tem a antiga sidecar
 Graph e os bytes ainda coincidem com o marcador remoto. Edições locais posteriores
-conservam a sua proteção. Não apagar marcadores locais em bloco.
+conservam a sua proteção e adiam a limpeza remota até à publicação local confirmada.
+Após limpar, a app obtém a versão da pasta antes de voltar a listar os filhos,
+para não associar uma versão nova a conteúdo antigo. Não apagar marcadores locais em bloco.
+Se o marcador remoto já não existir, não há prova suficiente para apagar a cópia
+local antiga automaticamente. O operador deve preservar uma cópia privada do
+rascunho, comparar os ficheiros locais e remotos e confirmar a inexistência de
+edições por publicar antes de remover apenas esse marcador e a respetiva sidecar.
 
 Novas pastas usam um nome temporário `.fs-upload-<identificador aleatório>`, que
 nunca aparece como folha, antes da mudança para o nome final. A prova de propriedade
@@ -154,7 +164,8 @@ Nunca eliminar ou adotar uma pasta apenas por ter o mesmo nome.
 Trabalhos `held` aguardam a confirmação da operação na base de edição. Após
 `FS_GRAPH_COMMIT_GUARD_SECONDS` (3600 por defeito, mínimo 60) passam a `failed`
 sem repetição automática, com motivo visível. A repetição manual volta a verificar
-o commit; o tempo decorrido não autoriza envio, arquivo ou remoção.
+o commit; o tempo decorrido não autoriza envio, arquivo ou remoção. A expiração
+preserva os comprovativos existentes de email aceite, para não repetir envios.
 
 Conflitos reais 409/412 em `archive_and_remove` permanecem terminais. Verificar
 as versões e os artefactos já publicados antes da repetição manual; repetir sem

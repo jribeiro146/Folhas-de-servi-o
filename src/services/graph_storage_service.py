@@ -660,18 +660,12 @@ class GraphStorageService:
                     refreshed = self._get_item_by_path(
                         self._join_graph_path(self.config.active_path, folder_name)
                     )
-                    if not refreshed or refreshed.get("id") != folder_item.get("id"):
+                    if (not refreshed or refreshed.get("id") != folder_item.get("id")
+                            or not refreshed.get("eTag")):
                         raise GraphStorageError("Pasta remota alterada durante a limpeza; volte a atualizar.")
-                    # Our own cleanup changes the folder eTag. Advance a dirty
-                    # cache's metadata only if it matched before that cleanup.
-                    metadata = local_dir / ".graph_bundle.json"
-                    try:
-                        previous = json.loads(metadata.read_text(encoding="utf-8"))
-                    except (OSError, ValueError):
-                        previous = {}
-                    if (isinstance(previous, dict) and previous.get("eTag")
-                            and previous["eTag"] == folder_item.get("eTag")):
-                        self._write_bundle_meta(local_dir, refreshed)
+                    # The new folder baseline must PRECEDE its child snapshot.
+                    # Never stamp a newer folder eTag onto pre-cleanup contents.
+                    children = self._valid_inventory_items(self._list_children(str(refreshed["id"])))
                     folder_item = refreshed
                 if dirty_version(local_dir):
                     diagnostic("active_cache_skipped", **file_fields(folder_name), reason="local_changes")
@@ -752,6 +746,10 @@ class GraphStorageService:
                     if marker.read_bytes() == remote_bytes:
                         marker.unlink()
                         imported_meta.unlink(missing_ok=True)
+                if dirty_version(local_dir):
+                    diagnostic("graph_legacy_marker_cleanup_deferred", level=logging.WARNING,
+                               graph_item_ref=fingerprint(child.get("id", "")), reason="local_changes")
+                    continue
                 etag = str(child.get("eTag") or "")
                 if not etag:
                     raise GraphStorageError("Marcador remoto sem versão; limpeza adiada.")

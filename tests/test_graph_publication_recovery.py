@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from src.services.active_file_index import ACTIVE_INDEX_NAME
+from src.services.editing_state_repository import SqliteStateRepository
 from src.services.file_service import FileService
 from src.services.graph_storage_service import GraphConfig, GraphConflictError, GraphStorageError, GraphStorageService
 from src.services.graph_sync_queue import GraphSyncQueue
@@ -107,6 +108,48 @@ def test_partial_upload_metadata_is_reused_without_clearing_a_newer_local_edit(t
     assert not dirty_version(source.parent)
 
 
+def test_older_retry_cannot_overwrite_a_newer_partially_published_save(tmp_path):
+    source = existing_draft(tmp_path)
+    graph = ConditionalGraph()
+    upload = graph.upload_file
+    fail_first = [True]
+    photo_conflict = [True]
+
+    def upload_with_failure(path, remote_path, **kwargs):
+        if path.read_bytes() == b"first save" and fail_first:
+            fail_first.pop()
+            raise GraphStorageError("Transient failure before first upload")
+        return upload(path, remote_path, **kwargs)
+
+    def photos(*args, **kwargs):
+        if photo_conflict:
+            raise GraphConflictError("Newer workbook published, but photo conflict")
+        return []
+
+    graph.upload_file = upload_with_failure
+    graph._upload_photo_folder = photos
+    queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", auto_start=False)
+    first = queue.enqueue("upload_active", {"draft_path": str(source)})
+    source.write_bytes(b"second save")
+    mark_dirty(source.parent)
+    second = queue.enqueue("upload_active", {"draft_path": str(source)})
+    queue.run_until_idle()
+    assert graph.content == b"second save"
+    with queue._connect() as db:
+        db.execute("UPDATE graph_sync_jobs SET next_attempt_at=0 WHERE id=?", (first["id"],))
+    queue.run_until_idle()
+    assert graph.content == b"second save"
+    assert not queue.status(first["id"])["will_retry"]
+    assert queue.has_unfinished_upload(source)
+    with pytest.raises(ValueError, match="gravação posterior"):
+        queue.retry(first["id"])
+    photo_conflict.clear()
+    queue.retry(second["id"])
+    queue.run_until_idle()
+    assert graph.content == b"second save"
+    assert not queue.has_unfinished_upload(source)
+
+
 @pytest.mark.parametrize("old_status", ["failed", "pending", "held"])
 @pytest.mark.parametrize("legacy", [False, True])
 def test_newer_confirmed_upload_retires_old_jobs_and_cannot_republish_them(tmp_path, old_status, legacy):
@@ -136,6 +179,17 @@ def test_earlier_success_or_another_draft_does_not_hide_latest_failure(tmp_path)
         db.execute("UPDATE graph_sync_jobs SET status='complete' WHERE id=?", (early["id"],))
         db.execute("UPDATE graph_sync_jobs SET status='failed' WHERE id=?", (late["id"],))
     assert queue.has_unfinished_upload(source)
+
+
+def test_corrupt_legacy_upload_path_does_not_stop_claiming_other_jobs(tmp_path):
+    source = draft(tmp_path)
+    queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", auto_start=False)
+    old = queue.enqueue("upload_active", {"draft_path": str(source)})
+    ready = queue.enqueue("remove_active", {"source_name": "synthetic.xlsx"})
+    with queue._connect() as db:
+        db.execute("UPDATE graph_sync_jobs SET status='failed', payload_json=? WHERE id=?",
+                   (json.dumps({"draft_path": "\u0000"}), old["id"]))
+    assert queue._claim_next()["id"] == ready["id"]
 
 
 class RecoverableCreation(GraphStorageService):
@@ -287,7 +341,7 @@ def test_remote_dirty_marker_is_not_imported_and_legacy_copy_does_not_freeze_cac
         if local_state == "edited_legacy":
             (local_dir / (DIRTY_MARKER + ".graph.json")).write_text("{}")
     graph.sync_active_files(tmp_path)
-    assert graph.deleted == ["marker"]
+    assert graph.deleted == ([] if local_state.startswith("edited") else ["marker"])
     graph.children = [item(name + ".xlsx", etag="v2")]
     graph.version = b"v2"
     graph.sync_active_files(tmp_path)
@@ -333,6 +387,41 @@ def test_marker_cleanup_conflict_does_not_block_download_or_create_local_dirty_m
     assert not dirty_version(tmp_path / "bundle")
 
 
+def test_cleanup_reloads_children_before_accepting_its_new_folder_etag(tmp_path):
+    name = "draft_2026-09-28_TF"
+    graph = InventoryGraph(name)
+    graph.items = [{"id": "folder", "name": name, "eTag": "folder-v1", "folder": {"childCount": 2}}]
+    graph.children = [item(name + ".xlsx")]
+    graph.sync_active_files(tmp_path)  # local workbook and child metadata v1
+    graph.children.append(item(DIRTY_MARKER, "marker", "marker-v1"))
+    sequence = []
+    original_delete = graph._delete_item_by_id
+    original_get = graph._get_item_by_path
+    original_list = graph._list_children
+
+    def delete_and_concurrent_edit(*args, **kwargs):
+        original_delete(*args, **kwargs)
+        graph.children = [item(name + ".xlsx", etag="v2")]
+        graph.version = b"v2"
+        sequence.append("delete")
+
+    def get_folder(path):
+        sequence.append("folder")
+        return original_get(path)
+
+    def list_children(item_id):
+        sequence.append("children")
+        return list(original_list(item_id))
+
+    graph._delete_item_by_id = delete_and_concurrent_edit
+    graph._get_item_by_path = get_folder
+    graph._list_children = list_children
+    graph.sync_active_files(tmp_path)
+    assert sequence == ["children", "delete", "folder", "children"]
+    assert (tmp_path / name / (name + ".xlsx")).read_bytes() == b"v2"
+    assert graph._expected_etag(tmp_path / name / (name + ".xlsx")) == "v2"
+
+
 @pytest.mark.parametrize("malformed", ["[]", '{"_commit_guard":[]}', '{"_commit_guard":{"database":"missing"}}'])
 def test_expired_held_job_cannot_block_worker_or_bypass_commit_on_retry(tmp_path, malformed):
     queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", auto_start=False)
@@ -369,3 +458,68 @@ def test_archive_conflict_never_sends_mail_or_removes_active_file(tmp_path):
     state = queue.status(job["id"])
     assert state["status"] == "failed" and not state["will_retry"]
     assert "412" in state["last_error"]
+
+
+def test_held_expiration_preserves_mail_receipt_and_recovery_never_resends(tmp_path):
+    editing = SqliteStateRepository(tmp_path / "editing.sqlite3")
+    source = draft(tmp_path)
+    calls = []
+
+    class Graph:
+        def upload_archive_bundle(self, path):
+            return [path.name]
+
+        def export_archive_pdf(self, path):
+            pdf = path.with_suffix(".pdf")
+            pdf.write_bytes(b"%PDF-1.4 synthetic")
+            return pdf, pdf.name
+
+        def remove_active_name(self, *args, **kwargs):
+            return True
+
+    class Mail:
+        def send_prepared(self, *args, **kwargs):
+            calls.append("mail")
+            return {"accepted": True}
+
+    queue = GraphSyncQueue(Graph(), tmp_path / "queue.sqlite3", mail_service=Mail(), auto_start=False)
+    queue.mail_job_max_attempts = 1
+    failed_once = []
+
+    def after_mail(*args, **kwargs):
+        if not failed_once:
+            failed_once.append(True)
+            raise RuntimeError("Failure after accepted mail, before completion")
+        return None
+
+    queue._enqueue_teams_notification = after_mail
+    with editing.transaction("document", lambda: {}) as state:
+        state["operations"] = {"finalize": {"status": "complete"}}
+    job = queue.enqueue("archive_and_remove", {
+        "archived_path": str(source), "source_name": source.parent.name,
+        "mail": {"to": "recipient@example.invalid"},
+        "_commit_guard": {"database": str(editing.database_path),
+                          "document_id": "document", "operation_id": "finalize"},
+    })
+    queue.run_until_idle()
+    first_result = queue.status(job["id"])["result"]
+    assert first_result["mail"]["accepted"] is True
+    assert queue.status(job["id"])["status"] == "failed"
+
+    with editing.transaction("document", lambda: {}) as state:
+        state["operations"]["finalize"]["status"] = "unknown"
+    assert queue.retry(job["id"])["status"] == "held"
+    with queue._connect() as db:
+        db.execute("UPDATE graph_sync_jobs SET updated_at=? WHERE id=?",
+                   (time.time() - 7200, job["id"]))
+    queue.run_until_idle()
+    expired = queue.status(job["id"])
+    assert expired["status"] == "failed"
+    assert expired["result"] == {**first_result, "commit_guard_required": True}
+
+    with editing.transaction("document", lambda: {}) as state:
+        state["operations"]["finalize"]["status"] = "complete"
+    queue.retry(job["id"])
+    queue.run_until_idle()
+    assert queue.status(job["id"])["status"] == "complete"
+    assert calls == ["mail"]

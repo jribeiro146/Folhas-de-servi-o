@@ -279,6 +279,7 @@ class GraphSyncQueue:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._retire_superseded_uploads(connection)
+            self._hold_outdated_upload_retries(connection)
             row = connection.execute(
                 "SELECT * FROM graph_sync_jobs WHERE id = ?",
                 (job_id,),
@@ -287,6 +288,9 @@ class GraphSyncQueue:
                 connection.rollback()
                 raise KeyError(job_id)
             current = self._serialize(row)
+            if (current["result"] or {}).get("blocked_by_newer_upload"):
+                connection.commit()
+                raise ValueError("Existe uma gravação posterior. Repita a publicação mais recente.")
             if current["status"] != "failed" or current["will_retry"]:
                 connection.rollback()
                 raise ValueError("Apenas trabalhos falhados e parados podem ser repetidos.")
@@ -327,10 +331,19 @@ class GraphSyncQueue:
         for row in rows:
             payload = self._json_object(row["payload_json"])
             # New jobs point to immutable staging; older jobs use the live path.
-            value = payload.get("_original_draft_path") or payload.get("draft_path")
-            if value and Path(value).resolve() == source:
+            if self._upload_source(payload) == source:
                 return True
         return False
+
+    @staticmethod
+    def _upload_source(payload: dict[str, Any]) -> Path | None:
+        value = payload.get("_original_draft_path") or payload.get("draft_path")
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            return Path(value).resolve()
+        except (OSError, ValueError):
+            return None
 
     def _retire_superseded_uploads(self, connection: sqlite3.Connection) -> None:
         """A later confirmed snapshot supersedes earlier work for the same draft.
@@ -340,15 +353,14 @@ class GraphSyncQueue:
         """
         rows = connection.execute(
             "SELECT * FROM graph_sync_jobs WHERE kind = 'upload_active' "
-            "ORDER BY created_at DESC, rowid DESC"
+            "ORDER BY rowid DESC"
         ).fetchall()
         confirmed: dict[Path, str] = {}
         for row in rows:
             payload = self._json_object(row["payload_json"])
-            value = payload.get("_original_draft_path") or payload.get("draft_path")
-            if not isinstance(value, str) or not value:
+            source = self._upload_source(payload)
+            if source is None:
                 continue
-            source = Path(value).resolve()
             if row["status"] == "complete":
                 confirmed.setdefault(source, row["id"])
             elif source in confirmed and row["status"] in {"pending", "failed", "held"}:
@@ -359,6 +371,31 @@ class GraphSyncQueue:
                     "result_json = ?, last_error = NULL, updated_at = ? WHERE id = ?",
                     (json.dumps(result), time.time(), row["id"]),
                 )
+
+    def _hold_outdated_upload_retries(self, connection: sqlite3.Connection) -> None:
+        """Never let an older retry overwrite a newer, partially published save."""
+        rows = connection.execute(
+            "SELECT * FROM graph_sync_jobs WHERE kind = 'upload_active' "
+            "ORDER BY rowid DESC"
+        ).fetchall()
+        started: dict[Path, str] = {}
+        for row in rows:
+            payload = self._json_object(row["payload_json"])
+            source = self._upload_source(payload)
+            if source is None:
+                continue
+            if source in started and row["status"] in {"pending", "failed", "held"}:
+                result = self._json_object(row["result_json"])
+                if not result.get("blocked_by_newer_upload"):
+                    result["blocked_by_newer_upload"] = started[source]
+                    connection.execute(
+                        "UPDATE graph_sync_jobs SET status = 'failed', retryable = 0, "
+                        "result_json = ?, last_error = ?, updated_at = ? WHERE id = ?",
+                        (json.dumps(result), "Existe uma gravação posterior. "
+                         "Resolva ou repita a publicação mais recente.", time.time(), row["id"]),
+                    )
+            if int(row["attempts"]) > 0:
+                started.setdefault(source, row["id"])
 
     def summary(self) -> dict[str, int]:
         result = {"pending": 0, "running": 0, "failed": 0, "complete": 0}
@@ -444,6 +481,7 @@ class GraphSyncQueue:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._retire_superseded_uploads(connection)
+            self._hold_outdated_upload_retries(connection)
             self._release_committed_jobs(connection)
             self._hold_stale_mail_jobs(connection, now=now)
             active = connection.execute(
@@ -489,7 +527,7 @@ class GraphSyncQueue:
     def _release_committed_jobs(self, connection: sqlite3.Connection) -> None:
         """Only publish a final archive after its editing transaction committed."""
         rows = connection.execute(
-            "SELECT id, payload_json, updated_at FROM graph_sync_jobs WHERE status = 'held'"
+            "SELECT id, payload_json, result_json, updated_at FROM graph_sync_jobs WHERE status = 'held'"
         ).fetchall()
         for row in rows:
             try:
@@ -518,12 +556,14 @@ class GraphSyncQueue:
                 # Isolate malformed legacy state to this job, not the whole worker.
                 pass
             if time.time() - float(row["updated_at"]) >= self.commit_guard_seconds:
+                result = self._json_object(row["result_json"])
+                result["commit_guard_required"] = True
                 connection.execute(
                     "UPDATE graph_sync_jobs SET status = 'failed', retryable = 0, "
                     "last_error = ?, result_json = ?, updated_at = ? WHERE id = ?",
                     ("Confirmação local da finalização em falta ou inválida. "
                      "Requer revisão; repetir volta a verificar a confirmação.",
-                     json.dumps({"commit_guard_required": True}), time.time(), row["id"]),
+                     json.dumps(result), time.time(), row["id"]),
                 )
 
     def _execute(
