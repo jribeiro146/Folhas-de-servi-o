@@ -1,0 +1,8 @@
+{
+  "base_commit": "1ede4d8a690593a5f2b1d2908f3670fc1d038d7d",
+  "document_id": "synthetic-legacy-document",
+  "writer_sha256": "a768c84e6893d2ed0cfd59600a43df2df4161d598427f610ae8943f80d9dba0a",
+  "schema_sha256": "97fda81ba70af67c0f84ee67be575f7e3ad2c99c93232bf3b44d5ba93dbd568d",
+  "fixture_sha256": "87c66b07771d8fe9e247fd8ddad944b88e5a5f83dc7c6ab2e21e845d3c67d29e",
+  "synthetic": true
+}

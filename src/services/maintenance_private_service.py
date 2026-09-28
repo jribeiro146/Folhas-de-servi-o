@@ -51,6 +51,9 @@ class MaintenancePrivateService:
         key = hashlib.sha256(
             f"{document_id}:{operation_id}:{fingerprint}".encode("utf-8")
         ).hexdigest()[:32]
+        # mkdir(parents=True, mode=...) applies the mode only to the leaf.
+        # First-time finalization may precede any private draft write.
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         archive_root = self.root / "pdf"
         archive_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         destination = archive_root / key

@@ -1,6 +1,8 @@
 """SADI access and private archive checks with fictional users and no network."""
 
 import json
+import hashlib
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import uuid
@@ -13,6 +15,7 @@ from src.services.file_service import FileService
 from src.services.local_pdf_service import LocalPdfService
 from src.services.maintenance_private_service import MaintenancePrivateService
 from src.services.graph_storage_service import GraphStorageService
+from src.services.graph_sync_queue import GraphSyncQueue
 from tests.test_maintenance import complete_document, sign_document, synthetic_workbook
 import src.services.archive_service as archive_module
 import src.web.application as web
@@ -45,6 +48,9 @@ def production_sadi(tmp_path, monkeypatch, request):
             return SimpleNamespace(**payload) if payload else None
 
     class Graph:
+        def __init__(self):
+            self.calls = []
+
         @staticmethod
         def active_source_name(path):
             return path.parent.name
@@ -53,16 +59,17 @@ def production_sadi(tmp_path, monkeypatch, request):
         def active_source_etag(_path):
             return "synthetic-etag"
 
-    class Queue:
-        calls = []
+        def upload_active_bundle(self, path, *, fail_if_exists=False):
+            self.calls.append(("upload_active", path))
+            return [path.name]
 
-        @staticmethod
-        def has_unfinished_upload(_path):
-            return False
+        def upload_archive_bundle(self, path):
+            self.calls.append(("upload_archive", path))
+            return [path.name]
 
-        def enqueue(self, kind, payload, *, job_id=None):
-            self.calls.append((kind, payload))
-            return {"id": job_id, "status": "pending"}
+        def remove_active_name(self, name, *, expected_etag=None):
+            self.calls.append(("remove_active", name))
+            return True
 
     class Refresh:
         @staticmethod
@@ -72,16 +79,19 @@ def production_sadi(tmp_path, monkeypatch, request):
     def render(_html, destination):
         destination.write_bytes(b"%PDF-1.4\nsynthetic SADI access test")
 
+    graph = Graph()
+    queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", auto_start=False)
     app = web.create_app(
         file_service=files,
         editing_state_service=edits,
-        graph_service=Graph(),
-        graph_sync_queue=Queue(),
+        graph_service=graph,
+        graph_sync_queue=queue,
         graph_refresh_coordinator=Refresh(),
         work_folder_service=object(),
         microsoft_auth_service=Authentication(),
         local_pdf_service=LocalPdfService(renderer=render),
     )
+    app.extensions["test_graph_queue"] = queue
     assert not app.config["MAINTENANCE_DEMO"] and not app.config["SYNTHETIC_TEST_VERSION"]
     return app, app.test_client(), draft, edits, tmp_path
 
@@ -135,6 +145,8 @@ def test_only_named_microsoft_accounts_see_sadi_and_private_data_survives_other_
     login(client, " ACARVALHO@SENSORPOINT.PT ")
     allowed_html = client.get("/").get_data(as_text=True)
     assert "Checklists de manutenção" in allowed_html
+    assert "graphEnabled: true" in allowed_html
+    assert 'aria-live="polite" >A confirmar a lista do SharePoint' in allowed_html
     metadata = lease(client, draft, "allowed")
     sign_document(document, app.secret_key)
     saved = client.post(f"/api/file/{draft.stem}/draft", json={**document, "_edit": metadata})
@@ -190,6 +202,10 @@ def test_production_finalization_keeps_sadi_only_in_private_app_folder(productio
     private = MaintenancePrivateService(root / "private" / "sadi")
     _, entries, directory = private.bundle(key)
     assert len(entries) == 3 and len(list(directory.glob("*.pdf"))) == 3
+    if os.name != "nt":
+        for folder in (private.root, private.root / "pdf", directory):
+            assert folder.stat().st_mode & 0o777 == 0o700
+        assert all(path.stat().st_mode & 0o777 == 0o600 for path in directory.iterdir())
     for entry in entries:
         assert client.get(bundle_url + "/pdf/" + entry["name"]).status_code == 200
     login(client, "outro@sensorpoint.pt")
@@ -237,3 +253,101 @@ def test_allowed_editor_cannot_take_unrelated_draft(production_sadi):
     login(client, "acarvalho@sensorpoint.pt")
     result = client.post(f"/api/file/{draft.stem}/lease", json={"client_id": "other"})
     assert result.status_code == 423
+
+
+@pytest.mark.parametrize("sadi", [False, True])
+def test_real_queue_blocks_finalization_until_draft_upload_finishes(production_sadi, sadi):
+    app, client, draft, _edits, root = production_sadi
+    queue = app.extensions["test_graph_queue"]
+    login(client, "jribeiro@sensorpoint.pt")
+    metadata = lease(client, draft, "owner")
+    document = complete_document()
+    document["equipments"]["sadi"] = sadi
+    sign_document(document, app.secret_key)
+    upload = queue.enqueue("upload_active", {"draft_path": str(draft)})
+    before = draft.read_bytes()
+    blocked = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
+    assert blocked.status_code == 409, blocked.get_json()
+    assert blocked.get_json()["code"] == "publication_pending"
+    assert draft.read_bytes() == before and not list((root / "archive").rglob("*.xlsx"))
+    assert queue.graph_service.calls == []
+    queue.run_until_idle()  # Temporary SQLite queue and in-memory Graph only.
+    assert queue.status(upload["id"])["status"] == "complete"
+    finalized = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
+    assert finalized.status_code == 200, finalized.get_json()
+    job_id = finalized.get_json()["graph_job_id"]
+    queue.run_until_idle()
+    assert queue.status(job_id)["status"] == "complete"
+    repeated = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
+    assert repeated.status_code == 200 and repeated.get_json()["graph_job_id"] == job_id
+    queue.run_until_idle()
+    assert [kind for kind, _ in queue.graph_service.calls] == ["upload_active", "upload_archive", "remove_active"]
+
+
+@pytest.mark.parametrize("email", [None, "outro@sensorpoint.pt", "jribeiro@sensorpoint.pt"])
+@pytest.mark.parametrize("production_sadi", [{"flag": "true"}], indirect=True)
+def test_public_manifest_with_sadi_active_in_production(production_sadi, email):
+    app, client, *_ = production_sadi
+    assert app.config["MAINTENANCE_ENABLED"]
+    if email:
+        login(client, email)
+    response = client.get("/manifest.webmanifest")
+    assert response.status_code == 200
+    assert response.mimetype == "application/manifest+json"
+    assert response.get_json()["start_url"] == "/"
+    assert response.get_json()["icons"]
+    cached = client.get("/manifest.webmanifest", headers={"If-None-Match": response.headers["ETag"]})
+    assert cached.status_code == 304
+    assert client.get("/service-worker.js").status_code == 200
+
+
+def test_reads_private_checklist_written_by_1ede4d8_without_migration(production_sadi):
+    _app, client, draft, edits, root = production_sadi
+    fixture = Path(__file__).parent / "fixtures/sadi-private-1ede4d8.json"
+    content = fixture.read_bytes()
+    provenance = json.loads(fixture.with_suffix(".provenance.json").read_text(encoding="utf-8"))
+    assert provenance["base_commit"] == "1ede4d8a690593a5f2b1d2908f3670fc1d038d7d"
+    assert hashlib.sha256(content).hexdigest() == provenance["fixture_sha256"]
+    expected = json.loads(content)
+    assert expected[0]["conventional"][0]["checks"]["B44"]["answer"] == "OK"
+    private = MaintenancePrivateService(root / "private" / "sadi")
+    private.root.mkdir(parents=True, mode=0o700)
+    document_id = edits.resolve_document_id(draft)
+    # Copy the historical bytes directly to the original hashed filename.
+    # Do not call the new writer or normalize/migrate the input.
+    saved = private.root / (hashlib.sha256(document_id.encode()).hexdigest()[:32] + ".json")
+    saved.write_bytes(content)
+    if os.name != "nt":
+        saved.chmod(0o600)
+    before = saved.stat()
+    for empty_id in ("empty-one", "empty-two"):
+        empty = private.root / (hashlib.sha256(empty_id.encode()).hexdigest()[:32] + ".json")
+        empty.write_bytes(b"[]")
+        if os.name != "nt":
+            empty.chmod(0o600)
+        assert private.read(empty_id) == []
+    assert private.read(document_id) == expected
+    login(client, "jribeiro@sensorpoint.pt")
+    response = client.get(f"/api/file/{draft.stem}")
+    assert response.status_code == 200
+    assert expected[0]["location"] in json.dumps(response.get_json(), ensure_ascii=False)
+    assert "legacy-site-20260928" in json.dumps(response.get_json())
+    login(client, "outro@sensorpoint.pt")
+    assert "legacy-site-20260928" not in json.dumps(client.get(f"/api/file/{draft.stem}").get_json())
+    assert saved.read_bytes() == content
+    assert saved.stat().st_mtime_ns == before.st_mtime_ns
+    assert saved.stat().st_mode == before.st_mode
+    assert len(list(private.root.glob("*.json"))) == 3
+    assert not (private.root / "pdf").exists()
+    if os.name != "nt":
+        assert private.root.stat().st_mode & 0o777 == 0o700
+        assert all(path.stat().st_mode & 0o777 == 0o600 for path in private.root.glob("*.json"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permissions verified by Linux CI")
+def test_private_writes_keep_700_directories_and_600_files(tmp_path):
+    private = MaintenancePrivateService(tmp_path / "sadi")
+    private.write("synthetic", [{"location": "Local fictício"}])
+    private.write("synthetic", [{"location": "Local fictício revisto"}])
+    assert private.root.stat().st_mode & 0o777 == 0o700
+    assert all(path.stat().st_mode & 0o777 == 0o600 for path in private.root.iterdir())

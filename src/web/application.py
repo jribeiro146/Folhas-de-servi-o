@@ -47,6 +47,7 @@ from src.document_schema import (
     strip_signature_payload,
 )
 from src.field_map import FIELD_MAP, FIELDS_BY_GROUP
+from src.services.file_diagnostics import diagnostic, file_fields, lookup_fields
 from src.logging_config import (
     bind_request_context,
     log_event,
@@ -534,7 +535,7 @@ def create_app(
 
     @app.after_request
     def redact_maintenance_json(response):
-        if not response.is_json or maintenance_access_allowed():
+        if response.direct_passthrough or not response.is_json or maintenance_access_allowed():
             return response
         body = response.get_json(silent=True)
         if isinstance(body, (dict, list)):
@@ -946,7 +947,7 @@ def create_app(
     ) -> str:
         document_data = normalize_document_for_file(payload, file_name)
         responsible_technician = get_primary_technician_name(document_data)
-        embedded_styles, logo_src = load_document_assets(app.static_folder)
+        embedded_styles, logo_src = load_document_assets(app.static_folder, page_context=f"FS {document_data['service_number']}")
         return render_template(
             "service_document.html",
             file_name=file_name,
@@ -1002,6 +1003,7 @@ def create_app(
             technician_required_fields=TECHNICIAN_REQUIRED_FIELDS,
             signature_required_fields=SIGNATURE_REQUIRED_FIELDS,
             mail_enabled=mail_service is not None,
+            graph_enabled=graph_service is not None,
             mail_test_recipient=(
                 mail_service.config.test_recipient if mail_service is not None else ""
             ),
@@ -1115,12 +1117,19 @@ def create_app(
 
     @app.route("/api/files")
     def get_files():
-        if request.args.get("refresh") in {"1", "true", "yes"}:
-            schedule_graph_refresh(force=True)
-        files_data = [serialize_file_entry(entry) for entry in file_service.list_valid_files()]
+        refresh_mode = request.args.get("refresh")
+        requested_refresh = None
+        if refresh_mode != "0":
+            requested_refresh = schedule_graph_refresh(force=refresh_mode in {"1", "true", "yes"})
+        entries = file_service.list_valid_files()
+        files_data = [serialize_file_entry(entry) for entry in entries]
         return jsonify({
             "success": True,
             "files": files_data,
+            "html": render_template("partials/active_file_list.html", files=entries),
+            "requested_refresh_id": (requested_refresh or {}).get("refresh_id"),
+            "requested_refresh_sequence": (requested_refresh or {}).get("refresh_sequence"),
+            "requested_refresh_generation": (requested_refresh or {}).get("generation_id"),
             "refresh": graph_refresh_coordinator.status() if graph_refresh_coordinator else None,
         })
 
@@ -1235,12 +1244,20 @@ def create_app(
     def bootstrap_file_editor(name: str):
         path = file_service.get_file_by_name(name)
         if not path:
+            refresh = graph_refresh_coordinator.status() if graph_refresh_coordinator else {}
+            diagnostic("editor_file_not_found", level=logging.WARNING,
+                       **lookup_fields(file_service, name),
+                       refresh_in_progress=refresh.get("in_progress"),
+                       last_refresh_started_at=refresh.get("last_started_at"),
+                       last_refresh_completed_at=refresh.get("last_completed_at"),
+                       last_refresh_had_error=bool(refresh.get("last_error")))
             return json_error("Ficheiro não encontrado", 404)
         client_id = str(request.args.get("client_id") or "").strip()
         if not client_id:
             return json_error("Identificador da sessão de edição em falta.", 400)
         try:
             form_data, source_document, signatures = load_editor_state(path)
+            diagnostic("editor_file_loaded", **file_fields(name))
             identity = current_editor_identity()
             if file_service.is_draft_file(path):
                 editing = editing_state_service.acquire_lease(

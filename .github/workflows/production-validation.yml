@@ -1,0 +1,62 @@
+name: Production reconciliation
+on:
+  push:
+    branches: [codex/producao-melhorias-20260928]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python -m pip install -r requirements-server.txt -r requirements-smoke.txt pytest
+      - name: Synthetic Python tests including legacy SADI and POSIX permissions
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -B -m pytest tests -q -p no:cacheprovider --tb=short
+      - run: node --test tests/js/*.test.cjs
+  image:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        identity: [default, hs4]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build candidate (default 10001 or existing hs4 100:101)
+        env:
+          IDENTITY: ${{ matrix.identity }}
+        run: |
+          if [ "$IDENTITY" = hs4 ]; then
+            docker build --build-arg APP_UID=100 --build-arg APP_GID=101 -t folhas-candidate .
+          else
+            docker build -t folhas-candidate .
+          fi
+      - name: Verify image identity and actual Chromium PDF without network
+        env:
+          IDENTITY: ${{ matrix.identity }}
+        run: |
+          set -o pipefail
+          mkdir -p evidence
+          git rev-parse HEAD | tee evidence/commit.txt
+          docker image inspect folhas-candidate --format '{{.Id}}' | tee evidence/image.txt
+          expected=10001:10001
+          if [ "$IDENTITY" = hs4 ]; then expected=100:101; fi
+          actual=$(docker run --rm --network none folhas-candidate sh -c 'printf "%s:%s" "$(id -u)" "$(id -g)"')
+          test "$actual" = "$expected"
+          docker run --rm --network none -e FS_PDF_BROWSER_NO_SANDBOX=true folhas-candidate python -B tools/smoke_pdf.py | tee evidence/smoke-pdf.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-evidence-${{ matrix.identity }}
+          path: evidence/

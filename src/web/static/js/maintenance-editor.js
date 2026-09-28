@@ -7,9 +7,9 @@
     // Jinja serializes object keys alphabetically; retain the workbook's section order.
     def.groups = Object.fromEntries(["conventional", "addressable", "repeater"].map(key => [key, def.groups[key]]));
     const model = window.MaintenanceModel;
-    let sites = [], active = 0, form, panel, tabs, servicePart, host, nav, notice;
-    let loaded = false, common = "", pendingPhotos = 0;
-    const signatureJobs = new Map(), signatureMessages = new Map();
+    let sites = [], active = 0, form, panel, tabs, servicePart, host, nav, notice, validationSummary, signatureNotice;
+    let loaded = false, common = "", pendingPhotos = 0, validationVisible = false;
+    const signatureJobs = new Map(), signatureMessages = new Map(), invalidatedSignatures = new Map();
     const esc = value => String(value ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[ch]));
     const uid = () => crypto.randomUUID();
     const documentData = () => window.__FILES_EDITOR__?.collectFormData() || {};
@@ -31,11 +31,14 @@
         site.signature_drafts ||= {};
         for (const role of ['technician','customer']) {
             const input = signatureInput(site,role);
+            if (site.signatures?.[role]?.token || input.image) {
+                invalidatedSignatures.set(`${site.id}:${role}`, site.signatures?.[role]?.token ? 'Assinatura invalidada: o conteúdo do local foi alterado. Recolha e guarde uma nova assinatura.' : 'Desenho removido: o conteúdo do local foi alterado. Recolha uma nova assinatura.');
+            }
             site.signature_drafts[role] = {...input,image:''};
             signatureMessages.delete(`${site.id}:${role}`);
         }
         site.signatures = {};
-        notice.textContent = "Conteúdo alterado: recolha novamente as assinaturas deste local.";
+        renderSignatureNotice();
         if (current() === site) host.querySelectorAll('[data-mc-sign-canvas]').forEach(canvas => canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height));
     }
     function createSite(index) {
@@ -114,13 +117,15 @@
         finally { pendingPhotos--; input.value = ''; delete input.dataset.mcBusy; syncReadOnly(); }
     }
     function renderStatus() {
-        nav.innerHTML = sites.map((site, index) => `<button type="button" class="mc-site ${index === active ? 'selected' : ''}" data-mc-site="${index}"><b>${esc(site.location || `Local ${index + 1}`)}</b><span>${model.status(site, def)}</span></button>`).join("");
+        nav.innerHTML = sites.map((site, index) => `<button type="button" class="mc-site ${index === active ? 'selected' : ''}" data-mc-site="${index}" aria-current="${index === active ? 'true' : 'false'}"><b>${esc(site.location || `Local ${index + 1}`)}</b><span>${model.status(site, def)} · ${siteIssues(site).length} pendências</span></button>`).join("");
         renderSignatureCards();
+        renderSignatureNotice();
+        renderValidationSummary();
         syncReadOnly();
     }
     function syncReadOnly() {
         if (!panel) return;
-        panel.querySelectorAll("input,select,textarea,button").forEach(el => { el.disabled = el.dataset.mcBusy === 'true' || el.dataset.mcUnavailable === 'true' || (readOnly() && !el.hasAttribute("data-mc-site")); });
+        panel.querySelectorAll("input,select,textarea,button").forEach(el => { el.disabled = el.dataset.mcBusy === 'true' || el.dataset.mcUnavailable === 'true' || (readOnly() && !el.hasAttribute("data-mc-site") && !el.hasAttribute("data-mc-issue")); });
         panel.querySelectorAll('[data-mc-sign-canvas]').forEach(canvas=>canvas.setAttribute('aria-disabled',String(Boolean(readOnly()))));
     }
     function render() {
@@ -137,8 +142,72 @@
         renderStatus();
         sizeTextLines();
     }
-    function showErrors(errors) {
-        host.querySelector(".mc-errors").innerHTML = errors.length ? `<p>Falta concluir:</p><ul>${errors.map(error => `<li>${esc(error)}</li>`).join("")}</ul>` : '<p>Campos completos. Recolha as assinaturas em falta.</p>';
+    function siteIssues(site) {
+        return [...model.validateSiteDetails(site, def), ...model.signatureIssues(site, def)];
+    }
+    function allIssues() {
+        if (!sites.length) return [{message: 'Indique o número de locais e preencha as checklists.', target: 'sites'}];
+        return sites.flatMap(site => siteIssues(site).map(issue => ({...issue, siteId: site.id})));
+    }
+    function renderSignatureNotice() {
+        if (!signatureNotice) return;
+        const requiresSignature = (site, role) => !model.signatureWaived(site, role, def) && invalidatedSignatures.has(`${site.id}:${role}`);
+        const affected = sites.filter(site => ['technician', 'customer'].some(role => requiresSignature(site, role)));
+        signatureNotice.hidden = !affected.length;
+        signatureNotice.textContent = affected.map(site => {
+            const roles = ['technician', 'customer'].filter(role => requiresSignature(site, role)).map(role => role === 'technician' ? 'técnico' : 'cliente');
+            return `${site.location || `Local ${sites.indexOf(site) + 1}`}: conteúdo alterado; recolha e guarde novamente a assinatura do ${roles.join(' e do ')}.`;
+        }).join(' ');
+    }
+    function renderValidationSummary() {
+        if (!validationSummary) return;
+        validationSummary.hidden = !validationVisible;
+        if (!validationVisible) return;
+        const issues = allIssues();
+        const open = new Set(Array.from(validationSummary.querySelectorAll('details[open]')).map(el => el.dataset.mcIssueSite));
+        validationSummary.innerHTML = `<h3 id="mc-validation-title" role="status">${issues.length ? `${issues.length} pendências para finalizar` : 'Checklists completas e assinadas'}</h3><p>Pode continuar a guardar o rascunho incompleto. Selecione uma pendência para ir ao campo.</p>${!sites.length ? '<button type="button" class="mc-issue-link" data-mc-issue="0">Indicar número de locais</button>' : sites.map((site, index) => {
+            const entries = issues.map((issue, issueIndex) => ({...issue, issueIndex})).filter(issue => issue.siteId === site.id);
+            return `<details data-mc-issue-site="${esc(site.id)}" ${open.has(site.id) || index === active ? 'open' : ''}><summary>${esc(site.location || `Local ${index + 1}`)} — ${entries.length} pendências</summary><ul>${entries.map(issue => `<li><button type="button" class="mc-issue-link" data-mc-issue="${issue.issueIndex}">${esc(issue.message)}</button></li>`).join('')}</ul></details>`;
+        }).join('')}`;
+        host.querySelectorAll('[aria-invalid="true"]').forEach(input => input.removeAttribute('aria-invalid'));
+        siteIssues(current() || {}).forEach(issue => {
+            if (issue.target === 'path' || issue.target === 'configuration' || issue.target === 'count') issueControl(issue)?.setAttribute('aria-invalid', 'true');
+        });
+    }
+    function issueControl(issue) {
+        if (issue.target === 'sites') return document.getElementById('mc-site-count');
+        if (issue.target === 'photos') return host.querySelector('[data-mc-remove-photo]') || host.querySelector('[data-mc-photos]');
+        if (issue.target === 'photo') return host.querySelectorAll('[data-mc-remove-photo]')[Number(issue.path)];
+        if (issue.target === 'signature') {
+            const input = signatureInput(current(), issue.path), card = host.querySelector(`[data-mc-sign-card="${issue.path}"]`);
+            return card?.querySelector(!input.name.trim() || input.name.trim().split(/\s+/).length < 2 ? '[data-mc-sign-field="name"]' : !input.date ? '[data-mc-sign-field="date"]' : !input.image ? 'canvas' : '[data-mc-sign-save]');
+        }
+        const attribute = {path: 'data-mc-path', configuration: 'data-mc-config', count: 'data-mc-count'}[issue.target];
+        return attribute && Array.from(host.querySelectorAll(`[${attribute}]`)).find(input => input.getAttribute(attribute) === issue.path);
+    }
+    function focusIssue(issue) {
+        if (!issue) return;
+        if (issue.siteId) {
+            const index = sites.findIndex(site => site.id === issue.siteId);
+            if (index < 0) return;
+            if (active !== index) { active = index; render(); }
+        }
+        selectTab(true);
+        const input = issueControl(issue);
+        if (!input) return;
+        for (let parent = input.parentElement; parent && parent !== panel; parent = parent.parentElement) {
+            if (parent.tagName === 'DETAILS') parent.open = true;
+        }
+        sizeTextLines();
+        input.scrollIntoView({block: 'center', behavior: 'auto'});
+        input.focus({preventScroll: true});
+    }
+    function showValidation({focusFirst = true} = {}) {
+        if (!model.applicable(documentData()) || tabs.hidden) return;
+        validationVisible = true;
+        renderValidationSummary();
+        selectTab(true);
+        if (focusFirst) focusIssue(allIssues()[0]);
     }
     function selectTab(checklists) {
         panel.hidden = !checklists;
@@ -161,7 +230,9 @@
     }
     async function reduce(items, count, label) {
         const dialog = document.createElement("dialog"); dialog.className = "mc-dialog";
-        dialog.innerHTML = `<h3>Remover ${items.length - count} ${esc(label)}</h3><p>Escolha os elementos a remover. Os seus dados e assinaturas serão removidos do rascunho.</p>${items.map((item,index) => `<label class="mc-remove-choice"><input type="checkbox" value="${index}">${esc(item.location || item.brand || `${label} ${index + 1}`)}</label>`).join("")}<p role="status"></p><div class="mc-dialog-actions"><button type="button" data-cancel>Voltar</button><button type="button" data-remove>Confirmar remoção</button></div>`;
+        const headingId = `mc-dialog-${uid()}`;
+        dialog.setAttribute('aria-labelledby', headingId);
+        dialog.innerHTML = `<h3 id="${headingId}">Remover ${items.length - count} ${esc(label)}</h3><p>Escolha os elementos a remover. Os seus dados e assinaturas serão removidos do rascunho.</p>${items.map((item,index) => `<label class="mc-remove-choice"><input type="checkbox" value="${index}">${esc(item.location || item.brand || `${label} ${index + 1}`)}</label>`).join("")}<p role="status"></p><div class="mc-dialog-actions"><button type="button" data-cancel autofocus>Voltar</button><button type="button" data-remove>Confirmar remoção</button></div>`;
         document.body.append(dialog); dialog.showModal();
         return new Promise(resolve => {
             dialog.addEventListener("close", () => { dialog.remove(); resolve(null); }, {once:true});
@@ -174,17 +245,41 @@
             };
         });
     }
+    function confirmAction(title, message, acceptLabel) {
+        const dialog = document.createElement('dialog'), headingId = `mc-dialog-${uid()}`, previousFocus = document.activeElement;
+        dialog.className = 'mc-dialog';
+        dialog.setAttribute('aria-labelledby', headingId);
+        dialog.innerHTML = `<h3 id="${headingId}">${esc(title)}</h3><p>${esc(message)}</p><div class="mc-dialog-actions"><button type="button" data-cancel autofocus>Voltar</button><button type="button" data-accept>${esc(acceptLabel)}</button></div>`;
+        document.body.append(dialog);
+        return new Promise(resolve => {
+            dialog.addEventListener('close', () => {
+                const accepted = dialog.returnValue === 'accept';
+                dialog.remove();
+                if (previousFocus?.isConnected) previousFocus.focus({preventScroll: true});
+                resolve(accepted);
+            }, {once: true});
+            dialog.querySelector('[data-cancel]').onclick = () => dialog.close('cancel');
+            dialog.querySelector('[data-accept]').onclick = () => dialog.close(readOnly() ? 'cancel' : 'accept');
+            dialog.showModal();
+        });
+    }
     async function changeCount(input) {
         const count = Number(input.value), kind = input.dataset.mcCount;
+        const owner = current(), items = kind ? owner[kind] : sites;
+        const redraw = () => {
+            render();
+            (kind ? host.querySelector(`[data-mc-count="${kind}"]`) : document.getElementById('mc-site-count'))?.focus({preventScroll: true});
+        };
         if (!Number.isSafeInteger(count) || count < 1) { notice.textContent = "Indique uma quantidade inteira superior a zero."; render(); return; }
         // Keep accidental enormous browser allocations out of the UI, without silently truncating data.
-        if (count > 100 && !window.confirm(`Criar ${count} elementos? Confirme a quantidade.`)) { render(); return; }
-        const owner = current(), items = kind ? owner[kind] : sites;
+        if (count > 100 && !await confirmAction(`Criar ${count} elementos?`, 'Esta quantidade pode tornar o formulário mais lento. Confirme a quantidade antes de continuar.', 'Confirmar quantidade')) { redraw(); return; }
         let next = items;
-        if (count < items.length) { next = await reduce(items,count,kind ? def.groups[kind].toLowerCase() : "locais"); if (!next) { render(); return; } }
+        if (count < items.length) { next = await reduce(items,count,kind ? def.groups[kind].toLowerCase() : "locais"); if (!next) { redraw(); return; } }
         else next = [...items, ...Array.from({length:count-items.length},(_,i) => kind ? createUnit() : createSite(items.length+i))];
+        if (readOnly() || (kind ? !sites.includes(owner) || owner[kind] !== items : sites !== items)) { redraw(); return; }
+        if (count === items.length) { redraw(); return; }
         if (kind) { owner[kind] = next; clearSignatures(owner); } else sites = next;
-        dirty(); render();
+        dirty(); redraw();
     }
     function signatureInput(site, role) {
         const today = new Date(); today.setMinutes(today.getMinutes()-today.getTimezoneOffset());
@@ -212,7 +307,7 @@
                     <div class="signature-capture"><div class="signature-details">
                         <div class="form-field"><label for="${id}-name">Primeiro e último nome <span class="required" aria-hidden="true">*</span></label><input id="${id}-name" type="text" data-mc-signer="${role}" data-mc-sign-field="name" aria-required="true" placeholder="Primeiro e último nome" autocomplete="name" maxlength="120" value="${esc(input.name)}"></div>
                         <div class="form-field signature-date"><label for="${id}-date">Data da assinatura <span class="required" aria-hidden="true">*</span></label><input id="${id}-date" type="date" data-mc-signer="${role}" data-mc-sign-field="date" aria-required="true" value="${esc(input.date)}"></div>
-                    </div><canvas class="signature-canvas" width="700" height="160" data-mc-sign-canvas="${role}" aria-label="Assinatura do ${label.toLowerCase()}"></canvas>
+                    </div><canvas class="signature-canvas" width="700" height="160" tabindex="0" data-mc-sign-canvas="${role}" aria-label="Assinatura do ${label.toLowerCase()}"></canvas>
                     <p class="signature-help">Assine no espaço acima com o dedo ou com uma caneta digital.</p></div>
                     <div class="mc-signature-actions"><p class="signature-help" data-mc-sign-status role="status"></p><button type="button" class="btn btn-secondary" data-mc-sign-save="${role}">Guardar assinatura</button></div>
                 </section>`;
@@ -227,7 +322,7 @@
             card.querySelector('[data-mc-sign-clear]').hidden = waived;
             card.querySelectorAll('[data-mc-signer],[data-mc-sign-clear],[data-mc-sign-save]').forEach(input => {input.dataset.mcUnavailable = String(waived);});
             card.querySelectorAll('[data-mc-signer]').forEach(input => input.setAttribute('aria-required',String(!waived)));
-            card.querySelector('[data-mc-sign-status]').textContent = waived ? 'Assinatura dispensada neste local.' : signatureJobs.has(key) ? 'A guardar assinatura…' : signatureMessages.get(key) || (site.signatures?.[role]?.token ? 'Assinatura guardada.' : 'Assinatura por recolher');
+            card.querySelector('[data-mc-sign-status]').textContent = waived ? 'Assinatura dispensada neste local.' : signatureJobs.has(key) ? 'A guardar assinatura…' : signatureMessages.get(key) || (site.signatures?.[role]?.token ? 'Assinatura guardada.' : signatureInput(site, role).image ? 'Desenho por guardar. Complete o nome e a data e guarde a assinatura.' : invalidatedSignatures.get(key) || 'Assinatura por recolher');
             const save = card.querySelector('[data-mc-sign-save]');
             save.hidden = waived || Boolean(site.signatures?.[role]?.token);
             save.dataset.mcBusy = String(signatureJobs.has(key));
@@ -269,7 +364,10 @@
         const site=current(),role=input.dataset.mcSigner, value=signatureInput(site,role);
         if(value[input.dataset.mcSignField]===input.value)return;
         value[input.dataset.mcSignField]=input.value;
-        if(site.signatures?.[role]?.token){value.image='';host.querySelector(`[data-mc-sign-canvas="${role}"]`).getContext('2d').clearRect(0,0,700,160);}
+        if(site.signatures?.[role]?.token){
+            value.image='';host.querySelector(`[data-mc-sign-canvas="${role}"]`).getContext('2d').clearRect(0,0,700,160);
+            invalidatedSignatures.set(`${site.id}:${role}`, 'Assinatura invalidada: o nome ou a data foi alterado. Recolha e guarde uma nova assinatura.');
+        }
         site.signature_drafts ||= {};site.signature_drafts[role]=value;delete site.signatures?.[role];
         signatureMessages.delete(`${site.id}:${role}`);dirty();renderStatus();
     }
@@ -295,7 +393,7 @@
             const result=await response.json();
             if(!response.ok){window.__EDITING_COORDINATOR__?.handleConflict(result);throw new Error(result.error||'Não foi possível guardar a assinatura.');}
             if(!readOnly() && sites.includes(site) && signatureKey(site,role)===key){
-                site.signatures ||= {};site.signatures[role]=result.signature;delete site.signature_drafts?.[role];dirty();
+                site.signatures ||= {};site.signatures[role]=result.signature;delete site.signature_drafts?.[role];invalidatedSignatures.delete(jobKey);dirty();
             }
         } catch(error){signatureMessages.set(jobKey,error.message);}
         finally {
@@ -307,6 +405,9 @@
     window.MaintenanceEditor = {
         init() {
             form=document.getElementById("service-form");panel=document.getElementById("maintenance-panel");tabs=document.getElementById("maintenance-tabs");servicePart=document.getElementById("service-part");host=document.getElementById("mc-content");nav=document.getElementById("mc-sites");notice=document.getElementById("mc-notice");
+            signatureNotice = document.createElement('p');signatureNotice.className = 'mc-warning';signatureNotice.setAttribute('role', 'status');signatureNotice.hidden = true;
+            validationSummary = document.createElement('section');validationSummary.className = 'mc-validation';validationSummary.setAttribute('aria-labelledby', 'mc-validation-title');validationSummary.hidden = true;
+            host.before(signatureNotice, validationSummary);
             tabs.onclick=event=>{const tab=event.target.closest("[data-mc-tab]");if(tab)selectTab(tab.dataset.mcTab==="checklists");};
             form.addEventListener("input",event=>{
                 const input=event.target;
@@ -334,22 +435,25 @@
                 if(input.dataset.mcConfig){const kind=input.dataset.mcConfig;current().configuration[kind]=input.value===""?null:input.value==="yes";clearSignatures(current());dirty();render();return;}
                 if(input.tagName==="SELECT"&&input.dataset.mcPath)render();
             });
-            panel.addEventListener("click",event=>{
+            panel.addEventListener("click",async event=>{
                 const button=event.target.closest("button");if(!button)return;
                 if(button.hasAttribute("data-mc-site")){active=Number(button.dataset.mcSite);render();return;}
+                if(button.hasAttribute("data-mc-issue")){focusIssue(allIssues()[Number(button.dataset.mcIssue)]);return;}
                 if(readOnly())return;
                 if(button.dataset.mcRemovePhoto){
-                    if(!window.confirm('Remover esta fotografia da checklist?'))return;
-                    const site=current();site.photos=site.photos.filter(photo=>photo.id!==button.dataset.mcRemovePhoto);clearSignatures(site);dirty();render();return;
+                    const site=current(), photoId=button.dataset.mcRemovePhoto;
+                    if(!await confirmAction('Remover fotografia?', 'A fotografia será retirada deste local e do PDF da checklist. As assinaturas deste local terão de ser recolhidas novamente.', 'Remover fotografia'))return;
+                    if(readOnly() || !sites.includes(site))return;
+                    site.photos=site.photos.filter(photo=>photo.id!==photoId);clearSignatures(site);dirty();render();host.querySelector('[data-mc-photos]')?.focus({preventScroll:true});return;
                 }
-                if(button.hasAttribute("data-mc-validate"))showErrors(model.validateSite(current(),def));
+                if(button.hasAttribute("data-mc-validate"))showValidation();
                 if(button.dataset.mcSignClear)clearSignature(button.dataset.mcSignClear);
                 if(button.dataset.mcSignSave)saveSignature(current(),button.dataset.mcSignSave);
             });
             new MutationObserver(syncReadOnly).observe(form,{attributes:true,attributeFilter:["class"]});
             host.addEventListener('toggle',sizeTextLines,true);
         },
-        hydrate(document) {sites=structuredClone(document.maintenance_checklists||[]);signatureMessages.clear();active=0;loaded=true;common="";notice.textContent="";render();sync();},
+        hydrate(document) {sites=structuredClone(document.maintenance_checklists||[]);signatureMessages.clear();invalidatedSignatures.clear();validationVisible=false;active=0;loaded=true;common="";notice.textContent="";render();sync();},
         collect() {return structuredClone(sites);},
         async settleSignatures() {
             while(signatureJobs.size)await Promise.all(Array.from(signatureJobs.values(),job=>job.done));
@@ -362,6 +466,7 @@
             if(!sites.length)return ["SADI: indique o número de locais e preencha as checklists."];
             return sites.flatMap((site,index)=>[...model.validateSite(site,def),...model.signatureErrors(site,def)].map(error=>`${site.location||`Local ${index+1}`}: ${error}`));
         },
+        showValidation,
         sync
     };
 })();

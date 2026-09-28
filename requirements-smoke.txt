@@ -1,0 +1,2 @@
+# Leitura independente do PDF sintético produzido na imagem candidata.
+pypdf>=5.0.0

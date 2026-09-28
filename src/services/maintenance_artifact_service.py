@@ -7,7 +7,7 @@ from src.services.document_style_service import load_document_assets
 
 
 def render_maintenance_document(document, site, *, draft_preview=False, auto_print=False):
-    styles, logo = load_document_assets(current_app.static_folder)
+    styles, logo = load_document_assets(current_app.static_folder, page_context=f"FS {document['service_number']} · SADI · {site['location']}")
     styles += "\n" + (Path(current_app.static_folder) / "css" / "maintenance-document.css").read_text(encoding="utf-8")
     return render_template("maintenance_document.html", document=document, site=site, definition=DEFINITION,
                            embedded_styles=styles, logo_src=logo, draft_preview=draft_preview, auto_print=auto_print)

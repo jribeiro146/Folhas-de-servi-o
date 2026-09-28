@@ -15,7 +15,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const selectedSignatures = filesApp.selectedSignatures || {};
     const selectedFileError = filesApp.selectedFileError || null;
 
-    const fileCards = Array.from(document.querySelectorAll(".file-card-link[data-name]"));
     const fileList = document.getElementById("file-list");
     const fileSearch = document.getElementById("file-search");
     const fileCounter = document.getElementById("file-counter");
@@ -973,7 +972,7 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     const setActiveCard = (fileName) => {
-        fileCards.forEach((link) => {
+        document.querySelectorAll(".file-card-link[data-name]").forEach((link) => {
             const card = link.closest(".file-card");
             if (!card) {
                 return;
@@ -1715,43 +1714,99 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
 
-    const refreshFileList = async () => {
+    const refreshFileList = async ({ silent = false } = {}) => {
         if (!refreshBtn || refreshBtn.disabled) return;
+        const status = document.getElementById("file-refresh-status");
+        let confirmedAt = status?.dataset.confirmedAt || "";
+        const showListStatus = (message, state, refresh) => {
+            if (!status) return;
+            confirmedAt = refresh?.inventory?.updated_at || confirmedAt;
+            status.dataset.confirmedAt = confirmedAt;
+            status.dataset.state = state;
+            status.hidden = false;
+            const timestamp = typeof confirmedAt === "number" ? confirmedAt * 1000 : (/^\d+(\.\d+)?$/.test(confirmedAt) ? Number(confirmedAt) * 1000 : confirmedAt);
+            const date = confirmedAt ? new Date(timestamp) : null;
+            const dateText = date && !Number.isNaN(date.getTime()) ? date.toLocaleString("pt-PT") : "";
+            status.textContent = message + (dateText ? ` Último inventário confirmado: ${dateText}.` : "");
+        };
         refreshBtn.disabled = true;
-        showToast("A atualizar a lista em segundo plano…", "info");
+        if (filesApp.graphEnabled) showListStatus("A confirmar a lista do SharePoint…", "running");
+        if (!silent) showToast("A atualizar a lista em segundo plano…", "info");
         try {
-            const response = await fetch("/api/files?refresh=1", {
+            const response = await fetch(silent ? "/api/files" : "/api/files?refresh=1", {
                 headers: { "Accept": "application/json" },
+                cache: "no-store",
             });
             const result = await response.json();
             if (!response.ok || !result.success) {
-                throw new Error(result.error || "N??o foi poss??vel atualizar a lista.");
+                throw new Error(result.error || "Não foi possível atualizar a lista.");
             }
-            if (result.refresh) {
-                let refresh = result.refresh;
-                for (let attempt = 0; refresh?.in_progress && attempt < 40; attempt += 1) {
+            let refresh = result.refresh;
+            if (refresh) {
+                const requestedId = result.requested_refresh_id || refresh.refresh_id;
+                const requestedSequence = result.requested_refresh_sequence ?? refresh.refresh_sequence;
+                const requestedGeneration = result.requested_refresh_generation || refresh.generation_id;
+                const completed = () => refresh?.last_completed_refresh_id === requestedId || (
+                    requestedGeneration && refresh?.generation_id === requestedGeneration &&
+                    Number.isInteger(requestedSequence) && requestedSequence > 0 &&
+                    Number.isInteger(refresh?.last_completed_sequence) && refresh.last_completed_sequence >= requestedSequence
+                );
+                const waiting = () => refresh?.in_progress || (requestedId && !completed());
+                for (let attempt = 0; waiting() && attempt < 40; attempt += 1) {
                     await new Promise((resolve) => window.setTimeout(resolve, 500));
                     const statusResponse = await fetch("/api/graph/status", {
                         headers: { "Accept": "application/json" },
+                        cache: "no-store",
                     });
                     const statusResult = await statusResponse.json();
+                    if (!statusResponse.ok || !statusResult.success) {
+                        throw new Error("Não foi possível confirmar a atualização.");
+                    }
                     refresh = statusResult.refresh;
                 }
-                if (refresh?.last_error) throw new Error(refresh.last_error);
+                if (waiting()) throw new Error("Não foi possível confirmar o fim desta atualização. Tente novamente dentro de momentos.");
             }
-            if (activeFileName) {
-                showToast("Lista atualizada. A edição atual foi mantida.", "success");
-            } else {
-                window.location.reload();
+            const latestResponse = await fetch("/api/files?refresh=0", {
+                headers: { "Accept": "application/json" }, cache: "no-store",
+            });
+            const latest = await latestResponse.json();
+            if (!latestResponse.ok || !latest.success || typeof latest.html !== "string") {
+                throw new Error("Não foi possível carregar a lista atualizada.");
             }
+            fileList.innerHTML = latest.html;
+            setActiveCard(activeFileName);
+            fileSearch?.dispatchEvent(new Event("input"));
+            refresh = latest.refresh || refresh;
+            if (refresh?.inventory?.updated_at) confirmedAt = refresh.inventory.updated_at;
+            // Even after a download error, render the confirmed inventory: removed
+            // remote files must disappear immediately from the old displayed list.
+            if (refresh?.last_error) throw new Error(refresh.last_error);
+            if (refresh?.inventory?.available === false || refresh?.inventory?.stale || refresh?.in_progress) {
+                throw new Error("A lista do SharePoint ainda não está confirmada.");
+            }
+            if (refresh) {
+                const unavailable = refresh.inventory?.unavailable_count || 0;
+                showListStatus(unavailable ? `Inventário confirmado. ${unavailable} folha(s) com conteúdo indisponível.` : "Lista confirmada no SharePoint.", unavailable ? "warning" : "success", refresh);
+            }
+            if (!silent) showToast("Lista atualizada.", "success");
         } catch (error) {
-            showToast(error.message, "error");
+            showListStatus(`Lista por confirmar ou incompleta. ${error.message}`, "warning");
+            if (!silent) showToast(error.message, "error");
         } finally {
             refreshBtn.disabled = false;
         }
     };
 
     refreshBtn?.addEventListener("click", refreshFileList);
+    if (filesApp.graphEnabled) {
+        refreshFileList({ silent: true });
+        window.setInterval(() => {
+            if (!document.hidden) refreshFileList({ silent: true });
+        }, 30000);
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden) refreshFileList({ silent: true });
+        });
+    }
     toggleSidebarBtn?.addEventListener("click", () => {
         setSidebarOpen(!sidebar?.classList.contains("is-open"));
     });
@@ -1848,6 +1903,10 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     btnAddMaterial?.addEventListener("click", () => {
+        if (materialsList.children.length >= 12) {
+            showToast(currentLanguage === "en" ? "Maximum of 12 materials per sheet." : "Máximo de 12 materiais por folha.", "info");
+            return;
+        }
         const row = createMaterialRow();
         materialsList.appendChild(row);
         applyLanguage(currentLanguage, row);
@@ -1918,7 +1977,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const validation = getFinalizationValidation(payload);
         if (validation.missing.length > 0) {
-            showToast(`Campos obrigatórios em falta: ${validation.missing.join(", ")}`, "error");
+            const checklistMissing = window.MaintenanceEditor?.validate(payload) || [];
+            const serviceMissing = validation.missing.length - checklistMissing.length;
+            showToast(checklistMissing.length
+                ? `${checklistMissing.length} pendências nas checklists. Consulte o resumo por local.${serviceMissing ? ` A folha de serviço também tem ${serviceMissing} campos por concluir.` : ''}`
+                : `Campos obrigatórios em falta: ${validation.missing.join(", ")}`, "error");
+            if (checklistMissing.length) window.MaintenanceEditor.showValidation({focusFirst: true});
             return;
         }
         if (validation.invalid.length > 0) {

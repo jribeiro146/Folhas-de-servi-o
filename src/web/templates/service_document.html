@@ -21,7 +21,7 @@
     {% set materials = document.materials if document.materials_used else [] %}
     {% set technician_records = document.technician_records if document.technician_records else [] %}
     {% set technician_row_target = 4 %}
-    {% set visible_materials = materials[:5] %}
+    {% set visible_materials = materials %}
     {% set visible_technician_records = technician_records[:technician_row_target] %}
 
     <div class="print-actions">
@@ -127,20 +127,22 @@
             </article>
         </section>
 
-        <section class="panel">
+        <section class="panel flowing-panel">
             <div class="panel-title">{{ "Requested tasks" if doc_lang == "en" else "Trabalhos a efetuar" }}</div>
             <div class="lined-area lined-area-short {{ 'is-empty' if not document.requested_tasks else '' }}">{{ document.requested_tasks or "" }}</div>
         </section>
 
-        <section class="panel">
+        <section class="panel flowing-panel">
             <div class="panel-title">{{ "Technical intervention report" if doc_lang == "en" else "Relatório técnico da intervenção" }}</div>
             <div class="lined-area lined-area-tall {{ 'is-empty' if not document.intervention_report else '' }}">{{ document.intervention_report or "" }}</div>
         </section>
 
-        <section class="panel">
+        <section class="panel flowing-panel">
             <div class="panel-title">{{ "Materials / items / parts" if doc_lang == "en" else "Materiais / artigos / peças" }}</div>
             <table class="grid-table materials-table">
+                <colgroup><col class="ref-col"><col><col class="qty-col"></colgroup>
                 <thead>
+                    <tr class="materials-context"><th colspan="3">{{ document.customer_name }} · {{ "Sheet" if doc_lang == "en" else "Folha" }} {{ document.service_number or file_name }}</th></tr>
                     <tr>
                         <th class="ref-col">Ref.</th>
                         <th>{{ "Description" if doc_lang == "en" else "Descrição" }}</th>

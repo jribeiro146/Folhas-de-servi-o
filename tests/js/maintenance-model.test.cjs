@@ -58,6 +58,7 @@ test('customer absence never waives the technician signature or checklist comple
  const site=complete(), other=complete();
  site.customer_not_present=true;
  assert.deepEqual(model.signatureErrors(site,definition),['Assinatura do técnico']);
+ assert.deepEqual(model.signatureIssues(site,definition),[{message:'Assinatura do técnico',path:'technician',target:'signature'}]);
  assert.equal(model.status(site,definition),'Por assinar');
  site.technician_signature_not_collected=true;
  assert.deepEqual(model.signatureErrors(site,definition),['Assinatura do técnico']);
@@ -76,4 +77,39 @@ test('strings and numbers cannot dispense with checklist signatures',()=>{
    const site=complete();site.customer_not_present=value;site.technician_signature_not_collected=value;
    assert.equal(model.signatureErrors(site,definition).length,2);
  }
+});
+
+test('pending issues identify exact controls in each equipment without changing the string API',()=>{
+ const site=complete();
+ site.location='';site.configuration.repeater=null;
+ site.conventional.push({...structuredClone(site.conventional[0]),brand:'',checks:{C:{answer:'NC',justification:''}}});
+ const issues=model.validateSiteDetails(site,definition);
+ assert.deepEqual(issues.map(({path,target})=>({path,target})),[
+  {path:'location',target:'path'},
+  {path:'conventional.1.brand',target:'path'},
+  {path:'conventional.1.checks.C.justification',target:'path'},
+  {path:'repeater',target:'configuration'}
+ ]);
+ assert.deepEqual(model.validateSite(site,definition),issues.map(issue=>issue.message));
+ site.conventional[1].checks.C.justification='NC documentada';
+ assert.ok(!model.validateSiteDetails(site,definition).some(issue=>issue.path.endsWith('justification')));
+});
+
+test('quantity, coverage and damaged photographs have actionable destinations',()=>{
+ const site=complete();site.conventional=[];site.period='monthly';site.coverage_percent='101';
+ site.photos=[{id:'photo-test-123',image:'bad',error:''}];
+ assert.deepEqual(model.validateSiteDetails(site,definition).map(({path,target})=>({path,target})),[
+  {path:'0',target:'photo'},
+  {path:'conventional',target:'count'},
+  {path:'coverage_percent',target:'path'}
+ ]);
+});
+
+test('inactive equipment retains its answers while only active equipment has pending links',()=>{
+ const site=complete();site.conventional[0].brand='';site.configuration.conventional=false;
+ const before=structuredClone(site);
+ assert.deepEqual(model.validateSiteDetails(site,definition),[]);
+ assert.deepEqual(site,before);
+ site.configuration.conventional=true;
+ assert.equal(model.validateSiteDetails(site,definition)[0].path,'conventional.0.brand');
 });

@@ -19,6 +19,7 @@ from src.services.graph_mail_service import GraphMailService
 from src.services.graph_storage_service import GraphStorageService
 from src.services.local_pdf_service import LocalPdfService
 from src.services.teams_notification_service import TeamsNotificationService
+from src.services.local_changes import DIRTY_MARKER, bundle_guard, dirty_version, mark_dirty
 
 
 LOGGER = logging.getLogger(__name__)
@@ -200,7 +201,7 @@ class GraphSyncQueue:
                     INSERT INTO graph_sync_jobs (
                         id, kind, payload_json, status, attempts,
                         next_attempt_at, max_attempts, created_at, updated_at
-                    ) VALUES (?, ?, ?, 'pending', 0, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)
                     """,
                     (
                         identifier,
@@ -210,6 +211,7 @@ class GraphSyncQueue:
                             ensure_ascii=False,
                             separators=(",", ":"),
                         ),
+                        "held" if prepared_payload.get("_commit_guard") else "pending",
                         now,
                         max_attempts,
                         now,
@@ -305,6 +307,22 @@ class GraphSyncQueue:
         self._start_if_enabled()
         return self.status(job_id) or {"id": job_id, "status": "pending"}
 
+    def has_unfinished_upload(self, source: Path) -> bool:
+        """Prevent finalization from overtaking publication of this draft."""
+        source = Path(source).resolve()
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM graph_sync_jobs "
+                "WHERE kind = 'upload_active' AND status != 'complete'"
+            ).fetchall()
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            # New jobs point to immutable staging; older jobs use the live path.
+            value = payload.get("_original_draft_path") or payload.get("draft_path")
+            if value and Path(value).resolve() == source:
+                return True
+        return False
+
     def summary(self) -> dict[str, int]:
         result = {"pending": 0, "running": 0, "failed": 0, "complete": 0}
         with self._connect() as connection:
@@ -388,6 +406,7 @@ class GraphSyncQueue:
         )
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._release_committed_jobs(connection)
             self._hold_stale_mail_jobs(connection, now=now)
             active = connection.execute(
                 """
@@ -428,6 +447,33 @@ class GraphSyncQueue:
         job["status"] = "running"
         job["attempts"] = int(job["attempts"]) + 1
         return job
+
+    def _release_committed_jobs(self, connection: sqlite3.Connection) -> None:
+        """Only publish a final archive after its editing transaction committed."""
+        rows = connection.execute(
+            "SELECT id, payload_json FROM graph_sync_jobs WHERE status = 'held'"
+        ).fetchall()
+        for row in rows:
+            try:
+                guard = json.loads(row["payload_json"]).get("_commit_guard") or {}
+                database = Path(str(guard.get("database") or ""))
+                if not database.is_file():
+                    continue
+                with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=1) as editing_db:
+                    state_row = editing_db.execute(
+                        "SELECT state_json FROM editing_states WHERE document_id = ?",
+                        (guard.get("document_id"),),
+                    ).fetchone()
+                state = json.loads(state_row[0]) if state_row else {}
+                operation = state.get("operations", {}).get(guard.get("operation_id"), {})
+                if operation.get("status") == "complete":
+                    connection.execute(
+                        "UPDATE graph_sync_jobs SET status = 'pending' WHERE id = ?",
+                        (row["id"],),
+                    )
+            except (sqlite3.Error, ValueError, OSError):
+                # An unknown commit state never authorizes an external effect.
+                continue
 
     def _execute(
         self,
@@ -820,7 +866,11 @@ class GraphSyncQueue:
             ).fetchone()
         due_at = row["due_at"] if row else None
         if due_at is None:
-            return None
+            with self._connect() as connection:
+                held = connection.execute(
+                    "SELECT 1 FROM graph_sync_jobs WHERE status = 'held' LIMIT 1"
+                ).fetchone()
+            return 5.0 if held else None
         return max(float(due_at) - time.time(), 0.05)
 
     def _stage_payload(
@@ -838,6 +888,8 @@ class GraphSyncQueue:
             raise FileNotFoundError(f"Rascunho local não encontrado: {source}")
         if source.parent.name != source.stem:
             raise ValueError("O rascunho a publicar não está numa pasta isolada.")
+        if not dirty_version(source.parent):
+            mark_dirty(source.parent)
 
         safe_id = hashlib.sha256(job_id.encode("utf-8")).hexdigest()[:16]
         target = self.asset_root / safe_id
@@ -889,12 +941,19 @@ class GraphSyncQueue:
         original = Path(original_value)
         if not original.parent.exists() or not staged.parent.exists():
             return
+        with bundle_guard(original.parent):
+            self._publish_locked_metadata(staged, original)
+
+    def _publish_locked_metadata(self, staged: Path, original: Path) -> None:
         for source in self._metadata_files(staged.parent):
             destination = original.parent / source.relative_to(staged.parent)
             destination.parent.mkdir(parents=True, exist_ok=True)
             temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex[:8]}.tmp")
             shutil.copy2(source, temporary)
             os.replace(str(temporary), str(destination))
+        staged_version = dirty_version(staged.parent)
+        if staged_version and dirty_version(original.parent) == staged_version:
+            (original.parent / DIRTY_MARKER).unlink(missing_ok=True)
 
 
     def _cleanup_staging(self, payload: dict[str, Any]) -> None:

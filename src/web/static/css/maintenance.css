@@ -21,3 +21,10 @@
 .mc-signature-actions button[hidden]{display:none}
 #maintenance-panel [data-mc-sign-clear][hidden]{display:none}
 #maintenance-panel .signature-canvas[aria-disabled=true]{cursor:default;opacity:.65}
+.mc-validation{margin:18px 0;padding:16px;border:1px solid #d9b8a7;border-radius:9px;background:#fffaf4;overflow-wrap:anywhere}
+.mc-validation[hidden]{display:none}.mc-validation h3{margin-top:0!important}.mc-validation details{margin:12px 0}.mc-validation summary{padding:8px 0;cursor:pointer;font-weight:700}.mc-validation ul{margin:4px 0;padding-left:20px}.mc-validation li{margin:4px 0}
+.mc-issue-link{border:0;background:transparent;color:#80361e;text-decoration:underline;text-align:left;font:inherit;padding:10px 4px;cursor:pointer;overflow-wrap:anywhere;min-height:44px;max-width:100%}
+#maintenance-panel [aria-invalid=true]{border-color:#a73f2d;box-shadow:0 0 0 1px #a73f2d}
+#maintenance-panel :focus-visible,.mc-dialog :focus-visible{outline:3px solid #176789;outline-offset:3px}
+#maintenance-panel input,#maintenance-panel select,#maintenance-panel textarea{min-width:0;max-width:100%;scroll-margin-block:120px}
+.mc-site{max-width:280px;overflow-wrap:anywhere}.mc-dialog{overflow-wrap:anywhere}

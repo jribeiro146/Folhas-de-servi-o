@@ -495,4 +495,6 @@ def test_feature_five_assets_and_api_are_not_http_cached(tmp_path):
     assert "window.location.reload()" in document_editor
     assert 'id="btn-save-send"' in html and 'data-i18n="save_send" disabled' in html
     assert 'id="btn-save-draft"' in html and 'data-i18n="save_draft" disabled' in html
-    assert 'BUILD_VERSION = "20260813-edit-session-v3"' in service_worker
+    # This release must invalidate the old static cache on existing PWA clients.
+    assert 'BUILD_VERSION = "20260928-offline-status-v2"' in service_worker
+    assert '/static/js/document-validation.js${VERSION_QUERY}' in service_worker

@@ -52,6 +52,8 @@
                 <span class="legend">Prontas, em execução, em uso e inválidas</span>
             </div>
 
+            <p id="file-refresh-status" class="file-refresh-status" role="status" aria-live="polite" {% if not graph_enabled %}hidden{% endif %}>A confirmar a lista do SharePoint…</p>
+
             <ul class="file-list" id="file-list">
                 {% if not files %}
                     <li class="empty-state">Nenhuma folha encontrada.</li>
@@ -639,6 +641,7 @@
     <script>
         window.__FILES_APP__ = {
             bootstrapEnabled: true,
+            graphEnabled: {{ graph_enabled | tojson }},
             maintenanceEnabled: {{ maintenance_enabled_for_user | tojson }},
             maintenanceDefinition: {{ maintenance_definition | tojson }},
             mailEnabled: {{ mail_enabled | tojson }},

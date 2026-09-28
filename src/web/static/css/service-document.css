@@ -596,7 +596,8 @@ body {
 
 @page {
     size: A4;
-    margin: 7mm;
+    margin: 12mm 7mm 10mm;
+    @bottom-right { content: counter(page) " / " counter(pages); font: 8px "Segoe UI", Arial, sans-serif; color: #6b7f92; }
 }
 
 @media print {
@@ -614,11 +615,16 @@ body {
     }
 
     .sheet-page {
+        display: block;
         width: auto;
         min-height: auto;
         padding: 0;
         box-shadow: none;
         gap: 2.4mm;
+    }
+
+    .sheet-page > * + * {
+        margin-top: 2.4mm;
     }
 
     .sheet-header,
@@ -784,7 +790,7 @@ body {
     }
 
     .materials-table tbody td {
-        height: 6mm;
+        height: auto;
     }
 
     .tech-lines-table td {
@@ -826,5 +832,38 @@ body {
     .grid-table,
     .tech-lines-table {
         break-inside: avoid;
+    }
+
+    .flowing-panel {
+        display: block;
+    }
+
+    .flowing-panel,
+    .flowing-panel .lined-area,
+    .flowing-panel .grid-table {
+        break-inside: auto;
+    }
+
+    .panel-title {
+        break-after: avoid;
+    }
+
+    .materials-table thead {
+        display: table-header-group;
+    }
+
+    .materials-table {
+        border-collapse: separate;
+        border-spacing: 0;
+    }
+
+    .materials-table tr,
+    .signature-strip {
+        break-inside: avoid;
+    }
+
+    .lined-area {
+        orphans: 3;
+        widows: 3;
     }
 }
