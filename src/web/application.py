@@ -330,6 +330,14 @@ def create_app(
     def request_too_large(_error):
         return json_error("O pedido excede o limite máximo permitido.", 413)
 
+    @app.errorhandler(FileMutexBusy)
+    def shared_state_busy(_error):
+        response = jsonify({"success": False, "code": "temporarily_busy",
+                            "error": "Atualização em curso. Tente novamente dentro de momentos."})
+        response.status_code = 503
+        response.headers["Retry-After"] = "2"
+        return response
+
     def current_editor_identity() -> EditorIdentity:
         current_user = g.get("current_user")
         if current_user is not None:

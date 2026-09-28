@@ -21,6 +21,8 @@ def mark_dirty(directory: Path) -> str:
     temporary = directory / (DIRTY_MARKER + ".tmp")
     temporary.write_text(token, encoding="ascii")
     os.replace(temporary, directory / DIRTY_MARKER)
+    # An imported legacy marker must no longer be mistaken for this local edit.
+    (directory / (DIRTY_MARKER + ".graph.json")).unlink(missing_ok=True)
     return token
 
 

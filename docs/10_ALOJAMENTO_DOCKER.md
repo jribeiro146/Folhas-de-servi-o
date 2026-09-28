@@ -112,6 +112,56 @@ Não publicam imagens nem fazem deploy.
    donos e modos com o backup. Esta verificação não requer finalizar nem enviar email.
 6. Confirmar logs e processamento da fila existente. Não iniciar um segundo worker
    por cron se o serviço Compose já o processar continuamente.
+7. Fazer login na aplicação, abrir a lista de folhas e usar **Atualizar**.
+   A primeira atualização completa cria `.graph_active_files.json` no diretório
+   local de Activas. Até existir inventário confirmado a lista está vazia por
+   segurança; não copiar um índice de outra instalação nem mostrar a cache antiga.
+   Acompanhar `/api/graph/status` na sessão autenticada e confirmar que terminou;
+   conferir a lista e que não existem ficheiros indisponíveis no índice.
+   Um nome inválido é omitido com o evento `graph_inventory_item_skipped`
+   (`reason=invalid_name`); os restantes ficheiros continuam disponíveis.
+   Corrigir o nome de origem e atualizar novamente para o incluir.
+
+## Reconciliação da fila e marcadores antigos
+
+A atualização não altera os JSON SADI. Na fila existente, uma publicação posterior
+confirmada do mesmo rascunho encerra uploads anteriores pendentes/falhados com
+`result.superseded_by`, mantendo payload e instantâneos anteriores para auditoria.
+Um upload falhado mais recente, ou de outro rascunho, continua pendente de resolução;
+não apagar a base SQLite nem marcar trabalhos manualmente como concluídos.
+
+Durante o refresh, metadados remotos deixam de ser descarregados para a cache.
+Os ficheiros remotos `.fs-local-dirty` e `.fs-local-dirty.tmp`, publicados por
+versões antigas, são eliminados individualmente com o eTag obtido na listagem.
+Um conflito ou falha adia a limpeza e regista `graph_legacy_marker_cleanup_deferred`;
+a próxima atualização volta a tentar. Não se eliminam documentos nem pastas.
+Uma cópia local importada do marcador só é removida quando tem a antiga sidecar
+Graph e os bytes ainda coincidem com o marcador remoto. Edições locais posteriores
+conservam a sua proteção. Não apagar marcadores locais em bloco.
+
+Novas pastas usam um nome temporário `.fs-upload-<identificador aleatório>`, que
+nunca aparece como folha, antes da mudança para o nome final. A prova de propriedade
+fica em `.fs-upload-owner.json`, não é enviada ao SharePoint e permite recuperar
+respostas POST/PATCH perdidas. Preservar esse ficheiro e os instantâneos da fila.
+Uma pasta criada por uma versão antiga cuja resposta se perdeu, sem qualquer
+prova local do ID, **não pode ser adotada automaticamente**. Após backup e com
+app/worker parados, o operador deve comparar origem, conteúdo e histórico de
+versões no SharePoint. Se confirmar que é apenas uma pasta vazia órfã desta
+aplicação, movê-la para uma área de recuperação fora de Activas e repetir o
+trabalho pela aplicação. Se contiver dados, reconciliá-los antes de repetir.
+Nunca eliminar ou adotar uma pasta apenas por ter o mesmo nome.
+
+Trabalhos `held` aguardam a confirmação da operação na base de edição. Após
+`FS_GRAPH_COMMIT_GUARD_SECONDS` (3600 por defeito, mínimo 60) passam a `failed`
+sem repetição automática, com motivo visível. A repetição manual volta a verificar
+o commit; o tempo decorrido não autoriza envio, arquivo ou remoção.
+
+Conflitos reais 409/412 em `archive_and_remove` permanecem terminais. Verificar
+as versões e os artefactos já publicados antes da repetição manual; repetir sem
+resolver o conflito não altera o resultado. A fila não elimina a origem nem
+envia email quando a publicação do arquivo falha. Não retirar `If-Match` nem
+forçar a remoção para contornar conflitos. Contenção temporária de estado responde
+503 com `Retry-After: 2`; repetir o pedido após esse intervalo.
 
 Para reverter: parar app e worker, repor checkout/src, configuração e imagem
 anteriores e arrancar sem reconstruir. Os ficheiros SADI mantêm o formato e

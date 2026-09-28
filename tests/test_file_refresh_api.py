@@ -1,4 +1,7 @@
 """The HTTP reply must retain the identity of the refresh actually requested."""
+import pytest
+
+from src.services.file_mutex import FileMutexBusy
 from src.services.editing_state_service import EditingStateService
 from src.services.file_service import FileService
 from src.web.application import create_app
@@ -39,3 +42,21 @@ def test_files_snapshot_does_not_start_another_refresh(tmp_path):
     result = app.test_client().get("/api/files?refresh=0").get_json()
     assert result["requested_refresh_id"] is None
     assert refresh.requests == []
+
+
+@pytest.mark.parametrize("url", ["/api/files?refresh=1", "/api/files?refresh=0", "/"])
+def test_busy_refresh_returns_retryable_response_instead_of_500(tmp_path, url):
+    class BusyRefresh:
+        def request_refresh(self, **kwargs):
+            raise FileMutexBusy()
+
+        def status(self):
+            raise FileMutexBusy()
+
+    app = create_app(file_service=FileService(tmp_path / "active"),
+        editing_state_service=EditingStateService(tmp_path / "editing"),
+        graph_refresh_coordinator=BusyRefresh())
+    response = app.test_client().get(url)
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "2"
+    assert response.get_json()["code"] == "temporarily_busy"
