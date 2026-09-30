@@ -17,3 +17,9 @@ data/
 docs/
 README.md
 requirements.txt
+tests/
+qa-output/
+*.zip
+*.sqlite*
+*.xlsx
+*.pdf

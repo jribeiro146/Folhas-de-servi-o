@@ -201,7 +201,7 @@ def test_multipart_photos_stay_outside_report_and_follow_archive(photo_web_app):
             "customer_signer_name": "Maria Santos",
             "customer_signature_date": "2026-08-06",
             "intervention_report": "Relat\u00f3rio sem anexos incorporados",
-            "technician_records": [{"technician": "Jo\u00e3o Freire"}],
+            "technician_records": [{"technician": "Jo\u00e3o Freire", "start_time": "09:00", "end_time": "10:00", "date": "2026-08-06"}],
             "_edit": metadata(send_editing, "draft-tab"),
         },
     )
@@ -248,6 +248,7 @@ def test_graph_active_bundle_uploads_and_prunes_photo_subfolder(tmp_path, monkey
     bundle.mkdir()
     excel = bundle / "draft.xlsx"
     excel.write_bytes(b"excel")
+    (bundle / ".graph_bundle.json").write_text('{"id": "bundle"}', encoding="utf-8")
     photo = PhotoAttachmentService.prepare_uploads([upload("obra.jpg", JPEG)])[0]
     PhotoAttachmentService(excel).apply([photo], [])
 

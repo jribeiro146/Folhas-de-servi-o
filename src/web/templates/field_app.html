@@ -18,6 +18,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/field-app.css', v=asset_version) }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/document-editor.css', v=asset_version) }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/editing-state.css', v=asset_version) }}">
+    {% if maintenance_enabled_for_user %}<link rel="stylesheet" href="{{ url_for('static', filename='css/maintenance.css', v=asset_version) }}">{% endif %}
 </head>
 {% set has_selected_data = selected_document_data is not none %}
 <body class="{% if has_selected_data %}has-active-file{% endif %}">
@@ -30,6 +31,9 @@
                     alt="Sensorpoint"
                 >
                 <h1>Folhas de Serviço</h1>
+                {% if config.SYNTHETIC_TEST_VERSION %}
+                <p class="test-version-banner" role="status">Versão de teste · Dados fictícios · Envios desativados</p>
+                {% endif %}
             </div>
 
             <div class="sidebar-tools">
@@ -47,6 +51,8 @@
                 <span id="file-counter">{{ files|length }} folha(s)</span>
                 <span class="legend">Prontas, em execução, em uso e inválidas</span>
             </div>
+
+            <p id="file-refresh-status" class="file-refresh-status" role="status" aria-live="polite" {% if not graph_enabled %}hidden{% endif %}>A confirmar a lista do SharePoint…</p>
 
             <ul class="file-list" id="file-list">
                 {% if not files %}
@@ -116,8 +122,8 @@
                         type="button"
                         aria-controls="sidebar"
                         aria-expanded="false"
-                        data-i18n="sheets_nav"
-                    >Folhas</button>
+                        {% if not config.SYNTHETIC_TEST_VERSION %}data-i18n="sheets_nav"{% endif %}
+                    >{% if config.SYNTHETIC_TEST_VERSION %}Folhas · TESTE{% else %}Folhas{% endif %}</button>
                     <p class="eyebrow" data-i18n="topbar_eyebrow">Folha de serviço</p>
                     <h2 id="active-file-title">
                         {% if has_selected_data %}A editar: {{ selected_file_name }}.xlsx{% else %}Selecione uma folha ativa{% endif %}
@@ -238,6 +244,13 @@
 
             <section class="form-shell" id="form-wrapper" {% if not has_selected_data %}hidden{% endif %}>
                 <form id="service-form" class="document-form" novalidate>
+                    {% if maintenance_enabled_for_user %}
+                    <nav id="maintenance-tabs" class="mc-tabs" role="tablist" aria-label="Partes da folha" hidden>
+                        <button type="button" role="tab" data-mc-tab="service" aria-selected="true" aria-controls="service-part">Folha de serviço</button>
+                        <button type="button" role="tab" data-mc-tab="checklists" aria-selected="false" aria-controls="maintenance-panel">Checklists de manutenção</button>
+                    </nav>
+                    <div id="service-part">
+                    {% endif %}
                     <section class="group-card section-card">
                         <div class="section-header">
                             <div>
@@ -454,16 +467,17 @@
                             <div>
                                 <p class="eyebrow" data-i18n="technicians_eyebrow">Técnicos</p>
                                 <h3 data-i18n="technicians_title">Registo de técnicos e horas</h3>
+                                <p class="section-note" data-i18n="technicians_required_help">Preencha todos os campos de cada técnico para finalizar. Pode guardar um rascunho incompleto.</p>
                             </div>
                             <button id="btn-add-technician" class="btn btn-secondary" type="button" data-i18n="add_technician">Adicionar técnico</button>
                         </div>
                         <div class="table-block">
                             <div class="table-head table-technicians">
-                                <span data-i18n="technician">Técnico</span>
-                                <span data-i18n="start_time">Hora Início</span>
-                                <span data-i18n="end_time">Hora Fim</span>
-                                <span data-i18n="total_hours">Total Horas</span>
-                                <span>Data</span>
+                                <span><span data-i18n="technician">Técnico</span> <span class="required" aria-hidden="true">*</span></span>
+                                <span><span data-i18n="start_time">Hora Início</span> <span class="required" aria-hidden="true">*</span></span>
+                                <span><span data-i18n="end_time">Hora Fim</span> <span class="required" aria-hidden="true">*</span></span>
+                                <span><span data-i18n="total_hours">Total Horas</span> <span class="required" aria-hidden="true">*</span></span>
+                                <span>Data <span class="required" aria-hidden="true">*</span></span>
                                 <span></span>
                             </div>
                             <div id="technicians-list" class="table-body"></div>
@@ -526,11 +540,12 @@
                                 <div id="signature-client-capture" class="signature-capture">
                                     <div class="signature-details">
                                         <div class="form-field">
-                                            <label for="customer-signer-name" data-i18n="customer_signer_name">Primeiro e último nome</label>
+                                            <label for="customer-signer-name"><span data-i18n="customer_signer_name">Primeiro e último nome</span> <span class="required" aria-hidden="true">*</span></label>
                                             <input
                                                 id="customer-signer-name"
                                                 type="text"
                                                 data-field="customer_signer_name"
+                                                aria-required="true"
                                                 data-i18n-placeholder="customer_signer_name_placeholder"
                                                 placeholder="Nome completo"
                                                 autocomplete="name"
@@ -538,8 +553,8 @@
                                             >
                                         </div>
                                         <div class="form-field signature-date">
-                                            <label for="customer-signature-date" data-i18n="customer_signature_date">Cliente - data</label>
-                                            <input id="customer-signature-date" type="date" data-field="customer_signature_date">
+                                            <label for="customer-signature-date"><span data-i18n="customer_signature_date">Data da assinatura</span> <span class="required" aria-hidden="true">*</span></label>
+                                            <input id="customer-signature-date" type="date" data-field="customer_signature_date" aria-required="true">
                                         </div>
                                     </div>
                                     <canvas
@@ -561,6 +576,14 @@
                         </div>
                     </section>
 
+                    {% if maintenance_enabled_for_user %}
+                    </div>
+                    <section id="maintenance-panel" hidden>
+                        <p class="eyebrow">Manutenção preventiva · SADI</p><h2>Checklists por local</h2>
+                        <label class="mc-field">N.º de locais com sistema automático de deteção de incêndio<input id="mc-site-count" type="number" min="1" step="1"></label>
+                        <p id="mc-notice" role="status"></p><nav class="mc-sites" id="mc-sites" aria-label="Locais da manutenção"></nav><div id="mc-content"></div>
+                    </section>
+                    {% endif %}
                     <section class="form-end-actions" aria-label="Ações da folha">
                         <div class="form-end-actions-left">
                             <button id="btn-save-send" class="btn btn-success" type="button" data-i18n="save_send" disabled>Finalizar folha</button>
@@ -586,19 +609,21 @@
 
     <template id="technician-row-template">
         <div class="table-row table-technicians repeat-row" data-repeat="technician_records">
-            <select data-repeat-field="technician">
+            <select data-repeat-field="technician" aria-label="Técnico" aria-required="true">
                 <option value="" data-i18n="select_technician">Selecionar técnico</option>
                 {% for technician in technician_options %}
                 <option value="{{ technician }}">{{ technician }}</option>
                 {% endfor %}
             </select>
-            <input type="time" data-repeat-field="start_time">
-            <input type="time" data-repeat-field="end_time">
+            <input type="time" data-repeat-field="start_time" aria-label="Hora de início" aria-required="true">
+            <input type="time" data-repeat-field="end_time" aria-label="Hora de fim" aria-required="true">
             <div class="duration-field">
                 <input
                     type="text"
                     inputmode="decimal"
                     data-repeat-field="total_hours"
+                    aria-label="Total de horas"
+                    aria-required="true"
                     placeholder="0 h"
                     data-i18n-placeholder="duration_placeholder"
                 >
@@ -608,7 +633,7 @@
                     <button class="duration-reset" type="button" data-duration-reset data-i18n="use_calculation">Usar cálculo</button>
                 </div>
             </div>
-            <input type="date" data-repeat-field="date">
+            <input type="date" data-repeat-field="date" aria-label="Data da intervenção" aria-required="true">
             <button class="btn btn-secondary btn-icon row-remove" type="button" data-row-remove>&times;</button>
         </div>
     </template>
@@ -616,11 +641,16 @@
     <script>
         window.__FILES_APP__ = {
             bootstrapEnabled: true,
+            graphEnabled: {{ graph_enabled | tojson }},
+            maintenanceEnabled: {{ maintenance_enabled_for_user | tojson }},
+            maintenanceDefinition: {{ maintenance_definition | tojson }},
             mailEnabled: {{ mail_enabled | tojson }},
             mailTestRecipient: {{ mail_test_recipient | tojson }},
             mailJobStaleSeconds: {{ mail_job_stale_seconds | tojson }},
             teamsEnabled: {{ teams_enabled | tojson }},
             requiredFields: {{ document_required_fields | tojson }},
+            technicianRequiredFields: {{ technician_required_fields | tojson }},
+            signatureRequiredFields: {{ signature_required_fields | tojson }},
             serviceTypeOptions: {{ service_type_options | tojson }},
             equipmentOptions: {{ equipment_options | tojson }},
             selectedFileName: {{ selected_file_name | tojson }},
@@ -635,6 +665,11 @@
         };
     </script>
     <script src="{{ url_for('static', filename='js/mail-job-monitor.js', v=asset_version) }}"></script>
+    <script src="{{ url_for('static', filename='js/document-validation.js', v=asset_version) }}"></script>
+    {% if maintenance_enabled_for_user %}
+    <script src="{{ url_for('static', filename='js/maintenance-model.js', v=asset_version) }}"></script>
+    <script src="{{ url_for('static', filename='js/maintenance-editor.js', v=asset_version) }}"></script>
+    {% endif %}
     <script src="{{ url_for('static', filename='js/document-editor.js', v=asset_version) }}"></script>
     <script src="{{ url_for('static', filename='js/editing-coordinator.js', v=asset_version) }}"></script>
     <script src="{{ url_for('static', filename='js/pwa.js', v=asset_version) }}"></script>

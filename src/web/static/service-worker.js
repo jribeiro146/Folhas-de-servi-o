@@ -1,4 +1,4 @@
-const BUILD_VERSION = "20260813-edit-session-v3";
+const BUILD_VERSION = "20260928-offline-status-v2";
 const CACHE_PREFIX = "sensorpoint-service-static-";
 const CACHE_NAME = `${CACHE_PREFIX}${BUILD_VERSION}`;
 const VERSION_QUERY = `?v=${encodeURIComponent(BUILD_VERSION)}`;
@@ -10,6 +10,7 @@ const APP_SHELL = [
     `/static/css/editing-state.css${VERSION_QUERY}`,
     `/static/css/auth.css${VERSION_QUERY}`,
     `/static/js/document-editor.js${VERSION_QUERY}`,
+    `/static/js/document-validation.js${VERSION_QUERY}`,
     `/static/js/editing-coordinator.js${VERSION_QUERY}`,
     `/static/js/pwa.js${VERSION_QUERY}`,
     `/static/img/sensorpoint-logo.png${VERSION_QUERY}`,
@@ -40,12 +41,12 @@ self.addEventListener("activate", (event) => {
 });
 
 const cachedVersion = async (request) => {
-    const exact = await caches.match(request);
+    const cache = await caches.open(CACHE_NAME);
+    const exact = await cache.match(request);
     if (exact) {
         return exact;
     }
     const requestUrl = new URL(request.url);
-    const cache = await caches.open(CACHE_NAME);
     const keys = await cache.keys();
     const candidates = keys.filter(
         (key) => new URL(key.url).pathname === requestUrl.pathname
@@ -80,7 +81,12 @@ self.addEventListener("fetch", (event) => {
 
     if (isNavigation || isAuthenticatedPage) {
         event.respondWith(
-            fetch(event.request).catch(() => caches.match(OFFLINE_URL))
+            fetch(event.request).catch(async () => {
+                const cache = await caches.open(CACHE_NAME);
+                return await cache.match(OFFLINE_URL) || new Response("Sem ligação ao servidor.", {
+                    status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" }
+                });
+            })
         );
         return;
     }
@@ -94,10 +100,12 @@ self.addEventListener("fetch", (event) => {
             .then((response) => {
                 if (response.ok && response.type === "basic") {
                     const copy = response.clone();
-                    caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+                    event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy)));
                 }
                 return response;
             })
-            .catch(() => cachedVersion(event.request))
+            .catch(async () => await cachedVersion(event.request) || new Response("Recurso indisponível sem ligação.", {
+                status: 503, headers: { "Content-Type": "text/plain; charset=utf-8" }
+            }))
     );
 });

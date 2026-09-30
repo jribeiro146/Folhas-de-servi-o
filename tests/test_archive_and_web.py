@@ -263,6 +263,8 @@ def test_web_api_flow_send_and_cancel(isolated_dirs):
         "technician_records": [
             {
                 "technician": "João Freire",
+                "start_time": "09:00",
+                "end_time": "11:30",
                 "date": "2026-04-17",
             }
         ],
@@ -611,6 +613,7 @@ def test_web_api_allows_client_absence_without_signature_and_records_it(isolated
         f"/api/file/{draft_name}/send",
         json={
             "customer_name": "Cliente ausente",
+            "technician_records": [{"technician": "Técnico fictício", "start_time": "09:00", "end_time": "10:00", "date": "2026-07-10"}],
             "client_not_present": True,
             "customer_signature_date": "2026-07-10",
             "_edit": edit_metadata(editing),
@@ -744,7 +747,7 @@ def test_send_queues_customer_email_with_technician_cc_and_teams_notice(
             "customer_email": "cliente@example.com",
             "client_not_present": True,
             "intervention_report": "Serviço concluído",
-            "technician_records": [{"technician": "João Freire"}],
+            "technician_records": [{"technician": "João Freire", "start_time": "09:00", "end_time": "10:00", "date": "2026-09-08"}],
             "_edit": edit_metadata(editing, client_id="mail-tab"),
         },
     )
@@ -825,7 +828,7 @@ def test_send_without_customer_email_archives_without_mail_or_preflight(isolated
             "customer_name": "Cliente sem email",
             "client_not_present": True,
             "intervention_report": "Serviço concluído",
-            "technician_records": [{"technician": "João Freire"}],
+            "technician_records": [{"technician": "João Freire", "start_time": "09:00", "end_time": "10:00", "date": "2026-09-08"}],
             "_edit": edit_metadata(editing, client_id="no-mail-tab"),
         },
     )
@@ -986,7 +989,7 @@ def test_send_checks_mail_credentials_before_archiving(isolated_dirs, monkeypatc
             "customer_email": "cliente@example.com",
             "client_not_present": True,
             "intervention_report": "Serviço concluído",
-            "technician_records": [{"technician": "João Freire"}],
+            "technician_records": [{"technician": "João Freire", "start_time": "09:00", "end_time": "10:00", "date": "2026-09-08"}],
             "_edit": edit_metadata(editing, client_id="mail-preflight-tab"),
         },
     )

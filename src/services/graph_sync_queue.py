@@ -19,6 +19,7 @@ from src.services.graph_mail_service import GraphMailService
 from src.services.graph_storage_service import GraphStorageService
 from src.services.local_pdf_service import LocalPdfService
 from src.services.teams_notification_service import TeamsNotificationService
+from src.services.local_changes import DIRTY_MARKER, bundle_guard, dirty_version, mark_dirty
 
 
 LOGGER = logging.getLogger(__name__)
@@ -63,6 +64,9 @@ class GraphSyncQueue:
         self.retry_base_seconds = max(
             float(os.environ.get("FS_GRAPH_JOB_RETRY_BASE_SECONDS", "2")),
             0.01,
+        )
+        self.commit_guard_seconds = max(
+            int(os.environ.get("FS_GRAPH_COMMIT_GUARD_SECONDS", "3600")), 60
         )
         self.auto_start = bool(auto_start)
         self._worker_lock = threading.Lock()
@@ -200,7 +204,7 @@ class GraphSyncQueue:
                     INSERT INTO graph_sync_jobs (
                         id, kind, payload_json, status, attempts,
                         next_attempt_at, max_attempts, created_at, updated_at
-                    ) VALUES (?, ?, ?, 'pending', 0, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)
                     """,
                     (
                         identifier,
@@ -210,6 +214,7 @@ class GraphSyncQueue:
                             ensure_ascii=False,
                             separators=(",", ":"),
                         ),
+                        "held" if prepared_payload.get("_commit_guard") else "pending",
                         now,
                         max_attempts,
                         now,
@@ -273,6 +278,8 @@ class GraphSyncQueue:
         now = time.time()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._retire_superseded_uploads(connection)
+            self._hold_outdated_upload_retries(connection)
             row = connection.execute(
                 "SELECT * FROM graph_sync_jobs WHERE id = ?",
                 (job_id,),
@@ -281,17 +288,22 @@ class GraphSyncQueue:
                 connection.rollback()
                 raise KeyError(job_id)
             current = self._serialize(row)
+            if (current["result"] or {}).get("blocked_by_newer_upload"):
+                connection.commit()
+                raise ValueError("Existe uma gravação posterior. Repita a publicação mais recente.")
             if current["status"] != "failed" or current["will_retry"]:
                 connection.rollback()
                 raise ValueError("Apenas trabalhos falhados e parados podem ser repetidos.")
             connection.execute(
                 """
                 UPDATE graph_sync_jobs
-                SET status = 'pending', attempts = 0, next_attempt_at = ?,
+                SET status = ?, attempts = 0, next_attempt_at = ?,
                     retryable = 0, last_error = NULL, updated_at = ?
                 WHERE id = ?
                 """,
-                (now, now, job_id),
+                ("held" if (current["payload"].get("_commit_guard")
+                            or (current["result"] or {}).get("commit_guard_required")) else "pending",
+                 now, now, job_id),
             )
             connection.commit()
         log_event(
@@ -304,6 +316,90 @@ class GraphSyncQueue:
         )
         self._start_if_enabled()
         return self.status(job_id) or {"id": job_id, "status": "pending"}
+
+    def has_unfinished_upload(self, source: Path) -> bool:
+        """Prevent finalization from overtaking publication of this draft."""
+        return self.unfinished_upload(source) is not None
+
+    def unfinished_upload(self, source: Path) -> dict[str, Any] | None:
+        """Return the latest unfinished publication, including terminal failure."""
+        source = Path(source).resolve()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._retire_superseded_uploads(connection)
+            rows = connection.execute(
+                "SELECT * FROM graph_sync_jobs "
+                "WHERE kind = 'upload_active' AND status != 'complete' ORDER BY rowid DESC"
+            ).fetchall()
+            connection.commit()
+        for row in rows:
+            payload = self._json_object(row["payload_json"])
+            # New jobs point to immutable staging; older jobs use the live path.
+            if self._upload_source(payload) == source:
+                return self._serialize(row)
+        return None
+
+    @staticmethod
+    def _upload_source(payload: dict[str, Any]) -> Path | None:
+        value = payload.get("_original_draft_path") or payload.get("draft_path")
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            return Path(value).resolve()
+        except (OSError, ValueError):
+            return None
+
+    def _retire_superseded_uploads(self, connection: sqlite3.Connection) -> None:
+        """A later confirmed snapshot supersedes earlier work for the same draft.
+
+        Retain the payload and the explicit replacement ID for audit/rollback.
+        Never retire a running worker, an archive, or a different draft.
+        """
+        rows = connection.execute(
+            "SELECT * FROM graph_sync_jobs WHERE kind = 'upload_active' "
+            "ORDER BY rowid DESC"
+        ).fetchall()
+        confirmed: dict[Path, str] = {}
+        for row in rows:
+            payload = self._json_object(row["payload_json"])
+            source = self._upload_source(payload)
+            if source is None:
+                continue
+            if row["status"] == "complete":
+                confirmed.setdefault(source, row["id"])
+            elif source in confirmed and row["status"] in {"pending", "failed", "held"}:
+                result = self._json_object(row["result_json"])
+                result["superseded_by"] = confirmed[source]
+                connection.execute(
+                    "UPDATE graph_sync_jobs SET status = 'complete', retryable = 0, "
+                    "result_json = ?, last_error = NULL, updated_at = ? WHERE id = ?",
+                    (json.dumps(result), time.time(), row["id"]),
+                )
+
+    def _hold_outdated_upload_retries(self, connection: sqlite3.Connection) -> None:
+        """Never let an older retry overwrite a newer, partially published save."""
+        rows = connection.execute(
+            "SELECT * FROM graph_sync_jobs WHERE kind = 'upload_active' "
+            "ORDER BY rowid DESC"
+        ).fetchall()
+        started: dict[Path, str] = {}
+        for row in rows:
+            payload = self._json_object(row["payload_json"])
+            source = self._upload_source(payload)
+            if source is None:
+                continue
+            if source in started and row["status"] in {"pending", "failed", "held"}:
+                result = self._json_object(row["result_json"])
+                if not result.get("blocked_by_newer_upload"):
+                    result["blocked_by_newer_upload"] = started[source]
+                    connection.execute(
+                        "UPDATE graph_sync_jobs SET status = 'failed', retryable = 0, "
+                        "result_json = ?, last_error = ?, updated_at = ? WHERE id = ?",
+                        (json.dumps(result), "Existe uma gravação posterior. "
+                         "Resolva ou repita a publicação mais recente.", time.time(), row["id"]),
+                    )
+            if int(row["attempts"]) > 0:
+                started.setdefault(source, row["id"])
 
     def summary(self) -> dict[str, int]:
         result = {"pending": 0, "running": 0, "failed": 0, "complete": 0}
@@ -388,6 +484,9 @@ class GraphSyncQueue:
         )
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._retire_superseded_uploads(connection)
+            self._hold_outdated_upload_retries(connection)
+            self._release_committed_jobs(connection)
             self._hold_stale_mail_jobs(connection, now=now)
             active = connection.execute(
                 """
@@ -429,6 +528,48 @@ class GraphSyncQueue:
         job["attempts"] = int(job["attempts"]) + 1
         return job
 
+    def _release_committed_jobs(self, connection: sqlite3.Connection) -> None:
+        """Only publish a final archive after its editing transaction committed."""
+        rows = connection.execute(
+            "SELECT id, payload_json, result_json, updated_at FROM graph_sync_jobs WHERE status = 'held'"
+        ).fetchall()
+        for row in rows:
+            try:
+                guard = self._json_object(row["payload_json"]).get("_commit_guard") or {}
+                if not isinstance(guard, dict) or not guard:
+                    raise ValueError("Invalid commit guard")
+                database = Path(str(guard.get("database") or ""))
+                if not database.is_file():
+                    raise ValueError("Commit database unavailable")
+                with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=1) as editing_db:
+                    state_row = editing_db.execute(
+                        "SELECT state_json FROM editing_states WHERE document_id = ?",
+                        (guard.get("document_id"),),
+                    ).fetchone()
+                state = self._json_object(state_row[0]) if state_row else {}
+                operations = state.get("operations", {})
+                operation = operations.get(guard.get("operation_id"), {})
+                if operation.get("status") == "complete":
+                    connection.execute(
+                        "UPDATE graph_sync_jobs SET status = 'pending' WHERE id = ?",
+                        (row["id"],),
+                    )
+                    continue
+            except Exception:
+                # An unknown commit state never authorizes an external effect.
+                # Isolate malformed legacy state to this job, not the whole worker.
+                pass
+            if time.time() - float(row["updated_at"]) >= self.commit_guard_seconds:
+                result = self._json_object(row["result_json"])
+                result["commit_guard_required"] = True
+                connection.execute(
+                    "UPDATE graph_sync_jobs SET status = 'failed', retryable = 0, "
+                    "last_error = ?, result_json = ?, updated_at = ? WHERE id = ?",
+                    ("Confirmação local da finalização em falta ou inválida. "
+                     "Requer revisão; repetir volta a verificar a confirmação.",
+                     json.dumps(result), time.time(), row["id"]),
+                )
+
     def _execute(
         self,
         kind: str,
@@ -442,10 +583,15 @@ class GraphSyncQueue:
             if self.graph_service is None:
                 raise RuntimeError("O armazenamento Microsoft Graph não está ativo.")
             self._hydrate_staging_metadata(payload)
-            uploaded = self.graph_service.upload_active_bundle(
-                Path(payload["draft_path"]),
-                fail_if_exists=bool(payload.get("fail_if_exists")) and attempts == 1,
-            )
+            try:
+                uploaded = self.graph_service.upload_active_bundle(
+                    Path(payload["draft_path"]),
+                    fail_if_exists=bool(payload.get("fail_if_exists")) and attempts == 1,
+                )
+            except Exception:
+                # Keep confirmed partial writes/ownership for the next snapshot.
+                self._publish_staging_metadata(payload, clear_dirty=False)
+                raise
             self._publish_staging_metadata(payload)
             return {"uploaded_files": uploaded}
         if kind == "archive_and_remove":
@@ -612,6 +758,7 @@ class GraphSyncQueue:
         now = time.time()
         job_id = str(job["id"])
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
                 UPDATE graph_sync_jobs
@@ -620,6 +767,8 @@ class GraphSyncQueue:
                 """,
                 (json.dumps(result, ensure_ascii=False), now, job_id),
             )
+            self._retire_superseded_uploads(connection)
+            connection.commit()
 
         self._cleanup_staging(job["payload"])
         log_event(
@@ -820,7 +969,11 @@ class GraphSyncQueue:
             ).fetchone()
         due_at = row["due_at"] if row else None
         if due_at is None:
-            return None
+            with self._connect() as connection:
+                held = connection.execute(
+                    "SELECT 1 FROM graph_sync_jobs WHERE status = 'held' LIMIT 1"
+                ).fetchone()
+            return 5.0 if held else None
         return max(float(due_at) - time.time(), 0.05)
 
     def _stage_payload(
@@ -838,6 +991,8 @@ class GraphSyncQueue:
             raise FileNotFoundError(f"Rascunho local não encontrado: {source}")
         if source.parent.name != source.stem:
             raise ValueError("O rascunho a publicar não está numa pasta isolada.")
+        if not dirty_version(source.parent):
+            mark_dirty(source.parent)
 
         safe_id = hashlib.sha256(job_id.encode("utf-8")).hexdigest()[:16]
         target = self.asset_root / safe_id
@@ -864,7 +1019,9 @@ class GraphSyncQueue:
             path
             for path in directory.rglob("*")
             if path.is_file()
-            and (path.name == ".graph_bundle.json" or path.name.endswith(".graph.json"))
+            and (path.name in {".graph_bundle.json", ".fs-upload-owner.json"}
+                 or path.name.endswith(".graph.json"))
+            and path.name != DIRTY_MARKER + ".graph.json"
         ]
 
     def _hydrate_staging_metadata(self, payload: dict[str, Any]) -> None:
@@ -875,13 +1032,10 @@ class GraphSyncQueue:
         original = Path(original_value)
         if not original.parent.exists() or not staged.parent.exists():
             return
-        for source in self._metadata_files(original.parent):
-            destination = staged.parent / source.relative_to(original.parent)
-            if not destination.exists():
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, destination)
+        with bundle_guard(original.parent):
+            self._copy_newer_metadata(original.parent, staged.parent)
 
-    def _publish_staging_metadata(self, payload: dict[str, Any]) -> None:
+    def _publish_staging_metadata(self, payload: dict[str, Any], *, clear_dirty: bool = True) -> None:
         staged = Path(str(payload["draft_path"]))
         original_value = str(payload.get("_original_draft_path") or "")
         if not original_value:
@@ -889,12 +1043,24 @@ class GraphSyncQueue:
         original = Path(original_value)
         if not original.parent.exists() or not staged.parent.exists():
             return
-        for source in self._metadata_files(staged.parent):
-            destination = original.parent / source.relative_to(staged.parent)
+        with bundle_guard(original.parent):
+            self._publish_locked_metadata(staged, original, clear_dirty=clear_dirty)
+
+    def _copy_newer_metadata(self, source_dir: Path, destination_dir: Path) -> None:
+        for source in self._metadata_files(source_dir):
+            destination = destination_dir / source.relative_to(source_dir)
+            if destination.exists() and source.stat().st_mtime_ns <= destination.stat().st_mtime_ns:
+                continue
             destination.parent.mkdir(parents=True, exist_ok=True)
             temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex[:8]}.tmp")
             shutil.copy2(source, temporary)
             os.replace(str(temporary), str(destination))
+
+    def _publish_locked_metadata(self, staged: Path, original: Path, *, clear_dirty: bool = True) -> None:
+        self._copy_newer_metadata(staged.parent, original.parent)
+        staged_version = dirty_version(staged.parent)
+        if clear_dirty and staged_version and dirty_version(original.parent) == staged_version:
+            (original.parent / DIRTY_MARKER).unlink(missing_ok=True)
 
 
     def _cleanup_staging(self, payload: dict[str, Any]) -> None:
@@ -907,13 +1073,21 @@ class GraphSyncQueue:
             return
         shutil.rmtree(candidate, ignore_errors=True)
     @staticmethod
+    def _json_object(raw: str | None) -> dict[str, Any]:
+        try:
+            value = json.loads(raw or "{}")
+            return value if isinstance(value, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+
+    @staticmethod
     def _serialize(row: sqlite3.Row) -> dict[str, Any]:
         status = str(row["status"])
         will_retry = status == "failed" and bool(row["retryable"])
         return {
             "id": str(row["id"]),
             "kind": str(row["kind"]),
-            "payload": json.loads(row["payload_json"]),
+            "payload": GraphSyncQueue._json_object(row["payload_json"]),
             "status": status,
             "will_retry": will_retry,
             "attempts": int(row["attempts"]),

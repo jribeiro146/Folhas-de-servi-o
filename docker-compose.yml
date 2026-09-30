@@ -1,18 +1,35 @@
+x-runtime: &runtime
+  build:
+    context: .
+    args:
+      APP_UID: ${APP_UID:-10001}
+      APP_GID: ${APP_GID:-10001}
+  image: ${FS_IMAGE:-folhas-servico:latest}
+  restart: unless-stopped
+  init: true
+  volumes:
+    - app-data:/app/data
+    - ./src:/app/src
+    - ${FS_LOG_HOST_DIR:-/var/www/vhosts/service.sensorpoint.pt/private/folhas-servico/logs}:/app/logs
+  env_file:
+    - .env
+  environment:
+    FS_BASE_PATH: /app/data
+    FS_APP_DATA_DIR: /app/data
+    GRAPH_CACHE_DIR: /app/data/graph-cache
+    FS_LOG_DIR: /app/logs
+    FS_GRAPH_QUEUE_IN_WEB: "false"
+
 services:
   app:
-    build: .
-    image: folhas-servico:latest
+    <<: *runtime
     container_name: folhas-servico
-    restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"
-    volumes:
-      - app-data:/app/data
-    env_file:
-      - .env
-    environment:
-      - FS_APP_DATA_DIR=/app/data
-      - GRAPH_CACHE_DIR=/app/data/graph-cache
+  worker:
+    <<: *runtime
+    container_name: folhas-servico-worker
+    command: ["python", "-B", "-m", "src.queue_worker", "--watch", "--interval", "5"]
 
 volumes:
   app-data:

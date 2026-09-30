@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 import re
 import unicodedata
+from src.maintenance_schema import normalize_sites
 
 from src.services.signature_service import (
     CLIENT_SIGNATURE_LABEL,
@@ -47,7 +48,7 @@ TECHNICIAN_OPTIONS = [
     "Pedro Lopes",
     "Luciano Pereira",
     "Luis Henrique",
-    "Valdecir Junior",
+    "Valdecir Gomes",
     "Luis Duarte",
     "Luís Califórnia",
 ]
@@ -58,6 +59,19 @@ TECHNICIAN_INITIALS_OVERRIDES = {
 
 DOCUMENT_REQUIRED_FIELDS: list[dict[str, str]] = [
     {"key": "customer_name", "label": "Cliente / Customer"},
+]
+
+TECHNICIAN_REQUIRED_FIELDS: list[dict[str, str]] = [
+    {"key": "technician", "label": "Nome"},
+    {"key": "start_time", "label": "Hora de início"},
+    {"key": "end_time", "label": "Hora de fim"},
+    {"key": "total_hours", "label": "Total de horas"},
+    {"key": "date", "label": "Data"},
+]
+
+SIGNATURE_REQUIRED_FIELDS: list[dict[str, str]] = [
+    {"key": "customer_signer_name", "label": "Primeiro e último nome"},
+    {"key": "customer_signature_date", "label": "Data da assinatura"},
 ]
 
 DOCUMENT_SIMPLE_FIELDS = (
@@ -210,6 +224,7 @@ def normalize_document_payload(payload: dict[str, Any] | None) -> dict[str, Any]
     technician_records = _normalize_technician_rows(source.get("technician_records"))
     document["technician_records"] = technician_records if technician_records else [create_empty_technician_record()]
     document["client_not_present"] = _coerce_bool(source.get("client_not_present"))
+    document["maintenance_checklists"] = normalize_sites(source.get("maintenance_checklists"))
 
     return document
 
@@ -366,6 +381,16 @@ def document_missing_required_fields(document_payload: dict[str, Any]) -> list[s
         if not _stringify(document.get(field["key"])):
             missing.append(field["label"])
 
+    for index, record in enumerate(document["technician_records"], start=1):
+        for field in TECHNICIAN_REQUIRED_FIELDS:
+            if not _stringify(record.get(field["key"])):
+                missing.append(f"{field['label']} do técnico {index}")
+
+    if not document["client_not_present"]:
+        for field in SIGNATURE_REQUIRED_FIELDS:
+            if not _stringify(document.get(field["key"])):
+                missing.append(field["label"])
+
     return missing
 
 
@@ -374,11 +399,35 @@ def document_invalid_fields(document_payload: dict[str, Any]) -> list[str]:
     invalid: list[str] = []
 
     for index, record in enumerate(document["technician_records"], start=1):
+        for key, label in (("start_time", "Hora de início"), ("end_time", "Hora de fim")):
+            value = _stringify(record.get(key))
+            if value and (not re.fullmatch(r"[0-9]{2}:[0-9]{2}", value) or _parse_time(value) is None):
+                invalid.append(f"{label} do técnico {index}")
         total_hours = _stringify(record.get("total_hours"))
         if total_hours and _decimal_hours(total_hours) is None:
             invalid.append(f"Total de horas do técnico {index}")
+        if record["date"] and not _is_valid_document_date(record["date"]):
+            invalid.append(f"Data do técnico {index}")
+
+    if not document["client_not_present"]:
+        name = document["customer_signer_name"]
+        if name and len(name.split()) < 2:
+            invalid.append("Primeiro e último nome")
+        signature_date = document["customer_signature_date"]
+        if signature_date and not _is_valid_document_date(signature_date):
+            invalid.append("Data da assinatura")
 
     return invalid
+
+
+def _is_valid_document_date(value: str) -> bool:
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+        return False
+    try:
+        date.fromisoformat(value)
+        return True
+    except ValueError:
+        return False
 
 
 def strip_signature_payload(document_payload: dict[str, Any]) -> dict[str, Any]:

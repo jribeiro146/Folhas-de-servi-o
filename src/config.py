@@ -7,6 +7,7 @@ devem ser definidos aqui. Nenhum módulo deve hardcode estes valores.
 
 import os
 import sys
+import logging
 from pathlib import Path
 
 
@@ -157,6 +158,22 @@ TEAMS_WEBHOOK_URL: str = os.environ.get("FS_TEAMS_WEBHOOK_URL", "").strip()
 # ---------------------------------------------------------------------------
 
 STORAGE_BACKEND: str = os.environ.get("FS_STORAGE_BACKEND", "local").strip().lower()
+
+
+def _warn_implicit_environment() -> None:
+    """Avisa uma configuração incompleta sem ativar transportes ou produção."""
+    if "FS_ENVIRONMENT" not in os.environ and (
+        AUTH_PROVIDER == "microsoft" or STORAGE_BACKEND == "graph"
+    ):
+        logging.getLogger(__name__).warning(
+            "FS_ENVIRONMENT ausente com Microsoft/Graph configurado. "
+            "Mantém-se development: cookies sem Secure e transportes externos "
+            "bloqueados. Defina o modo explicitamente no ambiente de destino."
+        )
+
+
+_warn_implicit_environment()
+
 # Em alojamento WSGI/Passenger, usar False e executar ``python -m src.queue_worker``
 # num processo ou tarefa agendada independente.
 GRAPH_QUEUE_IN_WEB: bool = _env_flag("FS_GRAPH_QUEUE_IN_WEB", True)

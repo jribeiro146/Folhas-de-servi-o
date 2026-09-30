@@ -49,8 +49,10 @@ Notas:
 - A escrita em Excel e feita com `openpyxl`.
 - `concurrent-log-handler` coordena a escrita e rotacao do mesmo log entre os
   processos WSGI e o worker no mesmo host.
-- Em `FS_STORAGE_BACKEND=graph`, o Graph converte o HTML final em PDF. O Plesk nao
-  precisa de Microsoft Excel, Chrome ou Chromium para criar o PDF.
+- Em `FS_STORAGE_BACKEND=graph`, o Graph converte o HTML da folha de serviço em PDF.
+  As checklists SADI privadas são geradas localmente e precisam de Chromium no
+  servidor. O Dockerfile inclui-o; em Plesk/Passenger deve ser instalado no host.
+  Ver [notas SADI](RELEASE_NOTES_SADI_DEMO_2026-09-24.md) para ativação e armazenamento.
 
 ## Estrutura a publicar
 
@@ -147,6 +149,8 @@ No Plesk, configurar as variaveis de ambiente da app Python. Nao colocar segredo
 Exemplo de configuracao:
 
 ```bash
+FS_ENVIRONMENT=production
+FS_MAINTENANCE_ENABLED=true
 FS_STORAGE_BACKEND=graph
 FS_AUTH_PROVIDER=microsoft
 FS_SECRET_KEY=<gerar-chave-aleatoria-longa>
