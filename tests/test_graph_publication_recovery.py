@@ -206,6 +206,9 @@ class RecoverableCreation(GraphStorageService):
     def ensure_folder_path(self, path):
         pass
 
+    def _list_children(self, item_id):
+        return []
+
     def _graph_json(self, method, path, **kwargs):
         assert method == "POST"
         body = json.loads(kwargs["data"])
@@ -283,6 +286,136 @@ def test_folder_created_by_another_user_during_rename_is_preserved(tmp_path):
         graph.upload_active_bundle(source)
     assert graph.items["Activas/" + source.parent.name]["id"] == "other-user"
     assert graph.writes == []
+
+
+class ChangingFolderGraph(RecoverableCreation):
+    def __init__(self, failures=0):
+        super().__init__(None)
+        self.failures = failures
+        self.patch_tags = []
+        self.children = []
+        self.post_tag_stale = False
+
+    def _graph_json(self, method, path, **kwargs):
+        created = super()._graph_json(method, path, **kwargs)
+        response = dict(created)
+        if self.post_tag_stale:
+            created["eTag"] = "after-post"
+        return response
+
+    def _list_children(self, item_id):
+        return self.children
+
+    def _graph_bytes(self, method, path, **kwargs):
+        assert method == "PATCH"
+        self.patch_tags.append(kwargs["headers"]["If-Match"])
+        body = json.loads(kwargs["data"])
+        assert body["@microsoft.graph.conflictBehavior"] == "fail"
+        old_key = next(key for key, item in self.items.items() if item["id"] == "created-folder")
+        item = self.items[old_key]
+        if self.failures:
+            self.failures -= 1
+            item["eTag"] += "-changed"
+        if kwargs["headers"]["If-Match"] != item["eTag"]:
+            raise GraphConflictError("Synthetic HTTP 412", status_code=412)
+        new_key = "Activas/" + body["name"]
+        if new_key in self.items:
+            raise GraphConflictError("Synthetic HTTP 409", status_code=409)
+        self.items[new_key] = {**self.items.pop(old_key), "name": body["name"]}
+        return json.dumps(self.items[new_key]).encode()
+
+
+def test_post_etag_is_refreshed_before_renaming_the_empty_owned_folder(tmp_path):
+    source = draft(tmp_path)
+    graph = ChangingFolderGraph()
+    graph.post_tag_stale = True
+    graph.upload_active_bundle(source, fail_if_exists=True)
+    assert graph.patch_tags == ["after-post"]
+    assert graph.created == 1 and graph.writes == [b"first save"]
+    assert not any(".fs-upload-" in key for key in graph.items)
+
+
+def test_412_during_rename_refreshes_only_the_owned_empty_folder(tmp_path):
+    source = draft(tmp_path)
+    graph = ChangingFolderGraph(failures=1)
+    queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", auto_start=False)
+    job = queue.enqueue("upload_active", {"draft_path": str(source), "fail_if_exists": True})
+    queue.run_until_idle()
+    assert queue.status(job["id"])["status"] == "complete"
+    assert graph.patch_tags == ["folder-v1", "folder-v1-changed"]
+    assert graph.created == 1 and graph.writes == [b"first save"]
+    assert not queue.has_unfinished_upload(source)
+    assert not any(".fs-upload-" in key for key in graph.items)
+
+
+def test_repeated_folder_412_remains_retryable_and_reuses_the_same_folder(tmp_path):
+    source = draft(tmp_path)
+    graph = ChangingFolderGraph(failures=3)
+    queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", auto_start=False)
+    job = queue.enqueue("upload_active", {"draft_path": str(source), "fail_if_exists": True})
+    queue.run_until_idle()
+    assert queue.status(job["id"])["will_retry"]
+    assert len(graph.patch_tags) == 3 and graph.writes == []
+    assert queue.has_unfinished_upload(source)
+    with queue._connect() as db:
+        db.execute("UPDATE graph_sync_jobs SET next_attempt_at=0 WHERE id=?", (job["id"],))
+    queue.run_until_idle()
+    assert queue.status(job["id"])["status"] == "complete"
+    assert graph.created == 1 and graph.writes == [b"first save"]
+
+
+@pytest.mark.parametrize("change", ["contents", "replacement"])
+def test_folder_changed_by_someone_else_after_412_is_not_renamed(tmp_path, change):
+    source = draft(tmp_path)
+    graph = ChangingFolderGraph(failures=1)
+    patch = graph._graph_bytes
+
+    def conflict(*args, **kwargs):
+        try:
+            return patch(*args, **kwargs)
+        except GraphConflictError:
+            if change == "contents":
+                graph.children = [{"id": "foreign-file", "name": "unexpected.xlsx"}]
+            else:
+                next(iter(graph.items.values()))["id"] = "foreign-folder"
+            raise
+
+    graph._graph_bytes = conflict
+    with pytest.raises(GraphConflictError):
+        graph.upload_active_bundle(source)
+    assert len(graph.patch_tags) == 1 and graph.writes == []
+    assert graph.created == 1
+
+
+def test_new_save_recovers_a_legacy_terminal_rename_failure_without_duplicate_folder(tmp_path):
+    source = draft(tmp_path)
+    graph = ChangingFolderGraph(failures=3)
+    queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", auto_start=False)
+    old = queue.enqueue("upload_active", {"draft_path": str(source), "fail_if_exists": True})
+    queue.run_until_idle()
+    with queue._connect() as db:
+        db.execute("UPDATE graph_sync_jobs SET retryable=0 WHERE id=?", (old["id"],))
+    source.write_bytes(b"latest save")
+    mark_dirty(source.parent)
+    new = queue.enqueue("upload_active", {"draft_path": str(source)})
+    queue.run_until_idle()
+    assert graph.created == 1 and graph.writes == [b"latest save"]
+    assert queue.status(old["id"])["result"]["superseded_by"] == new["id"]
+    assert not queue.has_unfinished_upload(source)
+
+
+@pytest.mark.parametrize("status", [409, 412])
+def test_transport_retains_http_conflict_status_without_changing_default_retry_policy(status, monkeypatch):
+    import io
+    from urllib.error import HTTPError
+    graph = GraphStorageService(GraphConfig("test", "test", "test", "test"))
+    def conflict(*_args):
+        raise HTTPError("https://graph.microsoft.com/synthetic", status, "Conflict", {}, io.BytesIO(b"{}"))
+    monkeypatch.setattr(graph, "_open_request_with_retry", conflict)
+    with pytest.raises(GraphConflictError) as caught:
+        graph._request_bytes("https://graph.microsoft.com/synthetic", method="PATCH", authenticated=False)
+    assert caught.value.status_code == status
+    assert not caught.value.retryable
 
 
 class InventoryGraph(GraphStorageService):

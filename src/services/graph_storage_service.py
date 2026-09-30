@@ -49,6 +49,10 @@ class GraphConflictError(GraphStorageError):
 
     retryable = False
 
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
 
 @dataclass(frozen=True)
 class GraphConfig:
@@ -474,6 +478,8 @@ class GraphStorageService:
         temporary_path = self._join_graph_path(self.config.active_path, temporary_name)
         remote = self._get_item_by_path(temporary_path)
         if remote is None:
+            if owner.get("id"):
+                raise GraphConflictError("A pasta temporária remota já não está na localização esperada.")
             self.ensure_folder_path(self.config.active_path)
             try:
                 remote = self._graph_json(
@@ -487,22 +493,46 @@ class GraphStorageService:
                 remote = self._get_item_by_path(temporary_path)
                 if remote is None:
                     raise GraphStorageError("Criação remota ainda não confirmada; será verificada novamente.")
-        if not remote.get("id") or not remote.get("eTag"):
+        if not remote.get("id"):
             raise GraphStorageError("A criação da pasta remota não foi confirmada.")
         if owner.get("id") and owner["id"] != remote["id"]:
             raise GraphConflictError("A pasta temporária remota foi substituída.")
         owner["id"] = remote["id"]
         self._atomic_write_json(ownership_path, owner)
-        response = self._graph_bytes(
-            "PATCH", f"/drives/{self.config.drive_id}/items/{parse.quote(str(remote['id']), safe='')}",
-            data=json.dumps({"name": bundle_dir.name,
-                "@microsoft.graph.conflictBehavior": "fail"}).encode("utf-8"),
-            content_type="application/json", headers={"If-Match": str(remote["eTag"])},
-        )
-        renamed = json.loads(response) if response else {}
-        if renamed.get("id") != owner["id"]:
-            raise GraphStorageError("A mudança de nome da pasta remota não foi confirmada.")
-        return renamed
+        # SharePoint can change a newly created folder's eTag before the PATCH.
+        # Refresh only this owned, still-empty staging folder, never a workbook
+        # or a published bundle. Keep If-Match on every attempt.
+        for attempt in range(3):
+            remote = self._get_item_by_path(temporary_path)
+            if remote is None:
+                raise GraphStorageError("A pasta temporária ainda não pôde ser confirmada.")
+            if remote.get("id") != owner["id"] or remote.get("name") != temporary_name or "folder" not in remote:
+                raise GraphConflictError("A pasta temporária remota foi substituída ou alterada.")
+            if not remote.get("eTag"):
+                raise GraphStorageError("A versão da pasta temporária ainda não pôde ser confirmada.")
+            if self._list_children(str(remote["id"])):
+                raise GraphConflictError("A pasta temporária remota contém ficheiros inesperados.")
+            try:
+                response = self._graph_bytes(
+                    "PATCH", f"/drives/{self.config.drive_id}/items/{parse.quote(str(remote['id']), safe='')}",
+                    data=json.dumps({"name": bundle_dir.name,
+                        "@microsoft.graph.conflictBehavior": "fail"}).encode("utf-8"),
+                    content_type="application/json", headers={"If-Match": str(remote["eTag"])},
+                )
+            except GraphConflictError as exc:
+                if exc.status_code != 412:
+                    raise
+                if attempt == 2:
+                    raise GraphStorageError(
+                        "A pasta temporária ainda está a estabilizar no SharePoint; "
+                        "a publicação será repetida."
+                    ) from exc
+                continue
+            renamed = json.loads(response) if response else {}
+            if renamed.get("id") != owner["id"]:
+                raise GraphStorageError("A mudança de nome da pasta remota não foi confirmada.")
+            return renamed
+        raise GraphStorageError("A mudança de nome da pasta remota não foi confirmada.")
 
     def assert_active_entry_current(self, local_source_path: Path) -> dict[str, Any]:
         """Verify that the cached active item still has the Graph eTag that was read."""
@@ -869,7 +899,8 @@ class GraphStorageService:
             detail = exc.read().decode("utf-8", errors="replace")
             if exc.code in {409, 412}:
                 raise GraphConflictError(
-                    "O ficheiro foi alterado no SharePoint por outro utilizador.") from exc
+                    "O ficheiro foi alterado no SharePoint por outro utilizador.",
+                    status_code=exc.code) from exc
             raise GraphStorageError(f"Microsoft Graph HTTP {exc.code}: {detail}") from exc
         except error.URLError as exc:
             raise GraphStorageError(f"Microsoft Graph indisponível: {exc}") from exc

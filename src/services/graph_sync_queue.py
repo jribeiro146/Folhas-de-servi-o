@@ -319,21 +319,25 @@ class GraphSyncQueue:
 
     def has_unfinished_upload(self, source: Path) -> bool:
         """Prevent finalization from overtaking publication of this draft."""
+        return self.unfinished_upload(source) is not None
+
+    def unfinished_upload(self, source: Path) -> dict[str, Any] | None:
+        """Return the latest unfinished publication, including terminal failure."""
         source = Path(source).resolve()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._retire_superseded_uploads(connection)
             rows = connection.execute(
-                "SELECT payload_json FROM graph_sync_jobs "
-                "WHERE kind = 'upload_active' AND status != 'complete'"
+                "SELECT * FROM graph_sync_jobs "
+                "WHERE kind = 'upload_active' AND status != 'complete' ORDER BY rowid DESC"
             ).fetchall()
             connection.commit()
         for row in rows:
             payload = self._json_object(row["payload_json"])
             # New jobs point to immutable staging; older jobs use the live path.
             if self._upload_source(payload) == source:
-                return True
-        return False
+                return self._serialize(row)
+        return None
 
     @staticmethod
     def _upload_source(payload: dict[str, Any]) -> Path | None:

@@ -1462,9 +1462,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
     const commitMessageKey = "sensorpoint-commit-message";
-    const navigateAfterCommit = (url, message) => {
+    const navigateAfterCommit = (url, message, variant = "success") => {
         try {
-            window.sessionStorage.setItem(commitMessageKey, message);
+            window.sessionStorage.setItem(commitMessageKey, JSON.stringify({ message, variant }));
         } catch (_error) {
             // Navigation must also work when browser storage is unavailable.
         }
@@ -1498,11 +1498,15 @@ document.addEventListener("DOMContentLoaded", () => {
             commitPhotoState(result.photos || []);
             await window.__EDITING_COORDINATOR__?.markCommitted(result, "draft");
             const nextFileName = result.file || activeFileName;
-            const successMessage = result.created_copy
-                ? "Rascunho guardado e nova folha em execução criada."
-                : "Rascunho guardado com sucesso.";
+            const publicationPending = result.publication_status === "pending";
+            const successMessage = publicationPending
+                ? "Rascunho guardado no servidor. A publicação no SharePoint está pendente."
+                : (result.created_copy
+                    ? "Rascunho guardado e nova folha em execução criada."
+                    : "Rascunho guardado com sucesso.");
 
-            navigateAfterCommit(`/?file=${encodeURIComponent(nextFileName)}`, successMessage);
+            navigateAfterCommit(`/?file=${encodeURIComponent(nextFileName)}`, successMessage,
+                publicationPending ? "info" : "success");
         } catch (error) {
             showToast(error.message, "error");
         } finally {
@@ -2065,7 +2069,12 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
         const message = window.sessionStorage.getItem(commitMessageKey);
         window.sessionStorage.removeItem(commitMessageKey);
-        if (message) showToast(message, "success");
+        if (message) {
+            let feedback;
+            try { feedback = JSON.parse(message); } catch (_error) { /* Older tabs stored plain text. */ }
+            showToast(feedback?.message || message,
+                ["success", "info", "error"].includes(feedback?.variant) ? feedback.variant : "success");
+        }
     } catch (_error) {
         // Feedback persistence is optional; document safety is server-side.
     }

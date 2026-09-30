@@ -14,6 +14,12 @@ Aplicar a raiz desta branch; não instalar a cópia sob `migracao/`.
 
 ## Alterações
 
+- Correção de 30/09: HTTP 412 ao renomear pasta temporária própria e vazia
+  volta a consultar o eTag e mantém escrita condicionada; persistindo a corrida,
+  agenda nova tentativa. Não transforma conflitos de ficheiros ou arquivos em
+  retries. A gravação indica publicação pendente e a finalização identifica
+  falhas terminais. Recuperação dos rascunhos existentes documentada em
+  10_ALOJAMENTO_DOCKER.md, sem apagar dados ou repetir envios.
 - Inventário SharePoint com índice local, atualização concorrente coordenada e
   diagnóstico sem nomes de clientes, com lista de ativas renovada sem recarregar a página.
 - Doze materiais nos relatórios, paginação de textos extensos e identificação nas páginas.

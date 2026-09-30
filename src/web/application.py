@@ -1785,9 +1785,19 @@ def create_app(
             if path is not None:
                 validate_document_identity(path, metadata)
 
-            if path is not None and graph_service is not None and graph_sync_queue is not None and graph_sync_queue.has_unfinished_upload(path):
-                return jsonify({"success": False, "code": "publication_pending",
-                    "error": "A publicação do rascunho ainda não terminou. Aguarde a sincronização antes de finalizar."}), 409
+            if path is not None and graph_service is not None and graph_sync_queue is not None:
+                publication = graph_sync_queue.unfinished_upload(path)
+                if publication:
+                    failed = publication["status"] == "failed" and not publication["will_retry"]
+                    return jsonify({"success": False,
+                        "code": "publication_failed" if failed else "publication_pending",
+                        "graph_job_id": publication["id"],
+                        "error": (
+                            "O rascunho está guardado no servidor, mas a publicação no SharePoint falhou. "
+                            "Guarde novamente o rascunho para repetir a publicação antes de finalizar."
+                            if failed else
+                            "A publicação do rascunho ainda não terminou. Aguarde a sincronização antes de finalizar."
+                        )}), 409
 
             internal_observations = pop_internal_observations(document_payload)
             document_data = normalize_document_for_write(

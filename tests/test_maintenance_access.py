@@ -256,7 +256,8 @@ def test_allowed_editor_cannot_take_unrelated_draft(production_sadi):
 
 
 @pytest.mark.parametrize("sadi", [False, True])
-def test_real_queue_blocks_finalization_until_draft_upload_finishes(production_sadi, sadi):
+@pytest.mark.parametrize("terminal_failure", [False, True])
+def test_real_queue_blocks_finalization_until_draft_upload_finishes(production_sadi, sadi, terminal_failure):
     app, client, draft, _edits, root = production_sadi
     queue = app.extensions["test_graph_queue"]
     login(client, "jribeiro@sensorpoint.pt")
@@ -265,10 +266,17 @@ def test_real_queue_blocks_finalization_until_draft_upload_finishes(production_s
     document["equipments"]["sadi"] = sadi
     sign_document(document, app.secret_key)
     upload = queue.enqueue("upload_active", {"draft_path": str(draft)})
+    if terminal_failure:
+        with queue._connect() as db:
+            db.execute("UPDATE graph_sync_jobs SET status='failed', retryable=0 WHERE id=?", (upload["id"],))
     before = draft.read_bytes()
     blocked = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
     assert blocked.status_code == 409, blocked.get_json()
-    assert blocked.get_json()["code"] == "publication_pending"
+    assert blocked.get_json()["code"] == ("publication_failed" if terminal_failure else "publication_pending")
+    assert blocked.get_json()["graph_job_id"] == upload["id"]
+    if terminal_failure:
+        assert "Guarde novamente" in blocked.get_json()["error"]
+        queue.retry(upload["id"])
     assert draft.read_bytes() == before and not list((root / "archive").rglob("*.xlsx"))
     assert queue.graph_service.calls == []
     queue.run_until_idle()  # Temporary SQLite queue and in-memory Graph only.

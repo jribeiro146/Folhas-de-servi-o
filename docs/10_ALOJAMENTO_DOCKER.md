@@ -161,6 +161,39 @@ aplicação, movê-la para uma área de recuperação fora de Activas e repetir 
 trabalho pela aplicação. Se contiver dados, reconciliá-los antes de repetir.
 Nunca eliminar ou adotar uma pasta apenas por ter o mesmo nome.
 
+### Recuperar rascunhos bloqueados na mudança de nome (30/09)
+
+Os logs de 30/09 confirmaram HTTP 412 no PATCH que muda o nome da pasta
+`.fs-upload-*`, antes de carregar os ficheiros. A revisão `29489fa` tratava
+esse conflito como terminal; a confirmação de gravação era apenas local.
+Esta correção relê a versão da pasta antes de cada tentativa, verifica ID,
+nome e ausência de filhos e mantém `If-Match`. Faz no máximo três tentativas
+imediatas; se a versão continuar a mudar, a fila agenda nova tentativa.
+O tratamento excecional só se aplica à pasta temporária comprovadamente própria
+e vazia. Ficheiros existentes, arquivos, pastas substituídas/com conteúdo e
+colisões de nome continuam protegidos contra sobrescrita.
+
+Após instalar o commit indicado no PR **na web e no worker**, incluindo o código
+do bind `./src:/app/src`, recuperar cada rascunho afetado desta forma:
+
+1. Preservar o volume, a fila, os instantâneos e `.fs-upload-owner.json`.
+   Não apagar as pastas temporárias nem recriar a folha a partir do original.
+2. Abrir o rascunho existente (usar o URL que estava aberto se ainda não figura
+   no inventário remoto) e clicar **Guardar rascunho**. Isto publica a versão
+   atual do mesmo rascunho; não envia email.
+3. Confirmar `status=complete` no trabalho `graph_job_id` devolvido pelo save,
+   consultando `/api/graph/jobs/<graph_job_id>` na sessão autenticada. A pasta
+   temporária é reutilizada e passa ao nome final. Uploads antigos da mesma
+   origem ficam substituídos apenas depois da nova publicação concluída.
+4. Atualizar a lista e confirmar a folha no SharePoint. Só então finalizar,
+   por ação do utilizador. Se continuar a falhar, conservar o erro e pedir
+   análise; não marcar trabalhos como concluídos nem repetir a fila em bloco.
+
+A interface distingue agora publicação pendente de gravação completa e,
+ao finalizar, distingue falha terminal de um trabalho que ainda vai tentar.
+Esta atualização não repete automaticamente jobs antigos terminais, envios de
+email ou arquivos. Também não elimina pastas temporárias órfãs sem prova local.
+
 Trabalhos `held` aguardam a confirmação da operação na base de edição. Após
 `FS_GRAPH_COMMIT_GUARD_SECONDS` (3600 por defeito, mínimo 60) passam a `failed`
 sem repetição automática, com motivo visível. A repetição manual volta a verificar
