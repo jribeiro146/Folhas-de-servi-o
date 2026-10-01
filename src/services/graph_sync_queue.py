@@ -124,6 +124,7 @@ class GraphSyncQueue:
                         connection.execute(
                             "ALTER TABLE graph_sync_jobs ADD COLUMN max_attempts INTEGER"
                         )
+                    self._quarantine_invalid_jobs(connection)
                     if legacy_queue:
                         self._hold_legacy_mail_jobs(connection)
                 return
@@ -145,10 +146,7 @@ class GraphSyncQueue:
         ).fetchall()
         now = time.time()
         for row in rows:
-            try:
-                payload = json.loads(row["payload_json"])
-            except (TypeError, json.JSONDecodeError):
-                payload = {}
+            payload = self._json_object(row["payload_json"])
             has_mail = row["kind"] == "archive_and_mail_local" or bool(payload.get("mail"))
             if not has_mail:
                 continue
@@ -268,6 +266,7 @@ class GraphSyncQueue:
 
     def status(self, job_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
+            self._quarantine_invalid_jobs(connection)
             self._hold_stale_mail_jobs(connection, now=time.time())
             row = connection.execute(
                 "SELECT * FROM graph_sync_jobs WHERE id = ?", (job_id,)
@@ -279,6 +278,7 @@ class GraphSyncQueue:
         now = time.time()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._quarantine_invalid_jobs(connection)
             self._retire_superseded_uploads(connection)
             self._hold_outdated_upload_retries(connection)
             row = connection.execute(
@@ -289,6 +289,9 @@ class GraphSyncQueue:
                 connection.rollback()
                 raise KeyError(job_id)
             current = self._serialize(row)
+            if (current["result"] or {}).get("invalid_state"):
+                connection.commit()
+                raise ValueError("Dados do trabalho inválidos. É necessário corrigir o estado antes de repetir.")
             if current["reconciliation_required"]:
                 connection.rollback()
                 raise ValueError("Resultado do envio desconhecido. É necessária reconciliação antes de repetir.")
@@ -330,6 +333,7 @@ class GraphSyncQueue:
         source = Path(source).resolve()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._quarantine_invalid_jobs(connection)
             self._retire_superseded_uploads(connection)
             rows = connection.execute(
                 "SELECT * FROM graph_sync_jobs "
@@ -488,6 +492,7 @@ class GraphSyncQueue:
         )
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._quarantine_invalid_jobs(connection)
             self._retire_superseded_uploads(connection)
             self._hold_outdated_upload_retries(connection)
             self._release_committed_jobs(connection)
@@ -809,7 +814,7 @@ class GraphSyncQueue:
         below_limit = max_attempts is None or attempts < int(max_attempts)
         retryable = bool(getattr(error, "retryable", True)) and below_limit
         latest = self.status(str(job["id"]))
-        if latest and latest["reconciliation_required"]:
+        if latest and (latest["reconciliation_required"] or (latest.get("result") or {}).get("invalid_state")):
             retryable = False
         with self._connect() as connection:
             connection.execute(
@@ -899,17 +904,11 @@ class GraphSyncQueue:
             (stale_before,),
         ).fetchall()
         for row in rows:
-            try:
-                payload = json.loads(row["payload_json"] or "{}")
-            except (TypeError, json.JSONDecodeError):
-                payload = {}
+            payload = self._json_object(row["payload_json"])
             has_mail = row["kind"] == "archive_and_mail_local" or bool(payload.get("mail"))
             if not has_mail:
                 continue
-            try:
-                result = json.loads(row["result_json"] or "{}")
-            except (TypeError, json.JSONDecodeError):
-                result = {}
+            result = self._json_object(row["result_json"])
             if dict(result.get("mail") or {}).get("accepted"):
                 cursor = connection.execute(
                     """
@@ -1104,13 +1103,49 @@ class GraphSyncQueue:
         except (TypeError, ValueError):
             return {}
 
+    def _quarantine_invalid_jobs(self, connection: sqlite3.Connection) -> None:
+        """Keep malformed records for diagnosis without executing or retrying them."""
+        rows = connection.execute("SELECT * FROM graph_sync_jobs WHERE status != 'complete'").fetchall()
+        for row in rows:
+            existing = self._json_object(row["result_json"])
+            if existing.get("invalid_state"):
+                connection.execute("UPDATE graph_sync_jobs SET status='failed', retryable=0 WHERE id=?",
+                                   (row["id"],))
+                continue
+            try:
+                payload = json.loads(row["payload_json"])
+                result = json.loads(row["result_json"]) if row["result_json"] is not None else {}
+                if not isinstance(payload, dict) or not isinstance(result, dict):
+                    raise ValueError("Expected objects")
+                for key in ("mail", "notification", "teams", "_commit_guard"):
+                    if payload.get(key) is not None and not isinstance(payload[key], dict):
+                        raise ValueError("Invalid payload field")
+                if result.get("mail") is not None and not isinstance(result["mail"], dict):
+                    raise ValueError("Invalid mail receipt")
+                receipt = result.get("mail") or {}
+                if "accepted" in receipt and not isinstance(receipt["accepted"], bool):
+                    raise ValueError("Invalid acceptance")
+                if "phase" in result and not isinstance(result["phase"], str):
+                    raise ValueError("Invalid phase")
+            except (TypeError, ValueError):
+                # Leave payload_json intact and retain result_json verbatim.
+                # Neither a malformed receipt nor a missing payload permits effects.
+                diagnostic = {"invalid_state": True, "previous_result_json": row["result_json"]}
+                connection.execute(
+                    "UPDATE graph_sync_jobs SET status='failed', retryable=0, result_json=?, "
+                    "last_error=?, updated_at=? WHERE id=?",
+                    (json.dumps(diagnostic), "Dados do trabalho inválidos; requer revisão antes de repetir.",
+                     time.time(), row["id"]),
+                )
+
     @staticmethod
     def _serialize(row: sqlite3.Row) -> dict[str, Any]:
         status = str(row["status"])
         result = GraphSyncQueue._json_object(row["result_json"])
-        unknown_mail = (result.get("phase") in {"sending_mail", "mail_unknown"}
-                        and not (result.get("mail") or {}).get("accepted"))
-        will_retry = status == "failed" and bool(row["retryable"]) and not unknown_mail
+        receipt = result.get("mail") if isinstance(result.get("mail"), dict) else {}
+        unknown_mail = (result.get("phase") in ("sending_mail", "mail_unknown")
+                        and not receipt.get("accepted"))
+        will_retry = status == "failed" and bool(row["retryable"]) and not unknown_mail and not result.get("invalid_state")
         return {
             "id": str(row["id"]),
             "kind": str(row["kind"]),

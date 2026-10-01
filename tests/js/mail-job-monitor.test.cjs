@@ -134,3 +134,11 @@ test("keeps monitoring beyond the server stale threshold by default", async () =
     );
     assert.equal(requests, 361);
 });
+
+test("requires state review instead of offering retry for corrupt jobs", async () => {
+    const job = { id: "corrupt", status: "failed", will_retry: false,
+        result: { invalid_state: true } };
+    const fetchFn = async () => ({ ok: true, json: async () => ({ success: true, job }) });
+    await assert.rejects(waitForMailJob("corrupt", { fetchFn, waitFn: async () => {} }),
+        (error) => error.code === "mail_invalid_state");
+});

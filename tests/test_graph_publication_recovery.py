@@ -567,6 +567,10 @@ def test_expired_held_job_cannot_block_worker_or_bypass_commit_on_retry(tmp_path
     state = queue.status(held["id"])
     assert state["status"] == "failed" and not state["will_retry"]
     assert state["attempts"] == 0
+    if malformed in ("[]", '{"_commit_guard":[]}'):
+        with pytest.raises(ValueError, match="inválidos"):
+            queue.retry(held["id"])
+        return
     assert queue.retry(held["id"])["status"] == "held"
     queue._claim_next()
     assert queue.status(held["id"])["status"] == "held"
