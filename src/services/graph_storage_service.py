@@ -503,7 +503,7 @@ class GraphStorageService:
             is_photo = (len(parts) == 2 and parts[0] == PHOTO_FOLDER_NAME
                         and PhotoAttachmentService.is_managed_filename(parts[1]))
             if name not in signature_names and not is_photo:
-                raise GraphStorageError("Remoção de ficheiro não suportada; requer revisão.")
+                raise GraphConflictError("Remoção de ficheiro não suportada; requer revisão.")
             if record.get("confirmed"):
                 continue
             file = bundle_dir / name

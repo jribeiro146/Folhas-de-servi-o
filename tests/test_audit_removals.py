@@ -176,6 +176,41 @@ def test_corrupt_removal_journal_never_authorizes_deletion(tmp_path):
     assert not graph.deletes
 
 
+@pytest.mark.parametrize("invalid", ["broken", "[]", '{"version":true,"files":{}}',
+    '{"version":1,"files":{"draft__assinatura_cliente.png":{"token":"x","confirmed":"false"}}}',
+    '{"version":1,"files":{"draft__assinatura_cliente.png":{"token":"x","id":[]}}}',
+    '{"version":1,"files":{"unmanaged.txt":{"token":"x"}}}'])
+def test_corrupt_removal_evidence_stops_retry_but_not_other_jobs(tmp_path, invalid):
+    graph, file = signed_draft(tmp_path)
+    (file.parent / ".fs-removals.json").write_text(invalid)
+    calls = []
+    graph.remove_active_name = lambda name, **kw: calls.append(name) or True
+    queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", auto_start=False)
+    bad = queue.enqueue("upload_active", {"draft_path": str(file)})
+    good = queue.enqueue("remove_active", {"source_name": "other-synthetic.xlsx"})
+    queue.run_until_idle()
+    assert queue.status(bad["id"])["status"] == "failed"
+    assert not queue.status(bad["id"])["will_retry"]
+    assert queue.status(bad["id"])["attempts"] == 1
+    assert queue.status(good["id"])["status"] == "complete"
+    queue.run_until_idle()
+    assert queue.status(bad["id"])["attempts"] == 1
+    assert calls == ["other-synthetic.xlsx"]
+    assert not graph.deletes
+
+
+@pytest.mark.parametrize("invalid", ["broken", "[]", '{"deleted":"false"}', '{"eTag":[]}'])
+def test_corrupt_removal_metadata_is_terminal_and_does_not_authorize_deletion(tmp_path, invalid):
+    from src.services.bundle_removals import RemovalStateError
+    graph, file = signed_draft(tmp_path)
+    meta = file.with_name("draft__assinatura_cliente.png.graph.json")
+    meta.write_text(invalid)
+    with pytest.raises(RemovalStateError) as exc:
+        clear_signature(file)
+    assert not exc.value.retryable
+    assert not graph.deletes
+
+
 def test_conditional_creation_does_not_overwrite_a_reintroduced_remote_signature(tmp_path):
     graph, file = signed_draft(tmp_path)
     clear_signature(file)

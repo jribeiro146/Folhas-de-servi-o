@@ -1,24 +1,38 @@
 """Explicit local removals and receipts for immutable upload snapshots."""
 import json
-import os
 import secrets
 from pathlib import Path
+from src.services.atomic_files import replace_local
 
 REMOVALS_NAME = ".fs-removals.json"
+
+
+class RemovalStateError(ValueError):
+    """Corrupt removal evidence needs review, never automatic retries."""
+
+    retryable = False
 
 
 def read_removals(directory: Path) -> dict:
     path = directory / REMOVALS_NAME
     if not path.exists():
         return {}
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict) or value.get("version") != 1 or not isinstance(value.get("files"), dict):
-        raise ValueError("Registo de remoções inválido; requer revisão.")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise RemovalStateError("Registo de remoções inválido; requer revisão.") from exc
+    if (not isinstance(value, dict) or type(value.get("version")) is not int
+            or value.get("version") != 1 or not isinstance(value.get("files"), dict)):
+        raise RemovalStateError("Registo de remoções inválido; requer revisão.")
     for name, record in value["files"].items():
         parts = name.split("/")
         if (not name or any(p in {"", ".", ".."} or ":" in p or "\\" in p for p in parts)
-                or not isinstance(record, dict) or not isinstance(record.get("token"), str)):
-            raise ValueError("Registo de remoções inválido; requer revisão.")
+                or not isinstance(record, dict) or not isinstance(record.get("token"), str)
+                or not record.get("token")):
+            raise RemovalStateError("Registo de remoções inválido; requer revisão.")
+        if (any(key in record and not isinstance(record[key], str) for key in ("id", "eTag"))
+                or ("confirmed" in record and not isinstance(record["confirmed"], bool))):
+            raise RemovalStateError("Registo de remoções inválido; requer revisão.")
     return value["files"]
 
 
@@ -28,7 +42,7 @@ def write_removals(directory: Path, records: dict) -> None:
     temporary = path.with_name(path.name + "." + secrets.token_hex(6) + ".tmp")
     try:
         temporary.write_text(json.dumps({"version": 1, "files": records}), encoding="utf-8")
-        os.replace(temporary, path)
+        replace_local(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -37,9 +51,15 @@ def metadata(file: Path) -> dict:
     path = file.with_name(file.name + ".graph.json")
     if not path.exists():
         return {}
-    value = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise RemovalStateError("Metadados da remoção inválidos; requer revisão.") from exc
     if not isinstance(value, dict):
-        raise ValueError("Metadados da remoção inválidos; requer revisão.")
+        raise RemovalStateError("Metadados da remoção inválidos; requer revisão.")
+    if (any(key in value and not isinstance(value[key], str) for key in ("id", "eTag"))
+            or any(key in value and not isinstance(value[key], bool) for key in ("deleted", "local_publication"))):
+        raise RemovalStateError("Metadados da remoção inválidos; requer revisão.")
     return value
 
 
@@ -68,7 +88,7 @@ def cancel_removal(directory: Path, file: Path) -> None:
             try:
                 temporary.write_text(json.dumps({"id": previous.get("id", ""),
                     "eTag": previous.get("eTag", ""), "deleted": True}), encoding="utf-8")
-                os.replace(temporary, meta_path)
+                replace_local(temporary, meta_path)
             finally:
                 temporary.unlink(missing_ok=True)
         write_removals(directory, records)
