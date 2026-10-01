@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import mimetypes
 import os
@@ -353,19 +354,53 @@ class GraphStorageService:
 
         archive_folder_name = archived_excel_path.parent.name
         remote_folder = self._join_graph_path(self.config.archive_path, archive_folder_name)
-        self.ensure_folder_path(remote_folder)
+        folder = self._owned_archive_folder(archived_excel_path.parent)
 
         uploaded: list[str] = []
         for local_file in self._iter_uploadable_files(archived_excel_path.parent):
             remote_path = self._join_graph_path(remote_folder, local_file.name)
-            item = self.upload_file(local_file, remote_path, expected_etag=self._expected_etag(local_file))
+            item = self._upload_archive_file(local_file, remote_path, str(folder["id"]))
             self._write_item_meta(self._item_meta_path(local_file), item)
             uploaded.append(remote_path)
 
         uploaded.extend(
-            self._upload_photo_folder(archived_excel_path.parent, remote_folder)
+            self._upload_photo_folder(archived_excel_path.parent, remote_folder, archive_folder_id=str(folder["id"]))
         )
         return uploaded
+
+    def _owned_archive_folder(self, bundle_dir: Path) -> dict[str, Any]:
+        remote_path = self._join_graph_path(self.config.archive_path, bundle_dir.name)
+        owner_path = bundle_dir / ".fs-archive-owner.json"
+        try:
+            owner = json.loads(owner_path.read_text(encoding="utf-8")) if owner_path.exists() else {}
+            if not isinstance(owner, dict):
+                raise ValueError("Invalid archive ownership")
+        except (OSError, ValueError) as exc:
+            raise GraphConflictError("Prova local do arquivo inválida; requer revisão.") from exc
+        remote = self._get_item_by_path(remote_path)
+        if remote is not None:
+            if not owner.get("id") or owner["id"] != remote.get("id") or "folder" not in remote:
+                raise GraphConflictError("Já existe um arquivo remoto com este nome sem prova de propriedade local.")
+            return remote
+        return self._create_owned_folder(bundle_dir, owner_path, self.config.archive_path)
+
+    def _upload_archive_file(self, local_file: Path, remote_path: str, parent_id: str) -> dict[str, Any]:
+        expected = self._expected_etag(local_file)
+        if expected:
+            return self.upload_file(local_file, remote_path, expected_etag=expected, parent_item_id=parent_id)
+        try:
+            return self.upload_file(local_file, remote_path, create_only=True, parent_item_id=parent_id)
+        except GraphConflictError:
+            # A lost creation reply is recoverable only within our owned folder,
+            # by reading the exact bytes. Never overwrite to "verify" a file.
+            item = self._graph_json("GET", f"/drives/{self.config.drive_id}/items/{parse.quote(parent_id, safe='')}:/{self._quote_path(local_file.name)}")
+            if (not item.get("id") or not item.get("eTag") or "file" not in item
+                    or item.get("name") != local_file.name):
+                raise GraphConflictError("O ficheiro do arquivo remoto não corresponde à publicação local.")
+            content = self._graph_bytes("GET", f"/drives/{self.config.drive_id}/items/{parse.quote(str(item['id']), safe='')}/content")
+            if hashlib.sha256(content).digest() != hashlib.sha256(local_file.read_bytes()).digest():
+                raise GraphConflictError("O ficheiro do arquivo remoto tem conteúdo diferente; foi preservado.")
+            return item
 
     def export_archive_pdf(self, archived_excel_path: Path) -> tuple[Path, str]:
         """Converte o HTML final remoto em PDF e publica o mesmo artefacto."""
@@ -384,11 +419,11 @@ class GraphStorageService:
             archived_excel_path.parent.name,
         )
         remote_html = self._join_graph_path(archive_folder, html_path.name)
+        folder = self._owned_archive_folder(archived_excel_path.parent)
         pdf_bytes = self._graph_bytes(
             "GET",
             (
-                f"/drives/{self.config.drive_id}/root:/"
-                f"{self._quote_path(remote_html)}:/content?format=pdf"
+                f"/drives/{self.config.drive_id}/items/{parse.quote(str(folder['id']), safe='')}:/{self._quote_path(html_path.name)}:/content?format=pdf"
             ),
         )
         if not pdf_bytes.startswith(b"%PDF-"):
@@ -410,11 +445,7 @@ class GraphStorageService:
                 pass
 
         remote_pdf = self._join_graph_path(archive_folder, pdf_path.name)
-        item = self.upload_file(
-            pdf_path,
-            remote_pdf,
-            expected_etag=self._expected_etag(pdf_path),
-        )
+        item = self._upload_archive_file(pdf_path, remote_pdf, str(folder["id"]))
         self._write_item_meta(self._item_meta_path(pdf_path), item)
         return pdf_path, remote_pdf
 
@@ -492,6 +523,9 @@ class GraphStorageService:
             write_removals(bundle_dir, records)
 
     def _create_owned_active_folder(self, bundle_dir: Path, ownership_path: Path) -> dict[str, Any]:
+        return self._create_owned_folder(bundle_dir, ownership_path, self.config.active_path)
+
+    def _create_owned_folder(self, bundle_dir: Path, ownership_path: Path, root_path: str) -> dict[str, Any]:
         """Create via a durable random name so a lost POST reply is recoverable.
 
         Persist the ID before renaming to the human-readable name. A retry can
@@ -509,16 +543,16 @@ class GraphStorageService:
             temporary_name = ".fs-upload-" + secrets.token_hex(16)
             owner = {"temporary_name": temporary_name}
             self._atomic_write_json(ownership_path, owner)
-        temporary_path = self._join_graph_path(self.config.active_path, temporary_name)
+        temporary_path = self._join_graph_path(root_path, temporary_name)
         remote = self._get_item_by_path(temporary_path)
         if remote is None:
             if owner.get("id"):
                 raise GraphConflictError("A pasta temporária remota já não está na localização esperada.")
-            self.ensure_folder_path(self.config.active_path)
+            self.ensure_folder_path(root_path)
             try:
                 remote = self._graph_json(
                     "POST",
-                    f"/drives/{self.config.drive_id}/root:/{self._quote_path(self.config.active_path)}:/children",
+                    f"/drives/{self.config.drive_id}/root:/{self._quote_path(root_path)}:/children",
                     data=json.dumps({"name": temporary_name, "folder": {},
                         "@microsoft.graph.conflictBehavior": "fail"}).encode("utf-8"),
                     content_type="application/json",
@@ -680,11 +714,16 @@ class GraphStorageService:
         *,
         expected_etag: str | None = None,
         create_only: bool = False,
+        parent_item_id: str | None = None,
     ) -> dict[str, Any]:
         content_type = mimetypes.guess_type(local_file.name)[0] or "application/octet-stream"
+        target = (f"/drives/{self.config.drive_id}/items/{parse.quote(parent_item_id, safe='')}:/{self._quote_path(local_file.name)}:/content"
+                  if parent_item_id else f"/drives/{self.config.drive_id}/root:/{self._quote_path(remote_path)}:/content")
+        if create_only:
+            target += "?@microsoft.graph.conflictBehavior=fail"
         content = self._graph_bytes(
             "PUT",
-            f"/drives/{self.config.drive_id}/root:/{self._quote_path(remote_path)}:/content",
+            target,
             data=local_file.read_bytes(),
             content_type=content_type,
             headers={"If-None-Match": "*"} if create_only else ({"If-Match": expected_etag} if expected_etag else None),
@@ -1227,6 +1266,7 @@ class GraphStorageService:
         return path.name.startswith(".fs-upload-") or path.name.endswith(".graph.json") or path.name in {
             ".graph_bundle.json", DIRTY_MARKER, DIRTY_MARKER + ".tmp", ".fs-finalization.json",
             ".fs-upload-owner.json",
+            ".fs-archive-owner.json",
             REMOVALS_NAME,
         }
 
@@ -1304,6 +1344,7 @@ class GraphStorageService:
         remote_bundle: str,
         *,
         prune: bool = False,
+        archive_folder_id: str | None = None,
     ) -> list[str]:
         local_directory = bundle_dir / PHOTO_FOLDER_NAME
         remote_directory = self._join_graph_path(remote_bundle, PHOTO_FOLDER_NAME)
@@ -1316,15 +1357,28 @@ class GraphStorageService:
             else []
         )
 
-        remote_item = self._get_item_by_path(remote_directory)
-        if local_files and remote_item is None:
-            self.ensure_folder_path(remote_directory)
+        if archive_folder_id:
+            remote_item = next((item for item in self._list_children(archive_folder_id)
+                                if item.get("name") == PHOTO_FOLDER_NAME and "folder" in item), None)
+        else:
             remote_item = self._get_item_by_path(remote_directory)
+        if local_files and remote_item is None:
+            if archive_folder_id:
+                remote_item = self._graph_json("POST", f"/drives/{self.config.drive_id}/items/{parse.quote(archive_folder_id, safe='')}/children",
+                    data=json.dumps({"name": PHOTO_FOLDER_NAME, "folder": {},
+                                     "@microsoft.graph.conflictBehavior": "fail"}).encode(), content_type="application/json")
+            else:
+                self.ensure_folder_path(remote_directory)
+                remote_item = self._get_item_by_path(remote_directory)
 
         uploaded: list[str] = []
         for local_file in local_files:
             remote_path = self._join_graph_path(remote_directory, local_file.name)
-            if metadata(local_file).get("deleted"):
+            if archive_folder_id:
+                if not remote_item or not remote_item.get("id"):
+                    raise GraphStorageError("A pasta de fotografias do arquivo não foi confirmada.")
+                item = self._upload_archive_file(local_file, remote_path, str(remote_item["id"]))
+            elif metadata(local_file).get("deleted"):
                 item = self.upload_file(local_file, remote_path, create_only=True)
             else:
                 item = self.upload_file(local_file, remote_path, expected_etag=self._expected_etag(local_file))

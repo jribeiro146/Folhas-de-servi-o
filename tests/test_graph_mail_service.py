@@ -488,11 +488,13 @@ def test_graph_storage_converts_final_html_and_uploads_pdf(tmp_path, monkeypatch
         calls["convert"] = (method, path)
         return b"%PDF-1.7\nhtml-convertido"
 
-    def fake_upload_file(local_path, remote_path, *, expected_etag=None):
+    def fake_upload_file(local_path, remote_path, *, expected_etag=None, create_only=False, parent_item_id=None):
         calls["upload"] = (Path(local_path), remote_path, expected_etag)
+        assert create_only and parent_item_id == "archive-folder"
         return {"id": "pdf-id", "name": Path(local_path).name, "eTag": "etag-pdf"}
 
     monkeypatch.setattr(service, "_graph_bytes", fake_graph_bytes)
+    monkeypatch.setattr(service, "_owned_archive_folder", lambda _: {"id": "archive-folder"})
     monkeypatch.setattr(service, "upload_file", fake_upload_file)
     monkeypatch.setattr(service, "_write_item_meta", lambda *_args: None)
 
@@ -501,7 +503,7 @@ def test_graph_storage_converts_final_html_and_uploads_pdf(tmp_path, monkeypatch
     assert pdf_path.read_bytes() == b"%PDF-1.7\nhtml-convertido"
     assert calls["convert"] == (
         "GET",
-        "/drives/drive/root:/Aplicacao/Arquivadas/FS-123/"
+        "/drives/drive/items/archive-folder:/"
         "FS-123__folha_final.html:/content?format=pdf",
     )
     assert remote_pdf == "Aplicacao/Arquivadas/FS-123/FS-123__folha_final.pdf"
