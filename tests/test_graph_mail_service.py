@@ -15,6 +15,7 @@ from src.services.graph_mail_service import (
     GraphMailError,
     GraphMailService,
     GraphMailTransientError,
+    GraphMailUnknownResultError,
 )
 from src.services.graph_storage_service import GraphConfig, GraphStorageService
 from src.services.graph_sync_queue import GraphSyncQueue
@@ -235,7 +236,7 @@ def test_send_prepared_posts_pdf_attachment_to_graph(tmp_path, monkeypatch):
     assert message["internetMessageHeaders"][0]["value"] == "send:documento:1"
 
 
-def test_graph_503_is_retryable_and_respects_retry_after(tmp_path, monkeypatch):
+def test_graph_503_after_send_requires_reconciliation(tmp_path, monkeypatch):
     service = GraphMailService(mail_config())
     pdf_path = tmp_path / "FS-503__folha_final.pdf"
     pdf_path.write_bytes(b"%PDF-1.7\nconteudo")
@@ -272,14 +273,12 @@ def test_graph_503_is_retryable_and_respects_retry_after(tmp_path, monkeypatch):
 
     monkeypatch.setattr("src.services.graph_mail_service.request.urlopen", fake_urlopen)
 
-    with pytest.raises(GraphMailTransientError) as raised:
+    with pytest.raises(GraphMailUnknownResultError):
         service.send_prepared(prepared, pdf_path, operation_id="send:503")
-
-    assert raised.value.retry_after_seconds == 7
     assert calls == 2
 
 
-def test_graph_network_outage_is_retryable(tmp_path, monkeypatch):
+def test_graph_network_outage_during_send_requires_reconciliation(tmp_path, monkeypatch):
     service = GraphMailService(mail_config())
     pdf_path = tmp_path / "FS-NET__folha_final.pdf"
     pdf_path.write_bytes(b"%PDF-1.7\nconteudo")
@@ -297,7 +296,7 @@ def test_graph_network_outage_is_retryable(tmp_path, monkeypatch):
 
     monkeypatch.setattr("src.services.graph_mail_service.request.urlopen", unavailable_urlopen)
 
-    with pytest.raises(GraphMailTransientError, match="temporariamente"):
+    with pytest.raises(GraphMailUnknownResultError, match="desconhecido"):
         service.send_prepared(prepared, pdf_path, operation_id="send:network")
 
 

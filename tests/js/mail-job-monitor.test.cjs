@@ -5,6 +5,15 @@ const {
     waitForMailJob,
 } = require("../../src/web/static/js/mail-job-monitor.js");
 
+test("an ambiguous send requires reconciliation instead of offering retry", async () => {
+    const job = { id: "synthetic", status: "failed", will_retry: false,
+        reconciliation_required: true, result: { phase: "mail_unknown" } };
+    await assert.rejects(waitForMailJob(job.id, {
+        fetchFn: async () => ({ ok: true, json: async () => ({ success: true, job }) }),
+        waitFn: async () => {},
+    }), error => error.code === "mail_unknown" && error.job === job);
+});
+
 test("waits through a scheduled retry and only confirms an accepted email", async () => {
     const jobs = [
         { id: "send:1", status: "pending", will_retry: false },

@@ -7,6 +7,7 @@ import html
 import json
 import re
 import time
+from http.client import HTTPException
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,10 @@ class GraphMailTransientError(GraphMailError):
 
 class GraphMailConfigurationError(GraphMailError):
     """A configuração necessária para enviar e-mail está incompleta ou inválida."""
+
+
+class GraphMailUnknownResultError(GraphMailError):
+    """The POST may have been accepted; repetition requires reconciliation."""
 
 
 @dataclass(frozen=True)
@@ -363,6 +368,7 @@ class GraphMailService:
         headers: dict[str, str] | None = None,
         authenticated: bool = True,
     ) -> bytes:
+        is_send = method.upper() == "POST" and parse.urlsplit(url).path.endswith("/sendMail")
         request_headers = dict(headers or {})
         if authenticated:
             request_headers["Authorization"] = f"Bearer {self._access_token_value()}"
@@ -372,6 +378,10 @@ class GraphMailService:
                 return response.read()
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            if is_send and (exc.code in {408, 425} or 500 <= exc.code <= 599):
+                raise GraphMailUnknownResultError(
+                    "Resultado do envio desconhecido. Confirme a aceitação antes de repetir."
+                ) from exc
             if not authenticated and exc.code in {400, 401, 403}:
                 if "invalid_client" in detail or "AADSTS7000215" in detail:
                     raise GraphMailConfigurationError(
@@ -392,7 +402,12 @@ class GraphMailService:
                     retry_after_seconds=retry_after,
                 ) from exc
             raise GraphMailError(f"Microsoft Graph Mail HTTP {exc.code}: {detail}") from exc
-        except error.URLError as exc:
+        except (error.URLError, OSError, HTTPException) as exc:
+            if is_send:
+                raise GraphMailUnknownResultError(
+                    "Resultado do envio desconhecido após falha de comunicação. "
+                    "Não repetir sem reconciliação."
+                ) from exc
             raise GraphMailTransientError(
                 "O Microsoft Graph está temporariamente indisponível por falha de rede."
             ) from exc

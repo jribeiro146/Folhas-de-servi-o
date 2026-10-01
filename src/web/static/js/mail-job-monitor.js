@@ -68,6 +68,12 @@
                 );
             }
             if (job.status === "failed" && !job.will_retry) {
+                if (job.reconciliation_required) {
+                    throw new MailJobMonitorError(
+                        "O resultado do envio é desconhecido. Confirme a aceitação antes de repetir.",
+                        { code: "mail_unknown", job }
+                    );
+                }
                 throw new MailJobMonitorError(
                     jobErrorMessage(job),
                     { code: "mail_failed", job }

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from src.logging_config import log_event
-from src.services.graph_mail_service import GraphMailService
+from src.services.graph_mail_service import GraphMailService, GraphMailError, GraphMailUnknownResultError
 from src.services.graph_storage_service import GraphStorageService
 from src.services.local_pdf_service import LocalPdfService
 from src.services.teams_notification_service import TeamsNotificationService
@@ -288,6 +288,9 @@ class GraphSyncQueue:
                 connection.rollback()
                 raise KeyError(job_id)
             current = self._serialize(row)
+            if current["reconciliation_required"]:
+                connection.rollback()
+                raise ValueError("Resultado do envio desconhecido. É necessária reconciliação antes de repetir.")
             if (current["result"] or {}).get("blocked_by_newer_upload"):
                 connection.commit()
                 raise ValueError("Existe uma gravação posterior. Repita a publicação mais recente.")
@@ -579,6 +582,11 @@ class GraphSyncQueue:
         job_id: str = "",
         prior_result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if (prior_result or {}).get("phase") in {"sending_mail", "mail_unknown"} and not (
+            (prior_result or {}).get("mail") or {}
+        ).get("accepted"):
+            # Do not erase uncertainty with PDF/upload checkpoints on recovery.
+            raise GraphMailUnknownResultError("Envio anterior sem resultado confirmado; requer reconciliação.")
         if kind == "upload_active":
             if self.graph_service is None:
                 raise RuntimeError("O armazenamento Microsoft Graph não está ativo.")
@@ -696,15 +704,23 @@ class GraphSyncQueue:
         previous_mail = dict((prior_result or {}).get("mail") or {})
         if previous_mail.get("accepted"):
             return previous_mail
+        if (prior_result or {}).get("phase") in {"sending_mail", "mail_unknown"}:
+            raise GraphMailUnknownResultError("Envio anterior sem resultado confirmado; requer reconciliação.")
         if self.mail_service is None:
             raise RuntimeError("O serviço de e-mail não está disponível para este trabalho.")
         self._assert_job_running(job_id)
         self._checkpoint_result(job_id, {"phase": "sending_mail"})
-        mail_result = self.mail_service.send_prepared(
-            mail_payload,
-            pdf_path,
-            operation_id=job_id,
-        )
+        try:
+            mail_result = self.mail_service.send_prepared(mail_payload, pdf_path, operation_id=job_id)
+        except GraphMailUnknownResultError:
+            self._checkpoint_result(job_id, {"phase": "mail_unknown"})
+            raise
+        except GraphMailError:
+            self._checkpoint_result(job_id, {"phase": "mail_rejected"})
+            raise
+        except Exception as exc:
+            self._checkpoint_result(job_id, {"phase": "mail_unknown"})
+            raise GraphMailUnknownResultError("Resultado do envio desconhecido; requer reconciliação.") from exc
         self._checkpoint_result(
             job_id,
             {"phase": "mail_accepted", "mail": mail_result},
@@ -791,6 +807,9 @@ class GraphSyncQueue:
         max_attempts = job.get("max_attempts")
         below_limit = max_attempts is None or attempts < int(max_attempts)
         retryable = bool(getattr(error, "retryable", True)) and below_limit
+        latest = self.status(str(job["id"]))
+        if latest and latest["reconciliation_required"]:
+            retryable = False
         with self._connect() as connection:
             connection.execute(
                 """
@@ -1083,20 +1102,24 @@ class GraphSyncQueue:
     @staticmethod
     def _serialize(row: sqlite3.Row) -> dict[str, Any]:
         status = str(row["status"])
-        will_retry = status == "failed" and bool(row["retryable"])
+        result = GraphSyncQueue._json_object(row["result_json"])
+        unknown_mail = (result.get("phase") in {"sending_mail", "mail_unknown"}
+                        and not (result.get("mail") or {}).get("accepted"))
+        will_retry = status == "failed" and bool(row["retryable"]) and not unknown_mail
         return {
             "id": str(row["id"]),
             "kind": str(row["kind"]),
             "payload": GraphSyncQueue._json_object(row["payload_json"]),
             "status": status,
             "will_retry": will_retry,
+            "reconciliation_required": unknown_mail,
             "attempts": int(row["attempts"]),
             "max_attempts": (
                 int(row["max_attempts"]) if row["max_attempts"] is not None else None
             ),
             "next_attempt_at": float(row["next_attempt_at"]),
             "last_error": row["last_error"],
-            "result": json.loads(row["result_json"]) if row["result_json"] else None,
+            "result": result if row["result_json"] else None,
             "created_at": float(row["created_at"]),
             "updated_at": float(row["updated_at"]),
         }
