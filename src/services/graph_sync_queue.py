@@ -21,6 +21,7 @@ from src.services.local_pdf_service import LocalPdfService
 from src.services.teams_notification_service import TeamsNotificationService
 from src.services.local_changes import DIRTY_MARKER, bundle_guard, dirty_version, mark_dirty
 from src.services.bundle_removals import copy_confirmations, refresh_own_removal_versions
+from src.services.file_mutex import file_mutex, FileMutexBusy
 
 
 LOGGER = logging.getLogger(__name__)
@@ -72,6 +73,9 @@ class GraphSyncQueue:
         self.auto_start = bool(auto_start)
         self._worker_lock = threading.Lock()
         self._worker_running = False
+        self._attempt_context = threading.local()
+        self._worker_mutex_path = self.database_path.with_name(self.database_path.name + ".worker.lock")
+        self.heartbeat_seconds = min(30.0, self.mail_job_stale_seconds / 3)
         self._initialize()
         self._start_if_enabled()
 
@@ -92,6 +96,7 @@ class GraphSyncQueue:
                 with self._connect() as connection:
                     connection.execute("PRAGMA journal_mode = WAL")
                     connection.execute("PRAGMA synchronous = NORMAL")
+                    connection.execute("BEGIN IMMEDIATE")
                     connection.execute(
                         """
                         CREATE TABLE IF NOT EXISTS graph_sync_jobs (
@@ -124,6 +129,8 @@ class GraphSyncQueue:
                         connection.execute(
                             "ALTER TABLE graph_sync_jobs ADD COLUMN max_attempts INTEGER"
                         )
+                    if "attempt_token" not in columns:
+                        connection.execute("ALTER TABLE graph_sync_jobs ADD COLUMN attempt_token TEXT NOT NULL DEFAULT ''")
                     self._quarantine_invalid_jobs(connection)
                     if legacy_queue:
                         self._hold_legacy_mail_jobs(connection)
@@ -267,7 +274,12 @@ class GraphSyncQueue:
     def status(self, job_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
             self._quarantine_invalid_jobs(connection)
-            self._hold_stale_mail_jobs(connection, now=time.time())
+            try:
+                with file_mutex(self._worker_mutex_path):
+                    self._hold_stale_mail_jobs(connection, now=time.time())
+            except FileMutexBusy:
+                # An active process, even during a slow transport, is not stale.
+                pass
             row = connection.execute(
                 "SELECT * FROM graph_sync_jobs WHERE id = ?", (job_id,)
             ).fetchone()
@@ -429,6 +441,29 @@ class GraphSyncQueue:
         return self.status(job_id)
 
     def _worker(self, *, schedule_follow_up: bool = True) -> None:
+        try:
+            with file_mutex(self._worker_mutex_path):
+                self._process_jobs()
+        except FileMutexBusy:
+            return
+        finally:
+            with self._worker_lock:
+                self._worker_running = False
+            if schedule_follow_up:
+                if self._has_active_job():
+                    delay = 5.0
+                elif self._has_due_jobs():
+                    # A busy process lock is also possible when its SQLite lease
+                    # looks expired. Back off instead of spawning a tight loop.
+                    delay = 0.25
+                else:
+                    delay = self._next_retry_delay()
+                if delay is not None:
+                    timer = threading.Timer(delay, self.start)
+                    timer.daemon = True
+                    timer.start()
+
+    def _process_jobs(self) -> None:
         current_job = None
         try:
             while True:
@@ -436,6 +471,11 @@ class GraphSyncQueue:
                 if job is None:
                     return
                 current_job = job
+                self._attempt_context.job = job
+                stop = threading.Event()
+                heartbeat = threading.Thread(target=self._keep_alive, args=(job, stop), daemon=True,
+                                             name="graph-sync-heartbeat")
+                heartbeat.start()
                 log_event(
                     LOGGER,
                     logging.INFO,
@@ -446,20 +486,22 @@ class GraphSyncQueue:
                     attempt=job["attempts"],
                 )
                 try:
-                    result = self._execute(
-                        job["kind"],
-                        job["payload"],
-                        attempts=job["attempts"],
-                        job_id=job["id"],
-                        prior_result=job.get("result"),
-                    )
-                except BaseException as exc:
-                    self._record_job_failure(job, exc)
-                else:
                     try:
-                        self._mark_complete(job, result)
+                        result = self._execute(
+                            job["kind"], job["payload"], attempts=job["attempts"],
+                            job_id=job["id"], prior_result=job.get("result"),
+                        )
                     except BaseException as exc:
                         self._record_job_failure(job, exc)
+                    else:
+                        try:
+                            self._mark_complete(job, result)
+                        except BaseException as exc:
+                            self._record_job_failure(job, exc)
+                finally:
+                    stop.set()
+                    heartbeat.join(timeout=1)
+                    self._attempt_context.job = None
                 current_job = None
         finally:
             if current_job is not None:
@@ -467,22 +509,23 @@ class GraphSyncQueue:
                     current_job,
                     "O worker terminou inesperadamente; o envio requer repetição manual.",
                 )
-            with self._worker_lock:
-                self._worker_running = False
-            if schedule_follow_up:
-                if self._has_active_job():
-                    # Outro worker pode estar a tratar o trabalho. Evita criar quatro
-                    # threads por segundo enquanto se aguarda pela reconciliacao stale.
-                    delay = 5.0
-                elif self._has_due_jobs():
-                    self.start()
+
+    def _heartbeat(self, job: dict[str, Any]) -> bool:
+        with self._connect() as connection:
+            changed = connection.execute(
+                "UPDATE graph_sync_jobs SET updated_at=? WHERE id=? AND status='running' AND attempt_token=?",
+                (time.time(), job["id"], job["attempt_token"]),
+            )
+        return bool(changed.rowcount)
+
+    def _keep_alive(self, job: dict[str, Any], stop: threading.Event) -> None:
+        while not stop.wait(self.heartbeat_seconds):
+            try:
+                if not self._heartbeat(job):
                     return
-                else:
-                    delay = self._next_retry_delay()
-                if delay is not None:
-                    timer = threading.Timer(delay, self.start)
-                    timer.daemon = True
-                    timer.start()
+            except sqlite3.Error:
+                # The process lock still prevents overlapping external effects.
+                LOGGER.warning("Não foi possível atualizar a atividade do worker.")
 
     def _claim_next(self) -> dict[str, Any] | None:
         now = time.time()
@@ -526,15 +569,17 @@ class GraphSyncQueue:
             if row is None:
                 connection.commit()
                 return None
+            attempt_token = uuid.uuid4().hex
             connection.execute(
                 "UPDATE graph_sync_jobs SET status = 'running', attempts = attempts + 1, "
-                "updated_at = ? WHERE id = ?",
-                (now, row["id"]),
+                "updated_at = ?, attempt_token = ? WHERE id = ?",
+                (now, attempt_token, row["id"]),
             )
             connection.commit()
         job = self._serialize(row)
         job["status"] = "running"
         job["attempts"] = int(job["attempts"]) + 1
+        job["attempt_token"] = attempt_token
         return job
 
     def _release_committed_jobs(self, connection: sqlite3.Connection) -> None:
@@ -588,6 +633,7 @@ class GraphSyncQueue:
         job_id: str = "",
         prior_result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        self._assert_job_running(job_id)
         if (prior_result or {}).get("phase") in {"sending_mail", "mail_unknown"} and not (
             (prior_result or {}).get("mail") or {}
         ).get("accepted"):
@@ -597,6 +643,7 @@ class GraphSyncQueue:
             if self.graph_service is None:
                 raise RuntimeError("O armazenamento Microsoft Graph não está ativo.")
             self._hydrate_staging_metadata(payload)
+            self._assert_job_running(job_id)
             try:
                 uploaded = self.graph_service.upload_active_bundle(
                     Path(payload["draft_path"]),
@@ -604,8 +651,10 @@ class GraphSyncQueue:
                 )
             except Exception:
                 # Keep confirmed partial writes/ownership for the next snapshot.
+                self._assert_job_running(job_id)
                 self._publish_staging_metadata(payload, clear_dirty=False)
                 raise
+            self._assert_job_running(job_id)
             self._publish_staging_metadata(payload)
             return {"uploaded_files": uploaded}
         if kind == "archive_and_remove":
@@ -625,6 +674,7 @@ class GraphSyncQueue:
                     {"phase": "pdf_ready", "local_pdf": str(pdf_path)},
                 )
                 uploaded.append(remote_pdf)
+            self._assert_job_running(job_id)
             removed = self.graph_service.remove_active_name(
                 str(payload["source_name"]),
                 expected_etag=payload.get("expected_etag"),
@@ -734,10 +784,13 @@ class GraphSyncQueue:
         return mail_result
 
     def _assert_job_running(self, job_id: str) -> None:
+        job = getattr(self._attempt_context, "job", None)
+        if not job or job["id"] != job_id:
+            raise GraphJobNoLongerActiveError("Tentativa do worker não identificada.")
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT status FROM graph_sync_jobs WHERE id = ?",
-                (job_id,),
+                "SELECT status FROM graph_sync_jobs WHERE id = ? AND attempt_token = ?",
+                (job_id, job["attempt_token"]),
             ).fetchone()
         if row is None or str(row["status"]) != "running":
             raise GraphJobNoLongerActiveError(
@@ -752,6 +805,7 @@ class GraphSyncQueue:
     ) -> dict[str, Any] | None:
         if not notification:
             return None
+        self._assert_job_running(parent_job_id)
         if self.teams_notification_service is None:
             raise RuntimeError("O serviço de notificações Teams não está disponível.")
         child_id = f"teams:{parent_job_id}"
@@ -764,16 +818,21 @@ class GraphSyncQueue:
 
     def _checkpoint_result(self, job_id: str, partial_result: dict[str, Any]) -> None:
         now = time.time()
+        self._assert_job_running(job_id)
+        job = self._attempt_context.job
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT result_json FROM graph_sync_jobs WHERE id = ?",
-                (job_id,),
+                "SELECT result_json FROM graph_sync_jobs WHERE id = ? AND status='running' AND attempt_token=?",
+                (job_id, job["attempt_token"]),
             ).fetchone()
+            if row is None:
+                raise GraphJobNoLongerActiveError("A tentativa do worker já não está ativa.")
             current = json.loads(row["result_json"]) if row and row["result_json"] else {}
             current.update(partial_result)
             connection.execute(
-                "UPDATE graph_sync_jobs SET result_json = ?, updated_at = ? WHERE id = ?",
-                (json.dumps(current, ensure_ascii=False), now, job_id),
+                "UPDATE graph_sync_jobs SET result_json = ?, updated_at = ? WHERE id = ? AND status='running' AND attempt_token=?",
+                (json.dumps(current, ensure_ascii=False), now, job_id, job["attempt_token"]),
             )
 
     def _mark_complete(self, job: dict[str, Any], result: dict[str, Any]) -> None:
@@ -781,14 +840,16 @@ class GraphSyncQueue:
         job_id = str(job["id"])
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE graph_sync_jobs
                 SET status = 'complete', result_json = ?, last_error = NULL, updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND status='running' AND attempt_token=?
                 """,
-                (json.dumps(result, ensure_ascii=False), now, job_id),
+                (json.dumps(result, ensure_ascii=False), now, job_id, job.get("attempt_token", "")),
             )
+            if not cursor.rowcount:
+                raise GraphJobNoLongerActiveError("A tentativa do worker já não está ativa.")
             self._retire_superseded_uploads(connection)
             connection.commit()
 
@@ -817,12 +878,12 @@ class GraphSyncQueue:
         if latest and (latest["reconciliation_required"] or (latest.get("result") or {}).get("invalid_state")):
             retryable = False
         with self._connect() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE graph_sync_jobs
                 SET status = 'failed', attempts = ?, next_attempt_at = ?, retryable = ?,
                     last_error = ?, updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND status='running' AND attempt_token=?
                 """,
                 (
                     attempts,
@@ -831,11 +892,17 @@ class GraphSyncQueue:
                     str(error)[:2000],
                     now,
                     job["id"],
+                    job.get("attempt_token", ""),
                 ),
             )
+            if not cursor.rowcount:
+                raise GraphJobNoLongerActiveError("A tentativa do worker já não está ativa.")
         return retryable
 
     def _record_job_failure(self, job: dict[str, Any], error: BaseException) -> None:
+        if isinstance(error, GraphJobNoLongerActiveError):
+            LOGGER.warning("Tentativa antiga do worker ignorada; estado atual preservado.")
+            return
         try:
             will_retry = self._mark_failed(job, error)
             log_event(
@@ -849,6 +916,8 @@ class GraphSyncQueue:
                 will_retry=will_retry,
                 exc_info=(type(error), error, error.__traceback__),
             )
+        except GraphJobNoLongerActiveError:
+            LOGGER.warning("Tentativa antiga do worker ignorada; estado atual preservado.")
         except BaseException as state_error:
             log_event(
                 LOGGER,
@@ -873,9 +942,9 @@ class GraphSyncQueue:
                     UPDATE graph_sync_jobs
                     SET status = 'failed', retryable = 0, next_attempt_at = ?,
                         last_error = ?, updated_at = ?
-                    WHERE id = ? AND status = 'running'
+                    WHERE id = ? AND status = 'running' AND attempt_token=?
                     """,
-                    (now, str(message)[:2000], now, job["id"]),
+                    (now, str(message)[:2000], now, job["id"], job.get("attempt_token", "")),
                 )
         except BaseException as state_error:
             log_event(
@@ -1148,6 +1217,7 @@ class GraphSyncQueue:
         will_retry = status == "failed" and bool(row["retryable"]) and not unknown_mail and not result.get("invalid_state")
         return {
             "id": str(row["id"]),
+            "attempt_token": str(row["attempt_token"]),
             "kind": str(row["kind"]),
             "payload": GraphSyncQueue._json_object(row["payload_json"]),
             "status": status,
