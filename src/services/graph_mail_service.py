@@ -168,7 +168,7 @@ class GraphMailService:
         seen = {recipient.casefold()}
         for address in (technician,):
             key = address.casefold()
-            if key not in seen:
+            if not self.config.test_recipient and key not in seen:
                 cc_recipients.append(address)
                 seen.add(key)
 
@@ -238,7 +238,7 @@ class GraphMailService:
         )
         cc_recipients: list[str] = []
         seen = {recipient.casefold()}
-        if technician and technician.casefold() not in seen:
+        if not self.config.test_recipient and technician and technician.casefold() not in seen:
             cc_recipients.append(technician)
         subject = str(prepared.get("subject") or "Folha de serviço nº - Sensorpoint").strip()
         if self.config.test_recipient and not subject.startswith("[TESTE]"):
