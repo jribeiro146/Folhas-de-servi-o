@@ -22,6 +22,7 @@ from src.services.teams_notification_service import TeamsNotificationService
 from src.services.local_changes import DIRTY_MARKER, bundle_guard, dirty_version, mark_dirty
 from src.services.bundle_removals import copy_confirmations, refresh_own_removal_versions
 from src.services.file_mutex import file_mutex, FileMutexBusy
+from src.services.atomic_files import replace_local
 
 
 LOGGER = logging.getLogger(__name__)
@@ -1091,7 +1092,7 @@ class GraphSyncQueue:
         shutil.copytree(source.parent, temporary / source.parent.name)
         if target.exists():
             shutil.rmtree(target)
-        os.replace(str(temporary), str(target))
+        replace_local(temporary, target)
 
         staged_source = target / source.parent.name / source.name
         prepared["_original_draft_path"] = str(source)
@@ -1144,7 +1145,7 @@ class GraphSyncQueue:
             destination.parent.mkdir(parents=True, exist_ok=True)
             temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex[:8]}.tmp")
             shutil.copy2(source, temporary)
-            os.replace(str(temporary), str(destination))
+            replace_local(temporary, destination)
 
     def _publish_locked_metadata(self, staged: Path, original: Path, *, clear_dirty: bool = True) -> None:
         self._copy_newer_metadata(staged.parent, original.parent)
