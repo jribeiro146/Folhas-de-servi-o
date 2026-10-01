@@ -20,6 +20,7 @@ from src.services.graph_storage_service import GraphStorageService
 from src.services.local_pdf_service import LocalPdfService
 from src.services.teams_notification_service import TeamsNotificationService
 from src.services.local_changes import DIRTY_MARKER, bundle_guard, dirty_version, mark_dirty
+from src.services.bundle_removals import copy_confirmations
 
 
 LOGGER = logging.getLogger(__name__)
@@ -1053,6 +1054,7 @@ class GraphSyncQueue:
             return
         with bundle_guard(original.parent):
             self._copy_newer_metadata(original.parent, staged.parent)
+            copy_confirmations(original.parent, staged.parent)
 
     def _publish_staging_metadata(self, payload: dict[str, Any], *, clear_dirty: bool = True) -> None:
         staged = Path(str(payload["draft_path"]))
@@ -1077,6 +1079,7 @@ class GraphSyncQueue:
 
     def _publish_locked_metadata(self, staged: Path, original: Path, *, clear_dirty: bool = True) -> None:
         self._copy_newer_metadata(staged.parent, original.parent)
+        copy_confirmations(staged.parent, original.parent)
         staged_version = dirty_version(staged.parent)
         if clear_dirty and staged_version and dirty_version(original.parent) == staged_version:
             (original.parent / DIRTY_MARKER).unlink(missing_ok=True)

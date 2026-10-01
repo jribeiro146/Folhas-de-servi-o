@@ -29,6 +29,8 @@ from src.services.local_changes import DIRTY_MARKER, bundle_guard, dirty_version
 from src.services.file_mutex import FileMutexBusy
 from src.services.active_file_index import ACTIVE_INDEX_NAME
 from src.services.file_diagnostics import SYNC_ID, diagnostic, file_fields, fingerprint
+from src.services.bundle_removals import REMOVALS_NAME, read_removals, write_removals, metadata
+from src.services.signature_service import ALL_SIGNATURE_FIELD_TO_SUFFIX
 
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
@@ -442,10 +444,14 @@ class GraphStorageService:
                 )
         else:
             remote = self._create_owned_active_folder(bundle_dir, ownership_path)
+        self._apply_explicit_removals(bundle_dir, remote_folder)
         uploaded: list[str] = []
         for local_file in self._iter_uploadable_files(bundle_dir):
             remote_path = self._join_graph_path(remote_folder, local_file.name)
-            item = self.upload_file(local_file, remote_path, expected_etag=self._expected_etag(local_file))
+            if metadata(local_file).get("deleted"):
+                item = self.upload_file(local_file, remote_path, create_only=True)
+            else:
+                item = self.upload_file(local_file, remote_path, expected_etag=self._expected_etag(local_file))
             self._write_item_meta(self._item_meta_path(local_file), item)
             uploaded.append(remote_path)
 
@@ -456,6 +462,31 @@ class GraphStorageService:
         folder_item["remote_path"] = remote_folder
         self._write_bundle_meta(bundle_dir, folder_item)
         return uploaded
+
+    def _apply_explicit_removals(self, bundle_dir: Path, remote_folder: str) -> None:
+        records = read_removals(bundle_dir)
+        signature_names = {f"{bundle_dir.name}__assinatura_{suffix}.png"
+                           for suffix in ALL_SIGNATURE_FIELD_TO_SUFFIX.values()}
+        for name, record in records.items():
+            if name not in signature_names:
+                raise GraphStorageError("Remoção de ficheiro não suportada; requer revisão.")
+            if record.get("confirmed"):
+                continue
+            file = bundle_dir / name
+            receipt = metadata(file)
+            already_removed = (receipt.get("deleted") and receipt.get("id") == record.get("id")
+                               and receipt.get("eTag") == record.get("eTag"))
+            if not already_removed:
+                remote = self._get_item_by_path(self._join_graph_path(remote_folder, name))
+                if remote is not None:
+                    if (not record.get("id") or not record.get("eTag") or remote.get("id") != record["id"]
+                            or remote.get("eTag") != record["eTag"]):
+                        raise GraphConflictError("A assinatura remota mudou ou não tem versão conhecida. Requer revisão.")
+                    self._delete_item_by_id(record["id"], expected_etag=record["eTag"])
+            self._atomic_write_json(self._item_meta_path(file), {
+                "id": record.get("id", ""), "eTag": record.get("eTag", ""), "deleted": True})
+            record["confirmed"] = True
+            write_removals(bundle_dir, records)
 
     def _create_owned_active_folder(self, bundle_dir: Path, ownership_path: Path) -> dict[str, Any]:
         """Create via a durable random name so a lost POST reply is recoverable.
@@ -645,6 +676,7 @@ class GraphStorageService:
         remote_path: str,
         *,
         expected_etag: str | None = None,
+        create_only: bool = False,
     ) -> dict[str, Any]:
         content_type = mimetypes.guess_type(local_file.name)[0] or "application/octet-stream"
         content = self._graph_bytes(
@@ -652,7 +684,7 @@ class GraphStorageService:
             f"/drives/{self.config.drive_id}/root:/{self._quote_path(remote_path)}:/content",
             data=local_file.read_bytes(),
             content_type=content_type,
-            headers={"If-Match": expected_etag} if expected_etag else None,
+            headers={"If-None-Match": "*"} if create_only else ({"If-Match": expected_etag} if expected_etag else None),
         )
         try:
             return json.loads(content.decode("utf-8")) if content else {"name": local_file.name}
@@ -754,6 +786,15 @@ class GraphStorageService:
                 downloaded_excel = local_path
 
         self._remove_stale_bundle_workbooks(local_dir, remote_excel_names)
+        # A complete listing proves which sidecar signatures still exist remotely.
+        # Remove stale cached signatures too, rather than resurrecting them locally.
+        remote_child_names = {str(child.get("name") or "") for child in children if child.get("file")}
+        for excel in excel_items:
+            for suffix in ALL_SIGNATURE_FIELD_TO_SUFFIX.values():
+                signature = local_dir / f"{Path(str(excel['name'])).stem}__assinatura_{suffix}.png"
+                if signature.name not in remote_child_names:
+                    signature.unlink(missing_ok=True)
+                    self._item_meta_path(signature).unlink(missing_ok=True)
         self._write_bundle_meta(local_dir, folder_item)
         return downloaded_excel
 
@@ -1182,6 +1223,7 @@ class GraphStorageService:
         return path.name.startswith(".fs-upload-") or path.name.endswith(".graph.json") or path.name in {
             ".graph_bundle.json", DIRTY_MARKER, DIRTY_MARKER + ".tmp", ".fs-finalization.json",
             ".fs-upload-owner.json",
+            REMOVALS_NAME,
         }
 
     @staticmethod
