@@ -452,7 +452,7 @@ class GraphStorageService:
                 item = self.upload_file(local_file, remote_path, create_only=True)
             else:
                 item = self.upload_file(local_file, remote_path, expected_etag=self._expected_etag(local_file))
-            self._write_item_meta(self._item_meta_path(local_file), item)
+            self._write_item_meta(self._item_meta_path(local_file), {**item, "_local_publication": True})
             uploaded.append(remote_path)
 
         uploaded.extend(
@@ -468,7 +468,10 @@ class GraphStorageService:
         signature_names = {f"{bundle_dir.name}__assinatura_{suffix}.png"
                            for suffix in ALL_SIGNATURE_FIELD_TO_SUFFIX.values()}
         for name, record in records.items():
-            if name not in signature_names:
+            parts = name.split("/")
+            is_photo = (len(parts) == 2 and parts[0] == PHOTO_FOLDER_NAME
+                        and PhotoAttachmentService.is_managed_filename(parts[1]))
+            if name not in signature_names and not is_photo:
                 raise GraphStorageError("Remoção de ficheiro não suportada; requer revisão.")
             if record.get("confirmed"):
                 continue
@@ -481,7 +484,7 @@ class GraphStorageService:
                 if remote is not None:
                     if (not record.get("id") or not record.get("eTag") or remote.get("id") != record["id"]
                             or remote.get("eTag") != record["eTag"]):
-                        raise GraphConflictError("A assinatura remota mudou ou não tem versão conhecida. Requer revisão.")
+                        raise GraphConflictError("O anexo remoto mudou ou não tem versão conhecida. Requer revisão.")
                     self._delete_item_by_id(record["id"], expected_etag=record["eTag"])
             self._atomic_write_json(self._item_meta_path(file), {
                 "id": record.get("id", ""), "eTag": record.get("eTag", ""), "deleted": True})
@@ -1047,6 +1050,7 @@ class GraphStorageService:
                 "size": int(item.get("size") or 0),
                 "lastModifiedDateTime": str(item.get("lastModifiedDateTime") or ""),
                 "eTag": str(item.get("eTag") or ""),
+                **({"local_publication": True} if item.get("_local_publication") else {}),
             },
         )
 
@@ -1320,27 +1324,16 @@ class GraphStorageService:
         uploaded: list[str] = []
         for local_file in local_files:
             remote_path = self._join_graph_path(remote_directory, local_file.name)
-            item = self.upload_file(
-                local_file,
-                remote_path,
-                expected_etag=self._expected_etag(local_file),
-            )
-            self._write_item_meta(self._item_meta_path(local_file), item)
+            if metadata(local_file).get("deleted"):
+                item = self.upload_file(local_file, remote_path, create_only=True)
+            else:
+                item = self.upload_file(local_file, remote_path, expected_etag=self._expected_etag(local_file))
+            self._write_item_meta(self._item_meta_path(local_file), {**item, "_local_publication": True})
             uploaded.append(remote_path)
 
-        if prune and remote_item is not None:
-            local_names = {path.name for path in local_files}
-            for child in self._list_children(str(remote_item["id"])):
-                child_name = str(child.get("name") or "")
-                if (
-                    child.get("file")
-                    and PhotoAttachmentService.is_managed_filename(child_name)
-                    and child_name not in local_names
-                ):
-                    self._delete_item_by_id(
-                        str(child["id"]),
-                        expected_etag=str(child.get("eTag") or "") or None,
-                    )
+        # Keep the prune argument for callers, but deletion is now exclusively
+        # driven by the recorded intent in _apply_explicit_removals. Absence from
+        # an old local snapshot never authorizes deletion of a new remote photo.
 
         return uploaded
 

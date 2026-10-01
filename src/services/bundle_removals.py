@@ -87,3 +87,20 @@ def copy_confirmations(source: Path, destination: Path) -> None:
                 changed = True
     if changed:
         write_removals(destination, target_records)
+
+
+def refresh_own_removal_versions(directory: Path) -> None:
+    """Follow preceding confirmed own uploads, never an arbitrary remote read."""
+    records = read_removals(directory)
+    changed = False
+    for name, record in records.items():
+        if record.get("confirmed") or not record.get("id"):
+            continue
+        item = metadata(directory / name)
+        if (item.get("local_publication") and not item.get("deleted")
+                and item.get("id") == record["id"] and item.get("eTag")
+                and item["eTag"] != record.get("eTag")):
+            record["eTag"] = item["eTag"]
+            changed = True
+    if changed:
+        write_removals(directory, records)

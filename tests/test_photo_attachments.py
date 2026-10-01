@@ -243,7 +243,7 @@ def test_invalid_photo_is_rejected_before_creating_draft(photo_web_app):
     assert list(active.iterdir()) == [active / "2026_7001.xlsx"]
 
 
-def test_graph_active_bundle_uploads_and_prunes_photo_subfolder(tmp_path, monkeypatch):
+def test_graph_active_bundle_uploads_and_preserves_unknown_remote_photos(tmp_path, monkeypatch):
     bundle = tmp_path / "draft"
     bundle.mkdir()
     excel = bundle / "draft.xlsx"
@@ -294,7 +294,7 @@ def test_graph_active_bundle_uploads_and_prunes_photo_subfolder(tmp_path, monkey
 
     assert any(f"/{PHOTO_FOLDER_NAME}/fotografia_" in path for path in result)
     assert uploaded == result
-    assert deleted == ["stale"]
+    assert deleted == []
 
 
 def test_graph_download_restores_photo_subfolder(tmp_path, monkeypatch):

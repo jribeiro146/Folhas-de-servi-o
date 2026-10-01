@@ -8,6 +8,8 @@ from src.services.graph_storage_service import GraphStorageService, GraphConfig,
 from src.services.graph_sync_queue import GraphSyncQueue
 from src.services.signature_service import SignatureService, CLIENT_SIGNATURE_LABEL
 from src.services.local_changes import mark_dirty, dirty_version
+from src.services.photo_attachment_service import PHOTO_FOLDER_NAME, PhotoAttachmentService
+import io
 
 PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9XkAAAAASUVORK5CYII="
 
@@ -56,6 +58,30 @@ class BundleGraph(GraphStorageService):
         entry = next(f for f in self.files.values() if f["item"]["id"] == item_id)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(entry["data"])
+
+
+class PhotoGraph(BundleGraph):
+    def ensure_folder_path(self, _):
+        pass
+
+    def _get_item_by_path(self, path):
+        if path == "Activas/draft/" + PHOTO_FOLDER_NAME:
+            return {"id": "photos", "name": PHOTO_FOLDER_NAME, "folder": {"childCount": 0}}
+        return super()._get_item_by_path(path)
+
+    def _list_children(self, item_id):
+        photos = [dict(f["item"]) for n, f in self.files.items() if "/" in n]
+        if item_id == "photos":
+            return photos
+        items = [dict(f["item"]) for n, f in self.files.items() if "/" not in n]
+        return items + ([self._get_item_by_path("Activas/draft/" + PHOTO_FOLDER_NAME)] if photos else [])
+
+
+def photo_upload(data=b"\xff\xd8\xffsynthetic"):
+    class Upload:
+        filename = "synthetic.jpg"
+        stream = io.BytesIO(data)
+    return PhotoAttachmentService.prepare_uploads([Upload()])[0]
 
 
 def signed_draft(tmp_path):
@@ -171,3 +197,77 @@ def test_recreation_after_refresh_keeps_conditional_creation_receipt(tmp_path):
     SignatureService(file).save_from_form_data({CLIENT_SIGNATURE_LABEL: PNG})
     graph.upload_active_bundle(file)
     assert graph.creations == ["draft__assinatura_cliente.png"]
+
+
+def draft_with_photo(tmp_path):
+    existing, file = signed_draft(tmp_path)
+    graph = PhotoGraph()
+    graph.files = existing.files
+    graph.serial = existing.serial
+    photo = photo_upload()
+    PhotoAttachmentService(file).apply([photo], [])
+    graph.upload_active_bundle(file)
+    return graph, file, photo
+
+
+def test_unknown_remote_photo_is_preserved_during_old_snapshot_upload(tmp_path):
+    graph, file, photo = draft_with_photo(tmp_path)
+    new = photo_upload(b"\xff\xd8\xffremote synthetic addition")
+    path = file.parent / PHOTO_FOLDER_NAME / new.filename
+    path.write_bytes(new.data)
+    graph.upload_file(path, "Activas/draft/" + PHOTO_FOLDER_NAME + "/" + new.filename)
+    path.unlink()  # This remote addition was never seen by the local snapshot.
+    graph.upload_active_bundle(file)
+    assert graph.deletes == []
+    assert PHOTO_FOLDER_NAME + "/" + new.filename in graph.files
+
+
+def test_only_explicitly_removed_photo_is_deleted_and_reload_keeps_other_photos(tmp_path):
+    graph, file, photo = draft_with_photo(tmp_path)
+    new = photo_upload(b"\xff\xd8\xffremote addition")
+    path = file.parent / PHOTO_FOLDER_NAME / new.filename
+    path.write_bytes(new.data)
+    graph.upload_file(path, "Activas/draft/" + PHOTO_FOLDER_NAME + "/" + new.filename)
+    path.unlink()
+    PhotoAttachmentService(file).apply([], [photo.id])
+    graph.upload_active_bundle(file)
+    assert graph.deletes == [PHOTO_FOLDER_NAME + "/" + photo.filename]
+    reloaded = graph._sync_active_bundle(graph._get_item_by_path("Activas/draft"), tmp_path / "new-cache")
+    assert [p["id"] for p in PhotoAttachmentService(reloaded).list()] == [new.id]
+
+
+def test_changed_remote_photo_is_not_deleted_with_a_newly_read_etag(tmp_path):
+    graph, file, photo = draft_with_photo(tmp_path)
+    PhotoAttachmentService(file).apply([], [photo.id])
+    graph.files[PHOTO_FOLDER_NAME + "/" + photo.filename]["item"]["eTag"] = "external-edit"
+    with pytest.raises(GraphConflictError):
+        graph.upload_active_bundle(file)
+    assert not graph.deletes
+
+
+def test_remove_and_add_same_photo_before_worker_keeps_latest_content(tmp_path):
+    graph, file, photo = draft_with_photo(tmp_path)
+    queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", auto_start=False)
+    PhotoAttachmentService(file).apply([], [photo.id])
+    mark_dirty(file.parent)
+    removed = queue.enqueue("upload_active", {"draft_path": str(file)})
+    PhotoAttachmentService(file).apply([photo], [])
+    mark_dirty(file.parent)
+    restored = queue.enqueue("upload_active", {"draft_path": str(file)})
+    queue.run_until_idle()
+    assert all(queue.status(j["id"])["status"] == "complete" for j in (removed, restored))
+    assert graph.files[PHOTO_FOLDER_NAME + "/" + photo.filename]["data"] == photo.data
+    assert not dirty_version(file.parent)
+
+
+def test_removal_after_an_earlier_queued_signature_save_uses_own_published_version(tmp_path):
+    graph, file = signed_draft(tmp_path)
+    queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", auto_start=False)
+    mark_dirty(file.parent)
+    saved = queue.enqueue("upload_active", {"draft_path": str(file)})
+    clear_signature(file)
+    mark_dirty(file.parent)
+    removed = queue.enqueue("upload_active", {"draft_path": str(file)})
+    queue.run_until_idle()
+    assert all(queue.status(j["id"])["status"] == "complete" for j in (saved, removed))
+    assert "draft__assinatura_cliente.png" not in graph.files
