@@ -23,11 +23,24 @@ finalização.
 O pedido Graph `sendMail` usa `saveToSentItems: true`. Uma resposta `202 Accepted` confirma que o Graph aceitou o pedido de envio; não constitui confirmação de entrega final no destinatário.
 
 A interface acompanha o trabalho persistente e só apresenta sucesso depois dessa aceitação.
-Falhas temporárias são repetidas até `FS_MAIL_JOB_MAX_ATTEMPTS` (três por defeito).
-Depois disso, ou perante uma falha permanente de autenticação/permissão, o trabalho fica
-parado. A repetição é sempre explícita e afeta apenas o trabalho selecionado. Durante a
+Falhas temporárias anteriores ao envio e recusas explícitas, como HTTP 429, são
+repetidas até `FS_MAIL_JOB_MAX_ATTEMPTS` (três por defeito).
+Uma resposta perdida durante `sendMail`, um timeout ou HTTP 5xx após o pedido deixam
+o resultado desconhecido. O trabalho fica parado com `reconciliation_required=true`
+e a API recusa a repetição. Consultar os Itens Enviados e correlacionar a operação
+antes de decidir qualquer novo envio; não apagar o checkpoint nem ativar a repetição
+automática. Este comportamento não confirma entrega ao destinatário e não introduz
+uma ferramenta automática de reconciliação com a caixa de correio.
+Ao atingir o limite de tentativas, ou perante uma falha permanente de
+autenticação/permissão, o trabalho fica parado. Para falhas com resultado conhecido,
+a repetição é explícita e afeta apenas o trabalho selecionado. Durante a
 primeira atualização para este comportamento, trabalhos antigos de e-mail também ficam
 parados para revisão, evitando envios acumulados inesperados.
+
+Com `FS_MAIL_TEST_RECIPIENT` preenchido, o envelope contém apenas esse destinatário:
+o CC fica vazio, incluindo em trabalhos preparados por versões anteriores. Sem essa
+variável, mantém-se o técnico em CC. Os avisos Teams têm configuração independente;
+um ensaio automatizado continua a exigir transportes simulados e rede bloqueada.
 
 O diagnóstico `GET /api/mail/test` valida o client secret e a permissão de aplicação
 `Mail.Send` através da obtenção de um token. Este diagnóstico nunca cria uma mensagem nem

@@ -33,16 +33,38 @@ FS_GRAPH_JOB_STALE_SECONDS=900
 
 No primeiro arranque, os estados JSON da versão anterior são importados para `editing-state/editing-state.sqlite3` com `INSERT OR IGNORE`. Os JSON não são apagados automaticamente e servem de cópia de segurança durante a validação.
 
-Ficheiros antigos `*.lock` deixam de ser usados. Depois de todos os processos antigos estarem parados e a nova versão validada, podem ser arquivados ou removidos pelo administrador.
+A fila acrescenta automaticamente a coluna `attempt_token` para identificar cada
+tentativa. Todos os workers e instâncias web devem usar a mesma versão; parar os
+processos anteriores antes da atualização. O bloqueio `graph-sync.sqlite3.worker.lock`
+é libertado pelo sistema operativo ao terminar o processo, incluindo numa queda.
+Não apagar esse ficheiro enquanto a aplicação estiver em utilização: diferentes
+processos têm de bloquear o mesmo ficheiro. Os antigos bloqueios de edição são
+distintos deste bloqueio da fila.
+
+O worker mantém o bloqueio entre a reclamação do trabalho e o fim dos seus efeitos.
+A atividade é atualizada, no máximo, a cada 30 segundos. Checkpoints, sucesso, falha e
+atividade só podem alterar a tentativa que ainda possui o trabalho.
 
 ## Operação e monitorização
 
 - `GET /api/graph/status`: estado do refresh da cache e contadores da fila (`pending`, `running`, `failed`, `complete`).
 - O worker externo imprime os mesmos contadores antes e depois de cada execução: `python -m src.queue_worker`.
 - `GET /api/graph/jobs/<job_id>`: detalhe de uma publicação devolvida por guardar, finalizar ou cancelar.
-- Um trabalho `failed` é mantido e repetido automaticamente. O campo `last_error` indica a causa mais recente.
+- Um trabalho `failed` só é repetido automaticamente quando `will_retry=true`. O campo `last_error` indica a causa mais recente. Envios sem resultado confirmado e registos com `result.invalid_state=true` ficam parados para revisão; a API não permite repetir estes casos sem resolver a causa.
 - Os snapshots em `graph-sync-assets` pertencem à fila. Não os apagar enquanto existirem trabalhos pendentes ou falhados.
 - Incluir no backup: `editing-state.sqlite3`, `graph-sync.sqlite3`, respetivos ficheiros `-wal`/`-shm` e `graph-sync-assets`. Para uma cópia simples e consistente, parar primeiro a aplicação.
+
+As remoções de assinaturas e fotografias são registadas em `.fs-removals.json` e
+executadas com o ID e a versão conhecidos. Uma fotografia ausente de um snapshot
+antigo não autoriza a sua eliminação remota. Manter estes registos e os metadados
+`*.graph.json` nos backups; não os enviar manualmente para o SharePoint.
+
+O arquivo remoto usa `.fs-archive-owner.json` como prova local da pasta criada por
+essa operação. A primeira publicação cria ficheiros com conflito `fail`; as retomas
+usam versões conhecidas ou comparam o conteúdo sem sobrescrever. Arquivos existentes
+sem prova local, conteúdos diferentes ou versões alteradas ficam preservados e
+bloqueiam a remoção da folha ativa e o envio. Não fabricar provas de propriedade
+nem trocar eTags para contornar conflitos; rever primeiro a origem e o destino.
 
 ## Validação pós-deploy
 
@@ -52,6 +74,6 @@ Ficheiros antigos `*.lock` deixam de ser usados. Depois de todos os processos an
 4. Abrir o mesmo rascunho em duas abas do mesmo browser e confirmar que apenas uma fica editável.
 5. Desligar temporariamente o acesso ao Graph, guardar um rascunho e confirmar que a UI indica publicação pendente.
 6. Restabelecer o Graph e confirmar em `/api/graph/status` que o trabalho passa a `complete`.
-7. Finalizar um rascunho imediatamente depois de o criar e confirmar que o arquivo local não depende da conclusão prévia do upload.
+7. Finalizar um rascunho depois de a sua última publicação ser confirmada. Enquanto existir uma publicação pendente ou falhada desse rascunho, a finalização deve aguardar a sua resolução.
 
 No primeiro acesso após o deploy, recomenda-se uma atualização forçada do browser para substituir o service worker e os assets da versão anterior.
