@@ -118,6 +118,7 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
             return jsonify(success=False, error=str(exc)), 409
 
     @bp.post("/api/admin/jobs/<job_id>/retry")
+    @bp.post("/api/graph/jobs/<job_id>/retry")
     def retry_job(job_id):
         if queue is None:
             return jsonify(success=False, error="A fila não está ativa."), 409

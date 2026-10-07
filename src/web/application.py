@@ -1239,18 +1239,6 @@ def create_app(
             return json_error("Operação de sincronização não encontrada.", 404)
         return jsonify({"success": True, "job": job})
 
-    @app.route("/api/graph/jobs/<job_id>/retry", methods=["POST"])
-    def retry_graph_job(job_id: str):
-        if graph_sync_queue is None:
-            return json_error("A fila de operações não está ativa.", 400)
-        try:
-            job = graph_sync_queue.retry(job_id)
-        except KeyError:
-            return json_error("Operação de sincronização não encontrada.", 404)
-        except ValueError as exc:
-            return json_error(str(exc), 409)
-        return jsonify({"success": True, "job": job}), 202
-
     @app.route("/api/file/<name>/bootstrap")
     def bootstrap_file_editor(name: str):
         path = file_service.get_file_by_name(name)

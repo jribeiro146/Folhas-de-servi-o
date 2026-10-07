@@ -67,5 +67,13 @@ comerciais. O painel não funciona sem autenticação Microsoft e não divulga t
 de edição nem conteúdo dos autosaves. A tabela `admin_actions` integra o backup
 de `editing-state.sqlite3` e é criada no primeiro arranque.
 
+Na revisão de 07/10/2026, as respostas atrasadas de gravação ou retoma deixaram de
+reativar uma página expulsa ou de limpar a sua recuperação pendente. Uma resposta
+de verificação de uma sessão antiga também não afeta a sessão nova; estas
+verificações não se sobrepõem. A rota antiga `/api/graph/jobs/<id>/retry` passa
+pelas mesmas proteções do painel: apenas o administrador Microsoft, CSRF, motivo
+obrigatório, avaliação de envio incerto e auditoria. Integrações que usavam essa
+rota sem estes requisitos devem passar a usar o painel administrativo.
+
 A implementação foi aplicada também ao pacote de migração, preservando o perfil
 de demonstração. Não houve deploy, reinício operacional ou envio real.

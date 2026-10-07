@@ -1000,7 +1000,7 @@ def test_send_checks_mail_credentials_before_archiving(isolated_dirs, monkeypatc
     assert queue.calls == []
 
 
-def test_failed_job_can_only_be_retried_through_explicit_endpoint(isolated_dirs):
+def test_legacy_retry_endpoint_requires_authenticated_admin(isolated_dirs):
     class RetryQueue:
         calls = []
 
@@ -1023,12 +1023,8 @@ def test_failed_job_can_only_be_retried_through_explicit_endpoint(isolated_dirs)
 
     response = client.post("/api/graph/jobs/send%3Amanual%3A1/retry")
 
-    assert response.status_code == 202
-    assert response.get_json() == {
-        "success": True,
-        "job": {"id": "send:manual:1", "status": "pending", "will_retry": False},
-    }
-    assert queue.calls == ["send:manual:1"]
+    assert response.status_code == 403
+    assert queue.calls == []
 
 
 def test_editor_loads_mail_job_monitor_before_document_actions(isolated_dirs):

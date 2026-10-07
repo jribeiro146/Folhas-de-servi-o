@@ -162,8 +162,9 @@ def test_non_admin_service_cannot_revoke_even_with_matching_version(tmp_path):
         service.admin_change_access(snapshot["document_id"], actor, "Desbloquear", version(service))
     assert not service.repository.admin_history()
 
+@pytest.mark.parametrize("prefix", ["/api/admin/jobs/", "/api/graph/jobs/"])
 @pytest.mark.parametrize("phase", ["sending_mail","mail_unknown",None])
-def test_admin_cannot_retry_uncertain_mail(tmp_path, monkeypatch, phase):
+def test_admin_cannot_retry_uncertain_mail(tmp_path, monkeypatch, phase, prefix):
     from src.services.graph_sync_queue import GraphSyncQueue
     monkeypatch.setattr(web,"AUTH_ENABLED",True)
     monkeypatch.setattr(web,"ACTIVE_AUTH_PROVIDER","microsoft")
@@ -173,18 +174,19 @@ def test_admin_cannot_retry_uncertain_mail(tmp_path, monkeypatch, phase):
     queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", auto_start=False)
     job = queue.enqueue("archive_and_mail_local", {"mail":{"to":"synthetic@example.invalid"}})
     with queue._connect() as db:
-        db.execute("UPDATE graph_sync_jobs SET status='failed',result_json=? WHERE id=?", (json.dumps({"phase":phase}),job["id"]))
+        db.execute("UPDATE graph_sync_jobs SET status='failed',result_json=? WHERE id=?", (json.dumps({"phase":phase} if phase else {}),job["id"]))
     service = EditingStateService(tmp_path / "edits")
     app = web.create_app(editing_state_service=service, graph_sync_queue=queue, microsoft_auth_service=Auth())
     admin = login(app,ADMIN.email)
     assert not admin.get("/api/admin/overview").get_json()["jobs"][0]["can_retry"]
-    response = admin.post("/api/admin/jobs/"+job["id"]+"/retry", json={"reason":"Tentar recuperar"},
+    response = admin.post(prefix+job["id"]+"/retry", json={"reason":"Tentar recuperar"},
                           headers={"X-Admin-CSRF":"synthetic-csrf"})
     assert response.status_code == 409
     assert queue.status(job["id"])["attempts"] == 0
     assert not service.repository.admin_history()
 
-def test_admin_retry_of_known_failure_is_audited_without_executing_worker(tmp_path, monkeypatch):
+@pytest.mark.parametrize("prefix", ["/api/admin/jobs/", "/api/graph/jobs/"])
+def test_admin_retry_of_known_failure_is_audited_without_executing_worker(tmp_path, monkeypatch, prefix):
     from src.services.graph_sync_queue import GraphSyncQueue
     monkeypatch.setattr(web,"AUTH_ENABLED",True)
     monkeypatch.setattr(web,"ACTIVE_AUTH_PROVIDER","microsoft")
@@ -198,7 +200,15 @@ def test_admin_retry_of_known_failure_is_audited_without_executing_worker(tmp_pa
     service = EditingStateService(tmp_path / "edits")
     app = web.create_app(editing_state_service=service, graph_sync_queue=queue, microsoft_auth_service=Auth())
     admin = login(app,ADMIN.email)
-    response = admin.post("/api/admin/jobs/"+job["id"]+"/retry", json={"reason":"Falha resolvida"},
+    other = login(app, "other@sensorpoint.pt")
+    assert other.post(prefix+job["id"]+"/retry", json={"reason":"Falha resolvida"},
+                      headers={"X-Admin-CSRF":"synthetic-csrf"}).status_code == 403
+    assert admin.post(prefix+job["id"]+"/retry", json={"reason":"Falha resolvida"}).status_code == 403
+    assert admin.post(prefix+job["id"]+"/retry", json={},
+                      headers={"X-Admin-CSRF":"synthetic-csrf"}).status_code == 409
+    assert queue.status(job["id"])["status"] == "failed"
+    assert not service.repository.admin_history()
+    response = admin.post(prefix+job["id"]+"/retry", json={"reason":"Falha resolvida"},
                           headers={"X-Admin-CSRF":"synthetic-csrf"})
     assert response.status_code == 202
     assert queue.status(job["id"])["status"] == "pending"

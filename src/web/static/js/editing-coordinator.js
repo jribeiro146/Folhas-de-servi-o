@@ -89,6 +89,10 @@ const startEditingCoordinator = () => {
 
     const setAutosaveStatus = (message, state = "idle") => {
         if (!autosaveStatus) return;
+        if (revoked) {
+            message = "Acesso de edição retirado pelo administrador";
+            state = "conflict";
+        }
         autosaveStatus.hidden = false;
         autosaveStatus.textContent = message;
         autosaveStatus.dataset.state = state;
@@ -106,6 +110,7 @@ const startEditingCoordinator = () => {
     };
 
     const setCommitActionsEnabled = (enabled) => {
+        enabled = enabled && !revoked;
         const draftButton = document.getElementById("btn-save-draft");
         const sendButton = document.getElementById("btn-save-send");
         const cancelButton = document.getElementById("btn-cancel-file");
@@ -115,7 +120,7 @@ const startEditingCoordinator = () => {
     };
 
     const setFormReadOnly = (value, ownerName = "") => {
-        readOnly = Boolean(value);
+        readOnly = revoked || Boolean(value);
         form.classList.toggle("is-readonly", readOnly);
         form.querySelectorAll("input, select, textarea, button").forEach((control) => {
             if (!control.dataset.editingInitialDisabled) {
@@ -126,7 +131,10 @@ const startEditingCoordinator = () => {
         editor.renderAttachments?.();
         if (lockBanner) lockBanner.hidden = !readOnly;
         if (retryButton) retryButton.hidden = true;
-        if (readOnly) {
+        if (revoked) {
+            if (lockTitle) lockTitle.textContent = "Edição encerrada pelo administrador";
+            if (lockMessage) lockMessage.textContent = "Mantenha esta página aberta se tiver alterações por guardar. Peça a reposição do acesso antes de voltar a editar.";
+        } else if (readOnly) {
             if (lockTitle) lockTitle.textContent = "Rascunho em modo de consulta";
             if (lockMessage) {
                 const owner = ownerName || editing.owner?.owner_name || "outro técnico";
@@ -320,16 +328,16 @@ const startEditingCoordinator = () => {
     };
 
     const handleConflict = (result) => {
+        if (revoked) return true;
         if (result?.code === "lease_revoked") {
             if (dirty) persistLocalRecovery({ force: true });
             revoked = true;
             sessionToken = "";
             window.clearTimeout(serverSaveTimer);
             window.clearTimeout(retryTimer);
+            hideRecoveryPanel();
             setFormReadOnly(true);
             setCommitActionsEnabled(false);
-            if (lockTitle) lockTitle.textContent = "Edição encerrada pelo administrador";
-            if (lockMessage) lockMessage.textContent = "Mantenha esta página aberta se tiver alterações por guardar. Peça a reposição do acesso antes de voltar a editar.";
             setAutosaveStatus("Acesso de edição retirado pelo administrador", "conflict");
             return true;
         }
@@ -404,6 +412,8 @@ const startEditingCoordinator = () => {
                 keepalive,
             });
             const result = await response.json();
+            // A successful reply may predate the revocation received by heartbeat.
+            if (revoked) return false;
             if (!response.ok || !result.success) {
                 if (handleConflict(result)) return false;
                 if ([401, 423].includes(response.status)) {
@@ -447,6 +457,7 @@ const startEditingCoordinator = () => {
             }
             return true;
         } catch (error) {
+            if (revoked) return false;
             await persistLocalRecovery({ force: true });
             setCommitActionsEnabled(false);
             setAutosaveStatus(
@@ -533,6 +544,7 @@ const startEditingCoordinator = () => {
         resumePromise = (async () => {
             try {
                 const result = await loadBootstrap();
+                if (revoked) return false;
                 const resumedEditing = { ...(result.editing || {}) };
                 const remotePayload = result.document || result.source_document || {};
                 const revisionChanged = Number(resumedEditing.revision || 1) !== previousRevision;
@@ -603,6 +615,7 @@ const startEditingCoordinator = () => {
         try {
             const result = await loadBootstrap();
             const localRecovery = await localRecoveryPromise;
+            if (revoked) return;
             editing = { ...(result.editing || {}) };
             sessionToken = result.editing?.lease?.token || "";
             serverPayload = result.editing?.server_document || result.document || null;
@@ -691,6 +704,7 @@ const startEditingCoordinator = () => {
     };
 
     ignoreRecoveryButton?.addEventListener("click", async () => {
+        if (revoked) return;
         const action = pendingPanelAction;
         if (!action) return hideRecoveryPanel();
         if (action.kind === "conflict") {
@@ -879,6 +893,7 @@ const startEditingCoordinator = () => {
         },
         syncActionState: syncCommitActions,
         async markCommitted(result, kind) {
+            if (revoked) return;
             const committedKey = recoveryKey();
             editing = { ...editing, ...result };
             operationKeys.delete(kind);
@@ -903,17 +918,25 @@ const startEditingCoordinator = () => {
     };
 
     initialize();
+    let heartbeatInFlight = false;
     const leaseHeartbeatTimer = window.setInterval(async () => {
-        if (revoked || document.hidden || !sessionToken || !editing.document_id) return;
+        if (heartbeatInFlight || revoked || document.hidden || !navigator.onLine || !sessionToken || !editing.document_id) return;
+        const checkedToken = sessionToken;
+        const checkedDocument = editing.document_id;
+        heartbeatInFlight = true;
         try {
             const response = await fetch("/api/file/" + encodeURIComponent(activeFileName) + "/lease/heartbeat", {
                 method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ document_id: editing.document_id, client_id: clientId, lease_token: sessionToken })
+                body: JSON.stringify({ document_id: checkedDocument, client_id: clientId, lease_token: checkedToken })
             });
             const result = await response.json();
-            if (!response.ok) handleConflict(result);
+            if (sessionToken === checkedToken && editing.document_id === checkedDocument && !response.ok) {
+                handleConflict(result);
+            }
         } catch (_) {
             // Local recovery remains available while disconnected.
+        } finally {
+            heartbeatInFlight = false;
         }
     }, 15000);
     leaseHeartbeatTimer?.unref?.();
