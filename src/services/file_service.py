@@ -21,6 +21,7 @@ from src.services.excel_service import ExcelFileLockedError, ExcelService, Excel
 from src.services.photo_attachment_service import PhotoAttachmentService
 from src.services.signature_service import SignatureService
 from src.services.local_changes import mark_dirty
+from src.services.file_diagnostics import diagnostic, file_fields
 
 
 DRAFT_NAME_RE = re.compile(r"^.+_\d{4}-\d{2}-\d{2}_.+$")
@@ -70,7 +71,12 @@ class FileService:
         results: list[dict] = []
 
         for file_path in self.list_excel_files():
-            cache_key = self._build_cache_key(file_path)
+            try:
+                cache_key = self._build_cache_key(file_path)
+            except FileNotFoundError:
+                self.invalidate_cache(file_path)
+                diagnostic("active_list_file_disappeared", **file_fields(file_path.name), stage="metadata")
+                continue
             cached = self._entry_cache.get(file_path)
             if cached and cached[0] == cache_key:
                 results.append(self._clone_entry(cached[1]))
@@ -82,13 +88,17 @@ class FileService:
                 "valid": True,
                 "status": "in_progress" if self.is_draft_file(file_path) else "ready",
                 "error": None,
-                "modified_at": file_path.stat().st_mtime,
+                "modified_at": cache_key[0] / 1_000_000_000,
                 "summary": self._build_summary(file_path),
             }
 
             try:
                 excel_form_data = ExcelService(file_path).read_link_as_form_data()
                 entry["summary"] = self._build_summary(file_path, excel_form_data=excel_form_data)
+            except FileNotFoundError:
+                self.invalidate_cache(file_path)
+                diagnostic("active_list_file_disappeared", **file_fields(file_path.name), stage="excel_read")
+                continue
             except ExcelFileLockedError as exc:
                 entry["valid"] = False
                 entry["status"] = "locked"
@@ -105,7 +115,14 @@ class FileService:
             self._entry_cache[file_path] = (cache_key, self._clone_entry(entry))
             results.append(entry)
 
-        return results
+        # A refresh or finalization may finish while Excel summaries are read.
+        # Recheck visibility without deleting workbooks or pending local work.
+        remote_files = read_active_index(self.directory, required=self.require_remote_index)
+        return [entry for entry in results
+                if entry["path"].is_file()
+                and (remote_files is None or entry["path"].relative_to(self.directory).as_posix() in remote_files)
+                and not self._is_archived_single_file(entry["path"])
+                and not self._is_archived_bundle_dir(entry["path"].parent)]
 
     def invalidate_cache(self, file_path: Path | None = None) -> None:
         if file_path is None:
@@ -260,17 +277,23 @@ class FileService:
         if self._contained(exact_match) and is_visible(exact_match) and self._is_excel_file(exact_match):
             return exact_match
 
-        candidates = sorted(
-            file_path for file_path in directory.iterdir()
-            if self._contained(file_path) and is_visible(file_path) and self._is_excel_file(file_path)
-        )
+        try:
+            candidates = sorted(
+                file_path for file_path in directory.iterdir()
+                if self._contained(file_path) and is_visible(file_path) and self._is_excel_file(file_path)
+            )
+        except FileNotFoundError:
+            return None
         return candidates[0] if candidates else None
 
     @staticmethod
     def _build_cache_key(file_path: Path) -> tuple[int, int, int]:
         file_stat = file_path.stat()
         document_path = file_path.with_name(f"{file_path.stem}__documento.json")
-        document_mtime = document_path.stat().st_mtime_ns if document_path.exists() else 0
+        try:
+            document_mtime = document_path.stat().st_mtime_ns
+        except FileNotFoundError:
+            document_mtime = 0
         return (file_stat.st_mtime_ns, file_stat.st_size, document_mtime)
 
     @staticmethod
