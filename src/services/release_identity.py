@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 import uuid
 from pathlib import Path, PurePosixPath
 
@@ -15,6 +16,8 @@ class ReleaseIdentityError(RuntimeError):
 
 
 def _source_fingerprint(root: Path) -> tuple[str, dict[str, str]]:
+    if sys.version_info < (3, 12):
+        raise ReleaseIdentityError("Esta versão requer Python 3.12 ou superior; usar preferencialmente Python 3.13.")
     source_root = root / "src"
     if source_root.is_symlink() or source_root.is_junction():
         raise ReleaseIdentityError("O pacote não pode conter ligações simbólicas ou junções no código.")
@@ -91,6 +94,8 @@ def write_release_manifest(root: Path, *, revision: str) -> dict:
     if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
         raise ValueError("Indique o SHA Git completo da versão a empacotar.")
     root = Path(root)
+    if (root / ".git").exists() or (root / ".git").is_symlink():
+        raise ReleaseIdentityError("Não criar manifestos num checkout Git; indique uma cópia de staging sem .git.")
     fingerprint, files = _source_fingerprint(root)
     payload = {"format": 1, "revision": revision, "source_sha256": fingerprint,
                "source_files": len(files), "files": files}

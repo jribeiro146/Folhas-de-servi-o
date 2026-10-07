@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import shutil
 import pytest
 from src.services.release_identity import get_release_info
 
@@ -159,3 +160,91 @@ def test_packaging_does_not_import_runtime_configuration(tmp_path):
                              "--root", str(tmp_path), "--revision", "e" * 40],
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("git_marker", ["omitted-root", "directory", "worktree-file"])
+def test_release_builder_requires_explicit_staging_outside_a_git_checkout(tmp_path, git_marker):
+    # Copy only the standalone command/module, so even the old default cannot
+    # write a manifest in the real development checkout during the red test.
+    repository = Path(__file__).resolve().parents[1]
+    tool = tmp_path / "tools" / "build_release.py"
+    service = tmp_path / "src" / "services" / "release_identity.py"
+    tool.parent.mkdir()
+    service.parent.mkdir(parents=True)
+    shutil.copyfile(repository / "tools" / tool.name, tool)
+    shutil.copyfile(repository / "src" / "services" / service.name, service)
+    command = [sys.executable, "-B", str(tool), "--revision", "f" * 40]
+    if git_marker != "omitted-root":
+        command += ["--root", str(tmp_path)]
+        marker = tmp_path / ".git"
+        if git_marker == "directory":
+            marker.mkdir()
+        else:
+            marker.write_text("gitdir: synthetic-worktree\n", encoding="utf-8")
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 2, result.stdout
+    assert ("--root" if git_marker == "omitted-root" else "Git") in result.stderr
+    assert not (tmp_path / "release-manifest.json").exists()
+
+
+def test_unsupported_python_is_refused_with_an_actionable_message(tmp_path, monkeypatch):
+    from src.services.release_identity import ReleaseIdentityError, write_release_manifest
+    (tmp_path / "src").mkdir()
+    monkeypatch.setattr(sys, "version_info", (3, 11, 9))
+    with pytest.raises(ReleaseIdentityError, match="Python 3.12"):
+        get_release_info(tmp_path)
+    with pytest.raises(ReleaseIdentityError, match="Python 3.12"):
+        write_release_manifest(tmp_path, revision="a" * 40)
+    assert not (tmp_path / "release-manifest.json").exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Junções de diretório são específicas de Windows.")
+def test_windows_source_junction_is_refused(tmp_path):
+    from src.services.release_identity import ReleaseIdentityError
+    source = tmp_path / "src"
+    source.mkdir()
+    target = tmp_path / "synthetic-target"
+    target.mkdir()
+    (target / "entry.py").write_text("value = 1\n", encoding="utf-8")
+    script = tmp_path / "junction.ps1"
+    script.write_text(
+        'param([string]$JunctionPath, [string]$TargetPath)\n'
+        '$ErrorActionPreference = "Stop"\n'
+        'New-Item -ItemType Junction -Path $JunctionPath -Target $TargetPath | Out-Null\n',
+        encoding="utf-8",
+    )
+    junction = source / "linked"
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(script), "-JunctionPath", str(junction), "-TargetPath", str(target)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    try:
+        with pytest.raises(ReleaseIdentityError, match="junções"):
+            get_release_info(tmp_path)
+    finally:
+        # Remove only this synthetic junction, never recurse into its target.
+        junction.rmdir()
+    assert (target / "entry.py").read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_manifest_diagnostic_bounds_and_escapes_many_long_paths(tmp_path):
+    from src.services.release_identity import ReleaseIdentityError, write_release_manifest
+    # Windows otherwise reaches MAX_PATH before exercising diagnostic truncation.
+    root = Path("\\\\?\\" + str(tmp_path)) if sys.platform == "win32" else tmp_path
+    source = root / "src"
+    source.mkdir()
+    write_release_manifest(root, revision="a" * 40)
+    for index in range(20):
+        (source / (f"{index:02d}_ç" + "x" * 165 + ".py")).write_text(
+            "synthetic private content\n", encoding="utf-8"
+        )
+    with pytest.raises(ReleaseIdentityError) as failure:
+        get_release_info(root)
+    detail_text = str(failure.value).split(". ", 1)[1]
+    assert detail_text.isascii()
+    detail = json.loads(detail_text)
+    assert len(detail["adicionados"]) == 12
+    assert all(len(name) <= 160 for name in detail["adicionados"])
+    assert "synthetic private content" not in str(failure.value)

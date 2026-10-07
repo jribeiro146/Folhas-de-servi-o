@@ -1,4 +1,4 @@
-# Contexto da segunda revisão da identificação de versão
+# Contexto das revisões da identificação de versão
 
 A primeira revisão Claude do commit `49ffbf7` pediu três ajustes: logging estruturado da falha do worker, ensaios da recusa nos pontos de entrada e diagnóstico de ficheiros divergentes. A retificação mantém o âmbito de identidade/manifesto; o contrato dos dados e o build Docker final continuam separados.
 
@@ -19,3 +19,11 @@ Os templates usam `asset_version` como parâmetro de URL em `url_for`; não faze
 Os caminhos operacionais normais são exteriores a `src`: cache/edição/SADI/finalização sob diretórios configurados de dados, logs sob `FS_APP_DATA_DIR/logs`, PDFs junto ao arquivo e temporários do navegador em diretório temporário. `document_style_service` só lê os recursos estáticos; não os reescreve. A escrita de observações internas na web ocorre junto ao Excel recebido do serviço de ficheiros, não em recursos estáticos. Uma configuração administrativa que aponte dados/PDF/logs para o código é inválida; a validação final de configuração deve recusá-la. Esta identificação não afirma impedir toda a configuração errada, mas uma alteração posterior em src deixa o manifesto divergente.
 
 O Dockerfile copia `src`, a entrada WSGI e os requisitos de servidor/smoke. `.dockerignore` exclui caches Python e dados operacionais. O manifesto será criado dentro do artefacto a partir dos ficheiros efetivamente copiados quando a etapa Docker for implementada. Não estamos a reutilizar entre plataformas um manifesto de uma árvore com ficheiros extra não entregues. Ainda não houve execução Docker/Linux neste computador.
+
+## Retificação para a terceira ronda
+
+A segunda revisão confirmou os ajustes anteriores e detetou o risco de manifesto ignorado num checkout em desenvolvimento. O CLI passa a exigir `--root`; a API de escrita também recusa `.git` (diretório ou ficheiro de worktree), antes de escrever. O exemplo da documentação usa uma cópia de staging e explica a recuperação de um manifesto obsoleto apenas no desenvolvimento. Três testes por subprocesso reproduziram a falha e passaram após a correção; usam uma cópia sintética do comando/módulo para não escrever no checkout real mesmo na fase vermelha.
+
+O guia existente `docs/IMPLEMENTACAO_SERVIDOR.md` já prescreve Python 3.13 preferencial ou 3.12 sujeito a ensaio. Docker e CI usam 3.13. Não temos evidência da versão atual de todo o servidor; confirmar antes da instalação continua a ser requisito da entrega. Foi acrescentada recusa controlada antes de usar `Path.is_junction`, para que versões abaixo de 3.12 indiquem a versão necessária. O teste simula `sys.version_info`; não é uma execução em Python 3.12. Esta limitação não altera o comportamento nos runtimes suportados. Não foi feito deploy.
+
+Foram também executados os dois ensaios adicionais sugeridos: uma junção real Windows para diretório sintético é recusada (e o alvo conserva-se após retirar apenas a junção); vinte nomes longos com caracteres não ASCII produzem no diagnóstico apenas doze nomes truncados a 160 caracteres, escapados como ASCII. O teste de symlink continua explicitamente ignorado por falta de privilégio no Windows. No teste de nomes longos usa-se o prefixo Windows de caminhos extensos para não atingir MAX_PATH antes do comportamento sob teste; o nome cabe no limite em bytes de Linux.
