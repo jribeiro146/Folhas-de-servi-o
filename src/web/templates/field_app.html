@@ -37,6 +37,7 @@
             </div>
 
             <div class="sidebar-tools">
+                {% if special_admin %}<a class="btn btn-secondary" href="{{ url_for('admin.panel') }}">Administração operacional</a>{% endif %}
                 <input id="file-search" type="search" placeholder="Procurar folha..." autocomplete="off">
                 <button id="btn-refresh" class="btn btn-secondary" type="button">Atualizar</button>
                 <button class="btn btn-secondary pwa-install-button" type="button" data-pwa-install hidden>

@@ -63,6 +63,7 @@ const startEditingCoordinator = () => {
 
     let editing = {};
     let sessionToken = "";
+    let revoked = false;
     let dirty = false;
     let hydrating = false;
     let readOnly = true;
@@ -275,6 +276,7 @@ const startEditingCoordinator = () => {
     const hasActiveSession = () => Boolean(
         initialized
         && !readOnly
+        && !revoked
         && !otherTabActive
         && !resumeConflictPending
         && editing.document_id
@@ -318,6 +320,19 @@ const startEditingCoordinator = () => {
     };
 
     const handleConflict = (result) => {
+        if (result?.code === "lease_revoked") {
+            if (dirty) persistLocalRecovery({ force: true });
+            revoked = true;
+            sessionToken = "";
+            window.clearTimeout(serverSaveTimer);
+            window.clearTimeout(retryTimer);
+            setFormReadOnly(true);
+            setCommitActionsEnabled(false);
+            if (lockTitle) lockTitle.textContent = "Edição encerrada pelo administrador";
+            if (lockMessage) lockMessage.textContent = "Mantenha esta página aberta se tiver alterações por guardar. Peça a reposição do acesso antes de voltar a editar.";
+            setAutosaveStatus("Acesso de edição retirado pelo administrador", "conflict");
+            return true;
+        }
         if (["editing_session_required", "lease_required"].includes(result?.code)) {
             editing = { ...editing, ...(result.editing || {}) };
             sessionToken = "";
@@ -499,6 +514,7 @@ const startEditingCoordinator = () => {
     };
 
     const resumeEditingSession = async () => {
+        if (revoked) return false;
         if (hasActiveSession()) return true;
         if (
             !initialized
@@ -558,6 +574,7 @@ const startEditingCoordinator = () => {
                 return hasActiveSession();
             } catch (error) {
                 const result = error.result || {};
+                if (handleConflict(result)) return false;
                 editing = { ...editing, ...(result.editing || {}) };
                 sessionToken = "";
                 if (error.status === 423) {
@@ -660,6 +677,7 @@ const startEditingCoordinator = () => {
             }
             initialized = true;
             setBooting(false);
+            if (handleConflict(result)) return;
             if (error.status === 423) {
                 setFormReadOnly(true, result.editing?.owner?.owner_name);
                 setAutosaveStatus("Modo de consulta — rascunho de outro técnico", "conflict");
@@ -885,6 +903,20 @@ const startEditingCoordinator = () => {
     };
 
     initialize();
+    const leaseHeartbeatTimer = window.setInterval(async () => {
+        if (revoked || document.hidden || !sessionToken || !editing.document_id) return;
+        try {
+            const response = await fetch("/api/file/" + encodeURIComponent(activeFileName) + "/lease/heartbeat", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ document_id: editing.document_id, client_id: clientId, lease_token: sessionToken })
+            });
+            const result = await response.json();
+            if (!response.ok) handleConflict(result);
+        } catch (_) {
+            // Local recovery remains available while disconnected.
+        }
+    }, 15000);
+    leaseHeartbeatTimer?.unref?.();
     return true;
 };
 

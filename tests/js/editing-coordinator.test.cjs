@@ -165,4 +165,10 @@ test("reacquires editing metadata after the page is frozen and resumed", async (
     assert.equal(resumedMetadata.lease_token, "lease-2");
     assert.equal(resumedMetadata.base_revision, 2);
     assert.ok(resumedMetadata.idempotency_key);
+    assert.equal(window.__EDITING_COORDINATOR__.handleConflict({ code: "lease_revoked" }), true);
+    assert.equal(getElement("btn-save-draft").disabled, true);
+    await assert.rejects(window.__EDITING_COORDINATOR__.prepareOperation("send"), /sessão de edição ainda não está pronta/i);
+    await windowListeners.get("online")();
+    assert.equal(bootstrapRequests, 2, "revoked editor must not automatically reacquire the sheet");
+    assert.match(getElement("editing-lock-title").textContent, /administrador/i);
 });

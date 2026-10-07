@@ -16,6 +16,7 @@ from typing import Any, Iterator
 from src.config import APP_DATA_DIR
 from src.services.editing_state_repository import SqliteStateRepository
 from src.services.file_mutex import FileMutexBusy, file_mutex
+from src.services.admin_access import can_administer
 
 
 EDIT_METADATA_NAME = ".fs_edit.json"
@@ -58,6 +59,13 @@ class RevisionConflictError(EditingStateError):
     def __init__(self, snapshot: dict[str, Any]):
         super().__init__("A folha foi alterada desde a última leitura.")
         self.snapshot = snapshot
+
+
+class EditingSessionRevokedError(EditingStateError):
+    """A removed editor cannot automatically reacquire this document."""
+
+    def __init__(self):
+        super().__init__("A edição desta folha foi encerrada pelo administrador. Peça a reposição do acesso.")
 
 
 class OperationInProgressError(EditingStateError):
@@ -214,6 +222,8 @@ class EditingStateService:
         with self._state_transaction(document_id, path=file_path) as state:
             state["workspace_kind"] = workspace_kind
             self._normalize_sessions(state, now)
+            if identity.id in (state.get("admin_blocked_users") or {}):
+                raise EditingSessionRevokedError()
             owner = state.get("owner")
             if owner and owner.get("owner_id") != identity.id and not allow_foreign_owner:
                 raise LeaseConflictError(self._public_snapshot(state, now=now))
@@ -296,6 +306,83 @@ class EditingStateService:
                     state["sessions"].pop(token, None)
                 released += len(matching)
         return released
+
+    @staticmethod
+    def _admin_lock_version(state):
+        evidence = [state.get("revision"), state.get("owner"),
+                    sorted((state.get("sessions") or {}).keys()),
+                    sorted((state.get("admin_blocked_users") or {}).keys()),
+                    [(key, op.get("status")) for key, op in sorted((state.get("operations") or {}).items())]]
+        return hashlib.sha256(json.dumps(evidence, sort_keys=True).encode()).hexdigest()
+
+    def admin_documents(self):
+        with self.repository._connect() as connection:
+            rows = connection.execute("SELECT document_id,state_json FROM editing_states ORDER BY updated_at DESC").fetchall()
+        documents = []
+        for row in rows:
+            try:
+                state = json.loads(row["state_json"])
+                if not isinstance(state, dict) or not state.get("document_id"):
+                    continue
+                self._normalize_sessions(state)
+                if state.get("closed_by_operation"):
+                    continue
+                if not (state.get("owner") or state.get("sessions") or state.get("admin_blocked_users")):
+                    continue
+                sessions = list((state.get("sessions") or {}).values())
+                documents.append({
+                    "document_id": row["document_id"], "name": (state.get("aliases") or [state.get("original_name") or row["document_id"]])[-1],
+                    "owner": state.get("owner"), "session_count": len(sessions),
+                    "last_seen_at": max((s.get("last_seen_at", 0) for s in sessions), default=None),
+                    "autosaved_at": (state.get("autosave") or {}).get("updated_at"),
+                    "revision": int(state.get("revision") or 1), "workspace_kind": state.get("workspace_kind"),
+                    "pending_operation": self._has_pending_operation(state),
+                    "blocked_users": [{"id": key, "name": value.get("name") or key}
+                                      for key, value in (state.get("admin_blocked_users") or {}).items()],
+                    "lock_version": self._admin_lock_version(state),
+                })
+            except (TypeError, ValueError, AttributeError):
+                continue
+        return documents
+
+    def admin_change_access(self, document_id, actor, reason, expected_version, *, restore_user=None):
+        if not can_administer(actor):
+            raise PermissionError("Acesso reservado ao administrador.")
+        if not isinstance(reason, str) or not 3 <= len(reason.strip()) <= 400:
+            raise ValueError("Indique um motivo entre 3 e 400 caracteres.")
+        audit = {"actor_email": actor.email.strip().casefold(),
+                 "action": "restore_sheet_access" if restore_user else "release_sheet",
+                 "target": document_id, "reason": reason.strip(), "details": {}}
+        lock_id = hashlib.sha256(document_id.encode("utf-8")).hexdigest()
+        try:
+            with file_mutex(self.root / "operation-locks" / lock_id):
+                with self._state_transaction(document_id, audit=audit, must_exist=True) as state:
+                    if not expected_version or not secrets.compare_digest(expected_version, self._admin_lock_version(state)):
+                        raise RevisionConflictError(self._public_snapshot(state))
+                    if state.get("closed_by_operation"):
+                        raise EditingStateError("A folha já foi finalizada ou cancelada.")
+                    self._assert_no_pending_operation(state)
+                    blocked = state.setdefault("admin_blocked_users", {})
+                    if restore_user:
+                        if restore_user not in blocked:
+                            raise ValueError("Este utilizador não está bloqueado nesta folha.")
+                        blocked.pop(restore_user)
+                        audit["details"] = {"restored_user": restore_user}
+                    else:
+                        owners = {s["owner_id"]: s.get("owner_name") for s in state.get("sessions", {}).values()}
+                        if state.get("owner"):
+                            owners[state["owner"]["owner_id"]] = state["owner"].get("owner_name")
+                        for owner_id, name in owners.items():
+                            blocked[owner_id] = {"name": name, "at": time.time()}
+                        audit["details"] = {"released_sessions": len(state.get("sessions") or {}), "previous_owner": state.get("owner")}
+                        state["sessions"] = {}
+                        state["owner"] = None
+                        state["lease"] = None
+                        state["revision"] = int(state.get("revision") or 1) + 1
+                        state["etag"] = self._etag(state)
+                    return {"document_id": document_id, "revision": state["revision"], **audit["details"]}
+        except FileMutexBusy as exc:
+            raise OperationInProgressError("Existe uma gravação em curso. Aguarde antes de libertar a folha.") from exc
 
     def save_autosave(
         self,
@@ -539,11 +626,13 @@ class EditingStateService:
         document_id: str,
         *,
         path: Path | None = None,
+        audit: dict[str, Any] | None = None, must_exist: bool = False,
     ) -> Iterator[dict[str, Any]]:
         legacy_path = self._state_path(document_id)
         with self.repository.transaction(
             document_id,
             lambda: self._read_state(legacy_path, document_id),
+            audit=audit, must_exist=must_exist,
         ) as state:
             self._normalize_state(state)
             if path is not None:
@@ -602,6 +691,8 @@ class EditingStateService:
         now: float,
     ) -> dict[str, Any]:
         self._normalize_sessions(state, now)
+        if identity.id in (state.get("admin_blocked_users") or {}):
+            raise EditingSessionRevokedError()
         session = (state.get("sessions") or {}).get(lease_token)
         if not session or not self._session_matches(session, identity, client_id, lease_token):
             raise LeaseRequiredError(self._public_snapshot(state, now=now))
@@ -631,6 +722,8 @@ class EditingStateService:
                 # Holding the OS lock proves a previous endpoint is no longer
                 # writing, even if its process died before updating SQLite.
                 with self._state_transaction(document_id) as state:
+                    if identity.id in (state.get("admin_blocked_users") or {}):
+                        raise EditingSessionRevokedError()
                     owner = state.get("owner") or {}
                     if owner.get("owner_id") not in {None, identity.id} and not allow_foreign_owner:
                         raise LeaseConflictError(self._public_snapshot(state))

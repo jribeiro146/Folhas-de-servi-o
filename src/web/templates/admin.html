@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="pt-PT">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Administração operacional · Sensorpoint</title>
+<link rel="icon" href="{{ url_for('static', filename='img/pwa/icon-192.png', v=asset_version) }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css', v=asset_version) }}">
+<script src="{{ url_for('static', filename='js/admin.js', v=asset_version) }}" defer></script></head>
+<body data-admin-csrf="{{ admin_csrf }}"><main>
+<header><div><p class="eyebrow">Sensorpoint · Administrador</p><h1>Resolver reservas e publicações</h1></div><a href="{{ url_for('index') }}">Voltar às folhas</a></header>
+<p>Libertar uma folha termina as suas sessões e impede a reentrada dos técnicos expulsos nessa folha até repor o acesso. As gravações guardadas são preservadas. Alterações ainda apenas no dispositivo não são transferidas pelo desbloqueio; peça ao técnico para as guardar antes de intervir.</p>
+<div class="toolbar"><button id="admin-reload" type="button">Atualizar diagnóstico</button><button id="admin-refresh" type="button" hidden>Pedir atualização do SharePoint</button></div>
+<p id="admin-status" role="status" aria-live="polite">A carregar…</p>
+<p id="admin-graph" class="muted"></p>
+<p id="admin-queue-status" class="muted"></p>
+<section><h2>Reservas de edição</h2><div id="admin-documents"></div></section>
+<section><h2>Trabalhos pendentes ou falhados</h2><p>Últimos 100 trabalhos. Envios incertos e dados inválidos exigem revisão; este painel não permite contornar essas proteções.</p><div id="admin-jobs"></div></section>
+<section><h2>Histórico de intervenções</h2><p>Últimas 100 ações, com autor, hora e motivo.</p><div id="admin-audit"></div></section>
+</main>
+<dialog id="admin-confirm"><form id="admin-action-form"><h2 id="admin-action-title">Confirmar intervenção</h2><p id="admin-action-detail"></p><label for="admin-reason">Motivo obrigatório</label><textarea id="admin-reason" minlength="3" maxlength="400" required rows="3"></textarea><p id="admin-action-error" role="alert"></p><div class="toolbar"><button id="admin-cancel" type="button">Cancelar</button><button id="admin-submit" type="submit">Confirmar</button></div></form></dialog>
+</body></html>

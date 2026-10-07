@@ -66,6 +66,7 @@ from src.services.file_mutex import FileMutexBusy
 from src.services.document_artifact_service import DocumentArtifactService
 from src.services.document_data_service import DocumentDataService
 from src.services.editing_state_service import (
+    EditingSessionRevokedError,
     EditingStateError,
     EditingSessionMetadataError,
     EditingStateService,
@@ -372,6 +373,8 @@ def create_app(
                 "error": str(error),
                 "code": "editing_session_required",
             }), 409
+        if isinstance(error, EditingSessionRevokedError):
+            return jsonify({"success": False, "error": str(error), "code": "lease_revoked"}), 423
         if isinstance(error, LeaseConflictError):
             return jsonify({
                 "success": False,
@@ -2234,6 +2237,9 @@ def create_app(
             )
             return json_error(str(exc), 500)
 
+    from src.web.admin import register_admin
+    register_admin(app, editing_state_service, graph_sync_queue, graph_refresh_coordinator,
+                   lambda: AUTH_ENABLED and ACTIVE_AUTH_PROVIDER == "microsoft")
     return app
 
 

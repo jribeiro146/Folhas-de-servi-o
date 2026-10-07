@@ -40,3 +40,32 @@ Notas de consistencia:
 - Dados locais, `.env`, Excels operacionais, releases geradas e caches nao fazem parte da versao limpa.
 - Para servidor Linux/Plesk/Docker usar `requirements-server.txt`.
 - Os logs operacionais ficam em `FS_APP_DATA_DIR/logs`, fora do codigo e do document root.
+
+## Administração operacional
+
+A conta Microsoft autenticada `jribeiro@sensorpoint.pt` recebe o papel
+`special_admin`, calculado no servidor pelo endereço completo. O acesso SADI
+existente mantém-se. Abrir **Administração operacional** na barra lateral ou
+`/admin` para consultar reservas, gravações automáticas, fila e histórico.
+
+**Expulsar e libertar** revoga as sessões e a propriedade da folha e impede a
+reentrada dos utilizadores expulsos nessa folha até **Repor acesso**. A restauração
+não recupera tokens antigos nem retira a reserva de outro técnico. Mesmo uma aba
+antiga do administrador fica revogada; o seu acesso ao painel permanece disponível.
+As gravações no servidor são preservadas. Alterações ainda só no dispositivo não
+são transferidas pelo desbloqueio: contactar o técnico antes de intervir.
+
+O browser verifica a sessão a cada 15 segundos quando está visível. Escritas com
+uma sessão revogada são recusadas imediatamente no servidor. Cada intervenção
+exige motivo e CSRF; a libertação e a auditoria são uma transação SQLite conjunta.
+Uma lista desatualizada, uma escrita ou finalização em curso impedem a libertação.
+
+O painel permite repetir falhas conhecidas e paradas e pedir atualização Graph.
+Envios incertos, resultados sem comprovativo e dados inválidos continuam retidos
+para revisão. Não há alterações às permissões Entra, às credenciais ou aos dados
+comerciais. O painel não funciona sem autenticação Microsoft e não divulga tokens
+de edição nem conteúdo dos autosaves. A tabela `admin_actions` integra o backup
+de `editing-state.sqlite3` e é criada no primeiro arranque.
+
+A implementação foi aplicada também ao pacote de migração, preservando o perfil
+de demonstração. Não houve deploy, reinício operacional ou envio real.

@@ -6,6 +6,7 @@ import base64
 import json
 from dataclasses import dataclass
 from typing import Any
+from src.services.admin_access import account_role
 from urllib import error, parse, request
 
 from src.config import (
@@ -119,6 +120,7 @@ class MicrosoftAuthService:
             initials=self._initials_from_name(display_name or email),
             display_name=display_name or email,
             email=email,
+            role=account_role(email),
         )
 
     def user_from_session(self, payload: dict[str, Any] | None) -> MicrosoftAuthUser | None:
@@ -131,7 +133,7 @@ class MicrosoftAuthService:
                 initials=str(payload.get("initials") or ""),
                 display_name=str(payload["display_name"]),
                 email=str(payload["email"]),
-                role=str(payload.get("role") or "technician"),
+                role=account_role(str(payload["email"])),
             )
         except (KeyError, TypeError, ValueError):
             return None

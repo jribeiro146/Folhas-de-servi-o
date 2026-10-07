@@ -49,6 +49,14 @@ class SqliteStateRepository:
                         )
                         """
                     )
+                    connection.execute(
+                        """CREATE TABLE IF NOT EXISTS admin_actions (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            actor_email TEXT NOT NULL, action TEXT NOT NULL,
+                            target TEXT NOT NULL, reason TEXT NOT NULL,
+                            details_json TEXT NOT NULL, created_at REAL NOT NULL
+                        )"""
+                    )
                 return
             except sqlite3.OperationalError as exc:
                 if "locked" not in str(exc).casefold() or time.monotonic() >= deadline:
@@ -60,6 +68,7 @@ class SqliteStateRepository:
         self,
         document_id: str,
         factory: Callable[[], dict[str, Any]],
+        *, audit: dict[str, Any] | None = None, must_exist: bool = False,
     ) -> Iterator[dict[str, Any]]:
         connection = self._connect()
         try:
@@ -68,6 +77,8 @@ class SqliteStateRepository:
                 "SELECT state_json FROM editing_states WHERE document_id = ?",
                 (document_id,),
             ).fetchone()
+            if row is None and must_exist:
+                raise KeyError(document_id)
             state = self._decode(row["state_json"]) if row else factory()
             yield state
             connection.execute(
@@ -84,6 +95,8 @@ class SqliteStateRepository:
                     time.time(),
                 ),
             )
+            if audit is not None:
+                self._insert_audit(connection, audit)
             connection.commit()
         except Exception:
             connection.rollback()
@@ -97,6 +110,23 @@ class SqliteStateRepository:
                 "SELECT document_id FROM editing_states ORDER BY document_id"
             ).fetchall()
         return [str(row["document_id"]) for row in rows]
+
+    @staticmethod
+    def _insert_audit(connection, audit):
+        connection.execute(
+            "INSERT INTO admin_actions(actor_email,action,target,reason,details_json,created_at) VALUES(?,?,?,?,?,?)",
+            (audit["actor_email"], audit["action"], audit["target"], audit["reason"],
+             json.dumps(audit.get("details") or {}, ensure_ascii=False), time.time()),
+        )
+
+    def record_admin_action(self, audit):
+        with self._connect() as connection:
+            self._insert_audit(connection, audit)
+
+    def admin_history(self, limit=100):
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM admin_actions ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [{**dict(row), "details": json.loads(row["details_json"])} for row in rows]
 
     def _import_legacy_states(self, legacy_root: Path) -> None:
         """Import old JSON aggregates once without deleting recovery files."""
