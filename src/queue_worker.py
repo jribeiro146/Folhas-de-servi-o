@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+from pathlib import Path
 
 from src.config import (
     APP_DATA_DIR,
@@ -24,9 +25,9 @@ from src.services.release_identity import get_release_info
 LOGGER = logging.getLogger(__name__)
 
 
-def build_queue() -> GraphSyncQueue:
+def build_queue(*, release_root: Path | None = None) -> GraphSyncQueue:
     """Cria a mesma fila da webapp sem arrancar threads dentro do WSGI."""
-    release_info = get_release_info()
+    release_info = get_release_info(release_root)
     graph_service = GraphStorageService() if STORAGE_BACKEND == "graph" else None
     mail_service = GraphMailService() if MAIL_ENABLED else None
     local_pdf_service = (
@@ -62,7 +63,7 @@ def process_once(queue: GraphSyncQueue | None = None) -> dict[str, object]:
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None, *, release_root: Path | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--watch",
@@ -75,22 +76,21 @@ def main() -> int:
         default=5.0,
         help="Segundos entre verificacoes no modo --watch (predefinido: 5).",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     configure_logging("worker")
-    release_info = get_release_info()
-    log_event(
-        LOGGER,
-        logging.INFO,
-        "Worker da fila iniciado.",
-        event="queue_worker_started",
-        source_revision=release_info["revision"],
-        source_sha256=release_info["source_sha256"],
-        watch=args.watch,
-        interval_seconds=max(args.interval, 1.0),
-    )
     try:
-        queue = build_queue()
+        queue = build_queue(release_root=release_root)
+        log_event(
+            LOGGER,
+            logging.INFO,
+            "Worker da fila iniciado.",
+            event="queue_worker_started",
+            source_revision=queue.release_info["revision"],
+            source_sha256=queue.release_info["source_sha256"],
+            watch=args.watch,
+            interval_seconds=max(args.interval, 1.0),
+        )
         while True:
             result = process_once(queue)
             has_activity = (

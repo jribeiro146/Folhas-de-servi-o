@@ -144,10 +144,11 @@ def create_app(
     teams_notification_service: TeamsNotificationService | None = None,
     work_folder_service: WorkFolderService | None = None,
     test_editor_identity: EditorIdentity | None = None,
+    release_root: Path | None = None,
 ) -> Flask:
     """Cria a aplicação Flask com dependências injetáveis para testes."""
     app = Flask(__name__, template_folder="templates", static_folder="static")
-    app.config["RELEASE_INFO"] = get_release_info()
+    app.config["RELEASE_INFO"] = get_release_info(release_root)
     app.config["ASSET_VERSION"] = app.config["RELEASE_INFO"]["source_sha256"][:16]
     app.config["SYNTHETIC_TEST_VERSION"] = runtime_mode() == "test" and os.environ.get("FS_TEST_SYNTHETIC") == "true"
     # Demo only: no operational queues or transports may be attached to this feature.

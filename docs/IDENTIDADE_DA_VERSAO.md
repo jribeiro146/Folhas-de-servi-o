@@ -14,4 +14,6 @@ O comando grava `release-manifest.json` na raiz do artefacto. O SHA Git é forne
 
 Com manifesto, web e worker recusam arrancar se o conteúdo atual divergir (por exemplo, uma montagem `src` de outra versão). Sem manifesto, um checkout de desenvolvimento apresenta `revision=working-tree` e `verified=false`; isso não é uma release certificada. `verified` significa apenas que os ficheiros correspondem ao manifesto, não assinatura criptográfica de um fornecedor.
 
+O manifesto guarda também hashes por ficheiro. Uma divergência indica caminhos relativos acrescentados, removidos e alterados, sem conteúdo dos ficheiros e com limites de tamanho no diagnóstico. O worker regista a falha no evento estruturado `queue_worker_failed`. **Não regenerar o manifesto no servidor para esconder uma divergência:** reinstalar o artefacto correto ou corrigir a montagem e verificar de novo. A geração pertence à preparação de um artefacto fixo e revisto.
+
 Esta alteração identifica o conteúdo no arranque. Não deteta uma edição manual posterior dos ficheiros num processo já aberto e ainda não é o contrato de compatibilidade das bases/fila. Não editar código de um processo em execução; a atualização requer artefacto fixo e reinício coordenado. O controlo de formatos persistentes e as condições finais de readiness serão implementados nas etapas seguintes.
