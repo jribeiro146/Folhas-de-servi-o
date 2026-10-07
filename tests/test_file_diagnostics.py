@@ -28,6 +28,65 @@ def events(caplog, event):
     return [r.event_fields for r in caplog.records if getattr(r, "event", None) == event]
 
 
+@pytest.mark.parametrize("failure, expected_code", [("metadata", "editing_session_required"), ("document", "document_invalid"), ("attachments", "attachments_invalid")])
+def test_rejected_requests_record_sheet_and_category_without_private_content(local_dir, monkeypatch, caplog, failure, expected_code):
+    import src.web.application as web
+    from src.services.excel_service import ExcelValidationError
+    from src.services.photo_attachment_service import PhotoAttachmentError
+
+    monkeypatch.setattr(web, "LOG_REQUESTS", True)
+    caplog.set_level(logging.INFO)
+    private_detail = "synthetic-secret-content <email-private>"
+    if failure != "metadata":
+        error = ExcelValidationError if failure == "document" else PhotoAttachmentError
+
+        def reject(_files):
+            raise error(private_detail)
+
+        monkeypatch.setattr(web.PhotoAttachmentService, "prepare_uploads", reject)
+    name = "2026_9991 Cliente Confidencial"
+    (local_dir / f"{name}.xlsx").write_bytes(b"synthetic")
+    app = web.create_app(file_service=FileService(local_dir, require_remote_index=False))
+    endpoint = "send" if failure == "metadata" else "draft"
+    response = app.test_client().post(f"/api/file/{name}/{endpoint}", json={"customer_name":private_detail})
+    assert response.status_code == (409 if failure == "metadata" else 400)
+    record = events(caplog, "http_request_completed")[-1]
+    assert record["error_code"] == expected_code
+    assert record["sheet_number"] == "2026_9991"
+    assert record["file_ref"] == file_fields(name)["file_ref"]
+    output = "\n".join(JsonLogFormatter().format(r) for r in caplog.records)
+    assert private_detail not in output
+    assert "Cliente Confidencial" not in output
+    assert str(local_dir) not in output
+
+
+def test_send_validation_records_counts_without_logging_field_values(local_dir, monkeypatch, caplog):
+    import shutil
+    import src.web.application as web
+
+    monkeypatch.setattr(web, "LOG_REQUESTS", True)
+    caplog.set_level(logging.INFO)
+    name = "2026_9992_2026-10-07_QA"
+    shutil.copy2(Path(__file__).parent / "fixtures" / "test_sample.xlsx", local_dir / f"{name}.xlsx")
+    client = web.create_app(file_service=FileService(local_dir, require_remote_index=False)).test_client()
+    editing = client.get(f"/api/file/{name}/bootstrap?client_id=synthetic-validation").get_json()["editing"]
+    caplog.clear()
+    response = client.post(f"/api/file/{name}/send", json={
+        "customer_name": "Private synthetic customer",
+        "_edit": {"document_id":editing["document_id"], "client_id":"synthetic-validation",
+                  "lease_token":editing["lease"]["token"], "base_revision":editing["revision"],
+                  "idempotency_key":"synthetic-validation"},
+    })
+    assert response.status_code == 400
+    record = events(caplog, "http_request_completed")[-1]
+    assert record["error_code"] == "missing_fields"
+    assert record["missing_fields_count"] == len(response.get_json()["missing_fields"])
+    assert record["sheet_number"] == "2026_9992"
+    output = "\n".join(JsonLogFormatter().format(r) for r in caplog.records)
+    assert "Private synthetic customer" not in output
+    assert editing["lease"]["token"] not in output
+
+
 def test_missing_and_alternate_extension_are_private(local_dir, caplog):
     from src.web.application import create_app
 

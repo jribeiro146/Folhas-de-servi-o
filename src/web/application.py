@@ -264,6 +264,21 @@ def create_app(
                 )
             else:
                 level = logging.DEBUG if endpoint in QUIET_HTTP_ENDPOINTS else logging.INFO
+            rejection = {}
+            if status_code >= 400:
+                name = (request.view_args or {}).get("name")
+                if name:
+                    rejection.update(file_fields(name))
+                payload = response.get_json(silent=True) if response.is_json else None
+                payload = payload if isinstance(payload, dict) else {}
+                code = g.get("response_error_code") or payload.get("code")
+                for field in ("missing_fields", "invalid_fields"):
+                    if isinstance(payload.get(field), list):
+                        rejection[field + "_count"] = len(payload[field])
+                        if payload[field] and not code:
+                            code = field
+                if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,64}", code):
+                    rejection["error_code"] = code
             log_event(
                 app.logger,
                 level,
@@ -272,6 +287,7 @@ def create_app(
                 endpoint=endpoint,
                 status_code=status_code,
                 duration_ms=duration_ms,
+                **rejection,
             )
         return response
 
@@ -300,7 +316,8 @@ def create_app(
             response.headers["Expires"] = "0"
         return response
 
-    def json_error(message: str, status: int = 400):
+    def json_error(message: str, status: int = 400, *, code: str | None = None):
+        g.response_error_code = code or "request_rejected"
         return jsonify({"success": False, "error": message}), status
 
     def retire_committed_source(document_id, operation_id, context):
@@ -402,7 +419,7 @@ def create_app(
                 "error": str(error),
                 "code": "operation_in_progress",
             }), 409
-        return json_error(str(error), 400)
+        return json_error(str(error), 400, code="editing_state_invalid")
 
     def extract_edit_metadata(
         payload: dict[str, object],
@@ -1302,7 +1319,7 @@ def create_app(
         except EditingStateError as exc:
             return editing_error_response(exc)
         except ExcelValidationError as exc:
-            return json_error(str(exc), 400)
+            return json_error(str(exc), 400, code="document_invalid")
         except Exception as exc:
             log_event(
                 app.logger,
@@ -1345,7 +1362,7 @@ def create_app(
                 "editing": editing,
             })
         except ExcelValidationError as exc:
-            return json_error(str(exc), 400)
+            return json_error(str(exc), 400, code="document_invalid")
         except Exception as exc:
             log_event(
                 app.logger,
@@ -1713,7 +1730,7 @@ def create_app(
         except PhotoAttachmentError as exc:
             if document_id and idempotency_key:
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
-            return json_error(str(exc), 400)
+            return json_error(str(exc), 400, code="attachments_invalid")
         except EditingStateError as exc:
             return editing_error_response(exc)
         except GraphConflictError as exc:
@@ -1728,7 +1745,7 @@ def create_app(
         except ExcelValidationError as exc:
             if document_id and idempotency_key:
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
-            return json_error(str(exc), 400)
+            return json_error(str(exc), 400, code="document_invalid")
         except Exception as exc:
             if document_id and idempotency_key:
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
@@ -1869,7 +1886,7 @@ def create_app(
                 except GraphMailConfigurationError as exc:
                     return json_error(str(exc), 503)
                 except GraphMailError as exc:
-                    return json_error(str(exc), 400)
+                    return json_error(str(exc), 400, code="mail_validation_failed")
 
                 try:
                     mail_service.test_connection()
@@ -2072,7 +2089,7 @@ def create_app(
         except PhotoAttachmentError as exc:
             if document_id and idempotency_key:
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
-            return json_error(str(exc), 400)
+            return json_error(str(exc), 400, code="attachments_invalid")
         except EditingStateError as exc:
             return editing_error_response(exc)
         except GraphConflictError as exc:
@@ -2087,7 +2104,7 @@ def create_app(
         except ExcelValidationError as exc:
             if document_id and idempotency_key:
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
-            return json_error(str(exc), 400)
+            return json_error(str(exc), 400, code="document_invalid")
         except Exception as exc:
             if document_id and idempotency_key:
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))

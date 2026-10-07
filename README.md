@@ -77,3 +77,21 @@ rota sem estes requisitos devem passar a usar o painel administrativo.
 
 A implementação foi aplicada também ao pacote de migração, preservando o perfil
 de demonstração. Não houve deploy, reinício operacional ou envio real.
+
+## Revisão da sincronização de 07/10/2026
+
+O log recebido confirma erros 500 quando um refresh retira um Excel entre a
+enumeração e a leitura do resumo. A listagem tolera agora essa remoção, volta a
+conferir o inventário antes da resposta e preserva os outros ficheiros. Permissões
+inválidas e Excel existentes mas inválidos não são tratados como remoções.
+
+Quando a espera da interface excede 20 segundos, consulta-se ainda a lista do
+último inventário, preservando o formulário aberto e o aviso de confirmação
+pendente. Este caso foi reproduzido em teste; os refreshes do log recebido foram
+inferiores a quatro segundos, pelo que não explicam esses incidentes específicos.
+
+Com `FS_LOG_REQUESTS=true`, recusas passam a incluir número de folha, referência
+anónima, código de erro e contagens de campos em falta/inválidos, quando disponíveis.
+Não são registados valores do documento, nomes de clientes, anexos ou tokens.
+Os HTTP 400 históricos de rascunho/envio ainda exigem a mensagem vista pelo técnico.
+Estas alterações locais não confirmam uma instalação ou correção no servidor.
