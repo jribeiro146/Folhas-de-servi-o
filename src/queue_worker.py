@@ -18,6 +18,7 @@ from src.services.graph_storage_service import GraphStorageService
 from src.services.graph_sync_queue import GraphSyncQueue
 from src.services.local_pdf_service import LocalPdfService
 from src.services.teams_notification_service import TeamsNotificationService
+from src.services.release_identity import get_release_info
 
 
 LOGGER = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ LOGGER = logging.getLogger(__name__)
 
 def build_queue() -> GraphSyncQueue:
     """Cria a mesma fila da webapp sem arrancar threads dentro do WSGI."""
+    release_info = get_release_info()
     graph_service = GraphStorageService() if STORAGE_BACKEND == "graph" else None
     mail_service = GraphMailService() if MAIL_ENABLED else None
     local_pdf_service = (
@@ -35,7 +37,7 @@ def build_queue() -> GraphSyncQueue:
         if TEAMS_NOTIFICATIONS_ENABLED and mail_service is not None
         else None
     )
-    return GraphSyncQueue(
+    queue = GraphSyncQueue(
         graph_service,
         APP_DATA_DIR / "graph-sync.sqlite3",
         mail_service=mail_service,
@@ -43,6 +45,8 @@ def build_queue() -> GraphSyncQueue:
         teams_notification_service=teams_notification_service,
         auto_start=False,
     )
+    queue.release_info = release_info
+    return queue
 
 
 def process_once(queue: GraphSyncQueue | None = None) -> dict[str, object]:
@@ -51,6 +55,7 @@ def process_once(queue: GraphSyncQueue | None = None) -> dict[str, object]:
     before = active_queue.summary()
     acquired = active_queue.run_until_idle()
     return {
+        "release": getattr(active_queue, "release_info", None),
         "worker_acquired": acquired,
         "before": before,
         "after": active_queue.summary(),
@@ -73,11 +78,14 @@ def main() -> int:
     args = parser.parse_args()
 
     configure_logging("worker")
+    release_info = get_release_info()
     log_event(
         LOGGER,
         logging.INFO,
         "Worker da fila iniciado.",
         event="queue_worker_started",
+        source_revision=release_info["revision"],
+        source_sha256=release_info["source_sha256"],
         watch=args.watch,
         interval_seconds=max(args.interval, 1.0),
     )

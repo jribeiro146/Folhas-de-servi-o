@@ -85,6 +85,7 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
                 rows = connection.execute("SELECT * FROM graph_sync_jobs WHERE status != 'complete' ORDER BY updated_at DESC LIMIT 100").fetchall()
             jobs = [safe_job(row) for row in rows]
         return jsonify(success=True, documents=editing.admin_documents(), jobs=jobs,
+                       release=app.config["RELEASE_INFO"],
                        queue_summary=queue.summary() if queue is not None else None,
                        refresh=refresh.status() if refresh is not None else None,
                        audit=editing.repository.admin_history())

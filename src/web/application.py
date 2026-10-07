@@ -61,6 +61,7 @@ from src.services.maintenance_access import can_access_maintenance
 from src.services.maintenance_private_service import MaintenancePrivateService
 from src.services.document_style_service import load_document_assets
 from src.services.runtime_safety import runtime_mode
+from src.services.release_identity import get_release_info
 from src.services.local_changes import bundle_guard, mark_dirty
 from src.services.file_mutex import FileMutexBusy
 from src.services.document_artifact_service import DocumentArtifactService
@@ -146,7 +147,8 @@ def create_app(
 ) -> Flask:
     """Cria a aplicação Flask com dependências injetáveis para testes."""
     app = Flask(__name__, template_folder="templates", static_folder="static")
-    app.config["ASSET_VERSION"] = dt.datetime.now().strftime("%Y%m%d%H%M%S")
+    app.config["RELEASE_INFO"] = get_release_info()
+    app.config["ASSET_VERSION"] = app.config["RELEASE_INFO"]["source_sha256"][:16]
     app.config["SYNTHETIC_TEST_VERSION"] = runtime_mode() == "test" and os.environ.get("FS_TEST_SYNTHETIC") == "true"
     # Demo only: no operational queues or transports may be attached to this feature.
     app.config["MAINTENANCE_DEMO"] = app.config["SYNTHETIC_TEST_VERSION"] and STORAGE_BACKEND == "local" and not any((MAIL_ENABLED, TEAMS_NOTIFICATIONS_ENABLED, GRAPH_QUEUE_IN_WEB, graph_service, mail_service, graph_sync_queue, teams_notification_service))
@@ -246,6 +248,7 @@ def create_app(
 
     @app.after_request
     def complete_request_logging(response):
+        response.headers["X-App-Version"] = app.config["RELEASE_INFO"]["source_sha256"]
         request_id = str(g.get("request_id") or "")
         if request_id:
             response.headers["X-Request-ID"] = request_id

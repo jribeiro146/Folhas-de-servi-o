@@ -1,4 +1,5 @@
 .env
+/release-manifest.json
 .codex_tmp/
 Aplicação/
 aplicação/
