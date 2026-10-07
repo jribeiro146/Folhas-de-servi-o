@@ -11,7 +11,7 @@ from src.services.release_identity import ReleaseIdentityError, write_release_ma
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, required=True, help="Staging copy of the artifact, without .git")
+    parser.add_argument("--root", type=Path, required=True, help="Staging copy outside any Git checkout")
     parser.add_argument("--revision", required=True, help="Full Git commit SHA from the release builder")
     args = parser.parse_args()
     try:

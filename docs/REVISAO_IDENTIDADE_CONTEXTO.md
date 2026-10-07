@@ -27,3 +27,15 @@ A segunda revisão confirmou os ajustes anteriores e detetou o risco de manifest
 O guia existente `docs/IMPLEMENTACAO_SERVIDOR.md` já prescreve Python 3.13 preferencial ou 3.12 sujeito a ensaio. Docker e CI usam 3.13. Não temos evidência da versão atual de todo o servidor; confirmar antes da instalação continua a ser requisito da entrega. Foi acrescentada recusa controlada antes de usar `Path.is_junction`, para que versões abaixo de 3.12 indiquem a versão necessária. O teste simula `sys.version_info`; não é uma execução em Python 3.12. Esta limitação não altera o comportamento nos runtimes suportados. Não foi feito deploy.
 
 Foram também executados os dois ensaios adicionais sugeridos: uma junção real Windows para diretório sintético é recusada (e o alvo conserva-se após retirar apenas a junção); vinte nomes longos com caracteres não ASCII produzem no diagnóstico apenas doze nomes truncados a 160 caracteres, escapados como ASCII. O teste de symlink continua explicitamente ignorado por falta de privilégio no Windows. No teste de nomes longos usa-se o prefixo Windows de caminhos extensos para não atingir MAX_PATH antes do comportamento sob teste; o nome cabe no limite em bytes de Linux.
+
+## Resultado da terceira ronda e correção local posterior
+
+O terceiro parecer, sobre `3f470f4`, identificou que a guarda ainda permitia uma subpasta de um checkout. O cenário foi reproduzido em quatro combinações API/CLI e `.git` diretório/ficheiro. A correção percorre o destino resolvido e todos os ascendentes antes de escrever qualquer manifesto ou temporário. Staging tem de ser exterior a qualquer repositório. Esta correção posterior ainda necessita de revisão; três rondas já foram usadas e o resultado será apresentado ao utilizador conforme AGENTS.md.
+
+Resposta ao contexto em falta: a ferramenta e o módulo foram acrescentados apenas à base de produção `qa-output/production-delivery-20260928`. Não foram portados para o pacote/demo `App_Folhas_Checklists/aplicacao`; preservar esse pacote separado é a decisão vigente. O caso do revisor nessa árvore não é executável hoje por faltar lá a ferramenta, mas a vulnerabilidade da guarda é reproduzível com uma subpasta sintética e foi corrigida genericamente.
+
+O texto abaixo foi confirmado diretamente em `docs/IMPLEMENTACAO_SERVIDOR.md`, secção «Versoes e dependencias», linha 36. Não se envia o guia inteiro porque contém identificadores operacionais não necessários a esta revisão:
+
+> Para servidor, usar preferencialmente Python 3.13.x. Se o Plesk nao disponibilizar Python 3.13, usar Python 3.12.x e testar antes de producao.
+
+Isto confirma a coerência documental; não identifica o Python atualmente instalado no Plesk. A obrigação de confirmar e ensaiar o runtime antes de instalar continua explícita. A recusa de produção sem manifesto será ligada ao empacotamento/readiness conforme o plano; esta fundação não foi apresentada como release pronta.

@@ -6,13 +6,13 @@ O cabeçalho HTTP `X-App-Version`, a resposta autenticada de `/api/admin/overvie
 
 Usar Python 3.13, como no Dockerfile e CI. O mínimo é Python 3.12, já previsto no [guia Passenger/Plesk](IMPLEMENTACAO_SERVIDOR.md); uma versão anterior é recusada com indicação explícita antes da leitura do código. A versão instalada no servidor ainda precisa de confirmação pelo profissional que fará a instalação. O ensaio de recusa simula a versão antiga; não certifica a aplicação numa instalação Python 3.12.
 
-Numa cópia de preparação do artefacto, sem `.git`, o preparador da release executa a partir do checkout:
+Numa cópia de preparação do artefacto **fora de qualquer repositório Git**, por exemplo numa pasta temporária, o preparador da release executa a partir do checkout:
 
 ```powershell
 python -B tools/build_release.py --root "CAMINHO_DA_COPIA_DE_PREPARACAO" --revision SHA_COMPLETO_DO_COMMIT
 ```
 
-`--root` é obrigatório. O comando recusa destinos com `.git`, incluindo ficheiros de worktrees, e grava `release-manifest.json` apenas na raiz da cópia indicada. Preparar essa cópia a partir da revisão testada e apenas com os ficheiros destinados à entrega. O SHA Git é fornecido pelo preparador; o comando verifica o formato e regista o conteúdo, não certifica por si só a origem Git. Não gerar o manifesto enquanto se continua a editar código. O manifesto deve acompanhar o pacote final, mas fica fora do Git para evitar autorreferência do commit. A integração do comando no build Docker/CI será feita na etapa de empacotamento.
+`--root` é obrigatório. O comando resolve o caminho e recusa `.git` na raiz ou em qualquer ascendente, incluindo ficheiros de worktrees e ligações simbólicas. Grava `release-manifest.json` apenas na raiz da cópia indicada. Preparar essa cópia a partir da revisão testada e apenas com os ficheiros destinados à entrega. O SHA Git é fornecido pelo preparador; o comando verifica o formato e regista o conteúdo, não certifica por si só a origem Git. Não gerar o manifesto enquanto se continua a editar código. O manifesto deve acompanhar o pacote final, mas fica fora do Git para evitar autorreferência do commit. A integração do comando no build Docker/CI será feita na etapa de empacotamento.
 
 Se uma versão anterior da ferramenta deixou `release-manifest.json` no checkout **local de desenvolvimento**, confirmar que é esse checkout e remover apenas esse ficheiro gerado antes de continuar a editar/testar. Não aplicar esta recuperação num pacote instalado: o manifesto faz parte da sua verificação e deve ser preservado.
 

@@ -93,9 +93,11 @@ def write_release_manifest(root: Path, *, revision: str) -> dict:
     """Package a fixed source tree; revision is supplied by the release builder."""
     if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
         raise ValueError("Indique o SHA Git completo da versão a empacotar.")
-    root = Path(root)
-    if (root / ".git").exists() or (root / ".git").is_symlink():
-        raise ReleaseIdentityError("Não criar manifestos num checkout Git; indique uma cópia de staging sem .git.")
+    root = Path(root).resolve()
+    for ancestor in (root, *root.parents):
+        marker = ancestor / ".git"
+        if marker.exists() or marker.is_symlink():
+            raise ReleaseIdentityError("Não criar manifestos num checkout Git; indique uma cópia de staging fora de qualquer repositório.")
     fingerprint, files = _source_fingerprint(root)
     payload = {"format": 1, "revision": revision, "source_sha256": fingerprint,
                "source_files": len(files), "files": files}

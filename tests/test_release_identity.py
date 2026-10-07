@@ -248,3 +248,32 @@ def test_manifest_diagnostic_bounds_and_escapes_many_long_paths(tmp_path):
     assert len(detail["adicionados"]) == 12
     assert all(len(name) <= 160 for name in detail["adicionados"])
     assert "synthetic private content" not in str(failure.value)
+
+
+@pytest.mark.parametrize("interface", ["api", "cli"])
+@pytest.mark.parametrize("git_marker", ["directory", "worktree-file"])
+def test_release_builder_refuses_staging_inside_a_git_ancestor(tmp_path, interface, git_marker):
+    from src.services.release_identity import ReleaseIdentityError, write_release_manifest
+    repository = tmp_path / "repository"
+    staging = repository / "sub" / "staging"
+    source = staging / "src"
+    source.mkdir(parents=True)
+    (source / "entry.py").write_text("value = 1\n", encoding="utf-8")
+    marker = repository / ".git"
+    if git_marker == "directory":
+        marker.mkdir()
+    else:
+        marker.write_text("gitdir: synthetic-worktree\n", encoding="utf-8")
+    if interface == "api":
+        with pytest.raises(ReleaseIdentityError, match="Git"):
+            write_release_manifest(staging, revision="a" * 40)
+    else:
+        tool = Path(__file__).resolve().parents[1] / "tools" / "build_release.py"
+        result = subprocess.run(
+            [sys.executable, "-B", str(tool), "--root", str(source / ".."), "--revision", "a" * 40],
+            capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 2, result.stdout
+        assert "Git" in result.stderr
+    assert not (staging / "release-manifest.json").exists()
+    assert not list(staging.glob(".release-*.tmp"))
