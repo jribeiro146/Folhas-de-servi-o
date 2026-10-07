@@ -1746,6 +1746,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 throw new Error(result.error || "Não foi possível atualizar a lista.");
             }
             let refresh = result.refresh;
+            let confirmationPending = false;
             if (refresh) {
                 const requestedId = result.requested_refresh_id || refresh.refresh_id;
                 const requestedSequence = result.requested_refresh_sequence ?? refresh.refresh_sequence;
@@ -1768,7 +1769,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     }
                     refresh = statusResult.refresh;
                 }
-                if (waiting()) throw new Error("Não foi possível confirmar o fim desta atualização. Tente novamente dentro de momentos.");
+                confirmationPending = Boolean(waiting());
             }
             const latestResponse = await fetch("/api/files?refresh=0", {
                 headers: { "Accept": "application/json" }, cache: "no-store",
@@ -1785,6 +1786,9 @@ document.addEventListener("DOMContentLoaded", () => {
             // Even after a download error, render the confirmed inventory: removed
             // remote files must disappear immediately from the old displayed list.
             if (refresh?.last_error) throw new Error(refresh.last_error);
+            if (confirmationPending) {
+                throw new Error("A atualização ainda não terminou. A lista mostra o último inventário disponível; volte a confirmar dentro de momentos.");
+            }
             if (refresh?.inventory?.available === false || refresh?.inventory?.stale || refresh?.in_progress) {
                 throw new Error("A lista do SharePoint ainda não está confirmada.");
             }

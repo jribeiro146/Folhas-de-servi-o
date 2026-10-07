@@ -117,9 +117,10 @@ test("a counter from a different generation does not satisfy a requested refresh
         ...Array.from({length: 40}, () => ({ success: true, refresh: {
             refresh_id: "B", in_progress: false, last_completed_refresh_id: "B", generation_id: "two", last_completed_sequence: 99,
         } })),
+        { success: true, html: "latest known inventory", refresh: { inventory: { available: true } } },
     ]);
     await run.context.refresh();
-    assert.equal(run.context.fileList.innerHTML, "old cached cards");
+    assert.equal(run.context.fileList.innerHTML, "latest known inventory");
     assert.equal(run.messages.at(-1).kind, "error");
 });
 
@@ -182,10 +183,44 @@ test("background refresh requests the throttled endpoint and updates without not
     assert.deepEqual(run.messages, []);
 });
 
-test("a refresh that is still running does not claim completion or replace cards", async () => {
-    const run = setup(Array.from({ length: 41 }, () => ({ success: true, refresh: { in_progress: true } })));
+test("a slow refresh removes obsolete cards using the confirmed inventory without claiming completion", async () => {
+    const run = setup([
+        ...Array.from({ length: 41 }, () => ({ success: true, refresh: { in_progress: true } })),
+        { success: true, html: "confirmed inventory without removed sheet", refresh: {
+            in_progress: true, inventory: { available: true, stale: false, updated_at: 1791360000 },
+        } },
+    ]);
+    await run.context.refresh();
+    assert.equal(run.context.fileList.innerHTML, "confirmed inventory without removed sheet");
+    assert.equal(run.context.form.value, "Unsaved technician work");
+    assert.equal(run.messages.at(-1).kind, "error");
+    assert.equal(run.context.status.dataset.state, "warning");
+    assert.equal(run.requests.at(-1), "/api/files?refresh=0");
+    assert.equal(run.requests.length, 42);
+});
+
+test("a slow refresh can clear all cards after a confirmed empty inventory without touching the editor", async () => {
+    const run = setup([
+        ...Array.from({ length: 41 }, () => ({ success: true, refresh: { in_progress: true } })),
+        { success: true, html: "", refresh: { in_progress: true, inventory: { available: true, file_count: 0 } } },
+    ]);
+    await run.context.refresh({ silent: true });
+    assert.equal(run.context.fileList.innerHTML, "");
+    assert.equal(run.context.form.value, "Unsaved technician work");
+    assert.equal(run.context.status.dataset.state, "warning");
+    assert.deepEqual(run.messages, []);
+    assert.deepEqual(run.searchEvents, ["input"]);
+});
+
+test("a failed snapshot after a slow refresh preserves cards and reports the failure", async () => {
+    const run = setup([
+        ...Array.from({ length: 41 }, () => ({ success: true, refresh: { in_progress: true } })),
+        { success: false, ok: false, error: "synthetic snapshot failure" },
+    ]);
     await run.context.refresh();
     assert.equal(run.context.fileList.innerHTML, "old cached cards");
+    assert.equal(run.context.form.value, "Unsaved technician work");
+    assert.equal(run.context.status.dataset.state, "warning");
+    assert.equal(run.context.refreshBtn.disabled, false);
     assert.equal(run.messages.at(-1).kind, "error");
-    assert.equal(run.requests.length, 41);
 });
