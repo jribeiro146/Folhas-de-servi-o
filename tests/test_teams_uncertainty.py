@@ -245,3 +245,58 @@ def test_malformed_acceptance_is_quarantined_without_post(tmp_path):
                    (json.dumps({"accepted": "true", "phase": "teams_accepted"}), job["id"]))
     queue.run_until_idle()
     assert queue.status(job["id"])["result"]["invalid_state"]
+
+
+@pytest.mark.parametrize("seconds", [700, 172800])
+def test_manual_retry_cannot_anticipate_persisted_throttle_deadline(tmp_path, monkeypatch, seconds):
+    monkeypatch.setenv("FS_TEAMS_JOB_MAX_ATTEMPTS", "1")
+    calls = []
+    def transport(req, **kwargs):
+        calls.append(req)
+        if len(calls) == 1:
+            raise HTTPError(req.full_url, 429, "throttled", {"Retry-After": str(seconds)}, io.BytesIO(b""))
+        return Response()
+    queue, job = queued(tmp_path, transport)
+    queue.run_until_idle()
+    state = queue.status(job["id"])
+    deadline = state["result"]["retry_not_before"]
+    assert state["result"]["http_status"] == 429 and deadline >= time.time() + seconds - 5
+    assert not state["will_retry"] and not state["reconciliation_required"]
+    restarted = GraphSyncQueue(None, queue.database_path, teams_notification_service=service(transport), auto_start=False)
+    with pytest.raises(ValueError, match="prazo"):
+        restarted.retry(job["id"])
+    assert len(calls) == 1
+    monkeypatch.setattr(time, "time", lambda: deadline + 1)
+    restarted.retry(job["id"])
+    restarted.run_until_idle()
+    assert restarted.status(job["id"])["status"] == "complete" and len(calls) == 2
+
+
+@pytest.mark.parametrize("deadline", [True, "tomorrow", float("inf"), 10 ** 400, -1])
+def test_invalid_throttle_deadline_is_quarantined(tmp_path, deadline):
+    queue, job = queued(tmp_path, lambda *a, **kw: pytest.fail("No POST"))
+    with queue._connect() as db:
+        db.execute("UPDATE graph_sync_jobs SET result_json=? WHERE id=?",
+                   (json.dumps({"phase": "teams_rejected", "retry_not_before": deadline}), job["id"]))
+    assert queue.status(job["id"])["result"]["invalid_state"]
+
+
+@pytest.mark.parametrize("status,phase", [(400, "teams_rejected"), (503, "teams_unknown")])
+def test_failed_post_result_checkpoint_leaves_original_sending_phase(tmp_path, monkeypatch, status, phase):
+    calls = []
+    def transport(req, **kwargs):
+        calls.append(req)
+        raise HTTPError(req.full_url, status, "synthetic", {}, io.BytesIO(b""))
+    queue, job = queued(tmp_path, transport)
+    original = queue._checkpoint_result
+    def checkpoint(job_id, result):
+        if result.get("phase") == phase:
+            raise sqlite3.OperationalError("Synthetic checkpoint failure")
+        return original(job_id, result)
+    monkeypatch.setattr(queue, "_checkpoint_result", checkpoint)
+    queue.run_until_idle()
+    state = queue.status(job["id"])
+    assert state["result"]["phase"] == "sending_teams" and state["reconciliation_required"]
+    assert not state["will_retry"] and len(calls) == 1
+    with pytest.raises(ValueError, match="reconciliação"):
+        queue.retry(job["id"])

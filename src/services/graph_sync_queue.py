@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import shutil
 import sqlite3
@@ -43,6 +44,21 @@ def delivery_uncertain(kind: str, result: dict[str, Any]) -> bool:
                 and result.get("accepted") is not True)
     mail = result.get("mail") if isinstance(result.get("mail"), dict) else {}
     return result.get("phase") in {"sending_mail", "mail_unknown"} and mail.get("accepted") is not True
+
+
+def teams_retry_deadline(kind: str, result: dict[str, Any]) -> float | None:
+    value = result.get("retry_not_before") if kind == "notify_teams" else None
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        raise ValueError("Prazo Teams inválido; requer revisão.")
+    try:
+        deadline = float(value)
+    except OverflowError:
+        raise ValueError("Prazo Teams inválido; requer revisão.") from None
+    if not math.isfinite(deadline):
+        raise ValueError("Prazo Teams inválido; requer revisão.")
+    return deadline
 
 
 class GraphJobNoLongerActiveError(RuntimeError):
@@ -269,6 +285,10 @@ class GraphSyncQueue:
             if current["reconciliation_required"]:
                 connection.rollback()
                 raise ValueError("Resultado do envio desconhecido. É necessária reconciliação antes de repetir.")
+            deadline = teams_retry_deadline(current["kind"], current["result"] or {})
+            if deadline is not None and now < deadline:
+                connection.rollback()
+                raise ValueError("O prazo indicado pelo Teams ainda não terminou. Atualize o diagnóstico mais tarde.")
             if (current["result"] or {}).get("blocked_by_newer_upload"):
                 connection.commit()
                 raise ValueError("Existe uma gravação posterior. Repita a publicação mais recente.")
@@ -905,8 +925,9 @@ class GraphSyncQueue:
             if service is None:
                 raise TeamsNotificationConfigurationError("O serviço de notificações Teams não está disponível.")
             service.validate_prepared(notification)
-        except TeamsNotificationError:
-            self._checkpoint_result(job_id, {"phase": "teams_rejected"})
+        except TeamsNotificationError as exc:
+            self._checkpoint_result(job_id, {"phase": "teams_rejected", "http_status": exc.http_status,
+                                            "retry_not_before": exc.retry_not_before})
             raise
         self._checkpoint_result(job_id, {"phase": "sending_teams"})
         try:
@@ -916,8 +937,9 @@ class GraphSyncQueue:
         except TeamsNotificationUnknownResultError:
             self._checkpoint_result(job_id, {"phase": "teams_unknown"})
             raise
-        except TeamsNotificationError:
-            self._checkpoint_result(job_id, {"phase": "teams_rejected"})
+        except TeamsNotificationError as exc:
+            self._checkpoint_result(job_id, {"phase": "teams_rejected", "http_status": exc.http_status,
+                                            "retry_not_before": exc.retry_not_before})
             raise
         except GraphJobNoLongerActiveError:
             raise
@@ -1381,6 +1403,7 @@ class GraphSyncQueue:
                     raise ValueError("Invalid acceptance")
                 if row["kind"] == "notify_teams" and "accepted" in result and not isinstance(result["accepted"], bool):
                     raise ValueError("Invalid Teams acceptance")
+                teams_retry_deadline(row["kind"], result)
                 if "phase" in result and not isinstance(result["phase"], str):
                     raise ValueError("Invalid phase")
             except (TypeError, ValueError):

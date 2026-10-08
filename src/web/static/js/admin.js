@@ -68,6 +68,12 @@
             node("h3", (kinds[job.kind] || job.kind) + " · " + (statuses[job.status] || job.status), card);
             node("p", "Operação: " + job.id + " · Tentativas: " + job.attempts, card);
             node("p", job.last_error || job.phase || "A aguardar processamento.", card);
+            if (job.retry_not_before > Date.now() / 1000) {
+                const deadline = new Date(job.retry_not_before * 1000);
+                node("p", Number.isNaN(deadline.getTime())
+                    ? "O Teams indicou um prazo muito distante. A repetição está bloqueada."
+                    : "A repetição está bloqueada pelo Teams até " + date(job.retry_not_before) + ".", card);
+            }
             if (job.reconciliation_required || job.invalid_state) node("p", "Requer revisão. A repetição está bloqueada.", card);
             if (job.can_retry) action(card, "Repetir trabalho", "/api/admin/jobs/" + encodeURIComponent(job.id) + "/retry", {},
                 "Repetir apenas esta operação. Se incluir um envio recusado, pode originar um envio de e-mail.");

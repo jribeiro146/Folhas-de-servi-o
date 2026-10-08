@@ -1,5 +1,6 @@
 """Operational admin permissions and revocation over synthetic state only."""
 import json
+import time
 from types import SimpleNamespace
 import pytest
 from src.services.admin_access import account_role, can_administer
@@ -163,7 +164,7 @@ def test_non_admin_service_cannot_revoke_even_with_matching_version(tmp_path):
     assert not service.repository.admin_history()
 
 @pytest.mark.parametrize("prefix", ["/api/admin/jobs/", "/api/graph/jobs/"])
-@pytest.mark.parametrize("phase", ["sending_mail","mail_unknown",None,"sending_teams","teams_unknown"])
+@pytest.mark.parametrize("phase", ["sending_mail","mail_unknown",None,"sending_teams","teams_unknown","teams_throttled"])
 def test_admin_cannot_retry_uncertain_mail(tmp_path, monkeypatch, phase, prefix):
     from src.services.graph_sync_queue import GraphSyncQueue
     monkeypatch.setattr(web,"AUTH_ENABLED",True)
@@ -172,10 +173,13 @@ def test_admin_cannot_retry_uncertain_mail(tmp_path, monkeypatch, phase, prefix)
         def user_from_session(self,payload):
             return SimpleNamespace(**payload) if payload else None
     queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", auto_start=False)
-    kind = "notify_teams" if phase in {"sending_teams", "teams_unknown"} else "archive_and_mail_local"
+    kind = "notify_teams" if phase in {"sending_teams", "teams_unknown", "teams_throttled"} else "archive_and_mail_local"
     job = queue.enqueue(kind, {"notification": {}} if kind == "notify_teams" else {"mail":{"to":"synthetic@example.invalid"}})
+    result = {"phase":phase} if phase else {}
+    if phase == "teams_throttled":
+        result = {"phase": "teams_rejected", "http_status": 429, "retry_not_before": time.time() + 86400}
     with queue._connect() as db:
-        db.execute("UPDATE graph_sync_jobs SET status='failed',result_json=? WHERE id=?", (json.dumps({"phase":phase} if phase else {}),job["id"]))
+        db.execute("UPDATE graph_sync_jobs SET status='failed',result_json=? WHERE id=?", (json.dumps(result),job["id"]))
     service = EditingStateService(tmp_path / "edits")
     app = web.create_app(editing_state_service=service, graph_sync_queue=queue, microsoft_auth_service=Auth())
     admin = login(app,ADMIN.email)

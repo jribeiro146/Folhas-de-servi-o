@@ -280,3 +280,31 @@ def test_preflight_io_failure_preserves_contract_and_releases_exclusion(package,
     assert contract.inspect() == snapshot
     assert cli.main(command) == 0
     assert json.loads(capsys.readouterr().out)["runtime"]["epoch"] == 2
+
+
+@pytest.mark.parametrize("legacy", ["contract", "queue"])
+def test_activate_refuses_queue2_without_changing_runtime(package, tmp_path, legacy):
+    from tests import legacy_sqlite_format_v2 as old
+    first = write_release_manifest(package, revision="a" * 40)
+    data = tmp_path / "data"
+    assert run_cli(package, "init", "--data-dir", data).returncode == 0
+    contract = RuntimeContract(data, first["source_sha256"])
+    path = contract.path if legacy == "contract" else data / "graph-sync.sqlite3"
+    db = sqlite3.connect(path)
+    try:
+        if legacy == "contract":
+            db.execute("UPDATE state_contract SET formats_json=?", (json.dumps({**SUPPORTED_FORMATS, "queue": 2}),))
+            db.commit()
+        else:
+            old.initialize_store(db, "queue")
+    finally:
+        db.close()
+    snapshot = contract.inspect()
+    (package / "src" / "revision.py").write_text("revision=2\n")
+    write_release_manifest(package, revision="b" * 40)
+    result = run_cli(package, "activate", "--data-dir", data, "--expected-source", first["source_sha256"],
+                     "--writers-stopped")
+    assert result.returncode == 2
+    assert json.loads(result.stderr)["code"] == (
+        "state_contract_invalid" if legacy == "contract" else "storage_format_invalid")
+    assert contract.inspect() == snapshot

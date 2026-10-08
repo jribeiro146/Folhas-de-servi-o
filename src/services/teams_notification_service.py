@@ -19,6 +19,11 @@ class TeamsNotificationError(Exception):
 
     retryable = False
 
+    def __init__(self, message: str, *, http_status=None, retry_not_before=None):
+        super().__init__(message)
+        self.http_status = http_status
+        self.retry_not_before = retry_not_before
+
 
 class TeamsNotificationUnknownResultError(TeamsNotificationError):
     """O POST pode ter sido aceite; nunca repetir sem reconciliação."""
@@ -27,9 +32,11 @@ class TeamsNotificationUnknownResultError(TeamsNotificationError):
 class TeamsNotificationThrottledError(TeamsNotificationError):
     retryable = True
 
-    def __init__(self, delay: float):
-        super().__init__("Teams Workflow recusou por limite de pedidos (HTTP 429).")
-        self.retry_after_seconds = delay
+    def __init__(self, deadline: float):
+        super().__init__("Teams Workflow recusou por limite de pedidos (HTTP 429).",
+                         http_status=429, retry_not_before=deadline)
+        self.retry_after_seconds = max(0.0, deadline - time.time())
+        self.retryable = self.retry_after_seconds <= 86400
 
 
 class _NoRedirect(request.HTTPRedirectHandler):
@@ -40,15 +47,13 @@ class _NoRedirect(request.HTTPRedirectHandler):
 def _retry_after(headers) -> float | None:
     value = str(headers.get("Retry-After", "")).strip() if headers is not None else ""
     try:
-        if re.fullmatch(r"[0-9]{1,6}", value):
-            delay = float(value)
+        if re.fullmatch(r"[0-9]{1,64}", value):
+            return time.time() + float(value)
         else:
             parsed = parsedate_to_datetime(value)
             if parsed.tzinfo is None:
                 return None
-            delay = max(0.0, parsed.timestamp() - time.time())
-        # Longer/invalid delays require manual review, never an earlier retry.
-        return delay if 0 <= delay <= 86400 else None
+            return max(time.time(), parsed.timestamp())
     except (ValueError, TypeError, OverflowError):
         return None
 
@@ -57,11 +62,11 @@ def _check_response(status: int, headers) -> None:
     if 200 <= status < 300:
         return
     if status == 429:
-        delay = _retry_after(headers)
-        if delay is not None:
-            raise TeamsNotificationThrottledError(delay)
+        deadline = _retry_after(headers)
+        if deadline is not None:
+            raise TeamsNotificationThrottledError(deadline)
     if 400 <= status < 500 and status not in {408, 425}:
-        raise TeamsNotificationError(f"Teams Workflow recusou o pedido (HTTP {status}).")
+        raise TeamsNotificationError(f"Teams Workflow recusou o pedido (HTTP {status}).", http_status=status)
     raise TeamsNotificationUnknownResultError(
         f"Resultado Teams desconhecido (HTTP {status}); requer reconciliação."
     )

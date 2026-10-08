@@ -359,10 +359,15 @@ incluindo o painel administrativo, recusam repetir resultados incertos.
 Rejeições HTTP 4xx, exceto 408/425, são conhecidas e terminais. Só HTTP429 com
 Retry-After explícito e válido permite retry automático: segundos ou data HTTP
 com fuso, até 24h. Um prazo superior exige revisão manual; nunca é encurtado.
+O código HTTP e retry_not_before absoluto são persistidos em teams_rejected,
+mesmo acima de24h ou no esgotamento de tentativas. O painel mostra o prazo e
+retira a ação de repetição enquanto não terminar; a fila volta a validar o prazo
+sob transação em cada retry. Metadados de prazo inválidos ficam em quarentena.
 O prazo indicado não é limitado pelos anteriores cinco minutos da fila.
 FS_TEAMS_JOB_MAX_ATTEMPTS tem valor inicial 3, mínimo 1; o limite é persistido
 em cada filho, incluindo os criados atomicamente com o email. Após esgotá-lo,
 uma rejeição conhecida pode ser repetida por ação administrativa auditada.
+Essa ação também respeita retry_not_before; não constitui exceção ao throttling.
 
 As mensagens de erro não incluem o URL assinado, corpo ou texto da exceção
 externa. O cabeçalho de correlação ajuda o diagnóstico, mas não assegura
@@ -376,6 +381,14 @@ rejeições HTTP e deadlines/limites, quarentena e bloqueio nas duas rotas admin
 Não há migração implícita de queue2; os validadores antigos/novos recusam os
 formatos incompatíveis. Migração e restauro deverão reter tentativas antigas
 sem resultado comprovado, pois a base restaurada não desfaz um efeito remoto.
+
+Resposta à primeira revisão Teams: reproduzidos quatro casos do P3 de prazo
+manual antecipado (700s/48h e duas rotas), corrigidos conforme acima. Acrescentados
+ensaios de falha de checkpoint após HTTP400/503, prazo corrompido/overflow e CLI
+activate a recusar tanto contrato queue2 como base queue2, sem mudar época/SHA.
+O CLI é fornecido como contexto; não foi alterado nem migrada qualquer base real.
+O contexto frontend desta revisão serve apenas a pergunta de desenho da etapa5;
+mail-job-monitor e document-editor continuam sem alterações desta funcionalidade.
 
 ### Etapas seguintes
 

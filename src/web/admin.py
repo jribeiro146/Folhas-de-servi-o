@@ -1,11 +1,12 @@
 """Account-restricted operational tools; mutations require an administrator CSRF token."""
 import json
 import secrets
+import time
 from urllib.parse import urlsplit
 from flask import Blueprint, g, jsonify, render_template, request, session
 from src.services.admin_access import can_administer
 from src.services.editing_state_service import EditingStateError
-from src.services.graph_sync_queue import delivery_uncertain
+from src.services.graph_sync_queue import delivery_uncertain, teams_retry_deadline
 
 
 def register_admin(app, editing, queue, refresh, authenticated_microsoft):
@@ -53,6 +54,7 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
 
     def safe_job(row):
         invalid = False
+        deadline = None
         try:
             payload = object_json(row["payload_json"])
             for key in ("mail", "teams", "notification", "_commit_guard"):
@@ -68,6 +70,7 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
             if row["kind"] == "notify_teams" and "accepted" in result and not isinstance(result["accepted"], bool):
                 raise ValueError()
             uncertain = delivery_uncertain(row["kind"], result)
+            deadline = teams_retry_deadline(row["kind"], result)
             has_mail = row["kind"] == "archive_and_mail_local" or bool(payload.get("mail"))
             if has_mail and mail.get("accepted") is not True and result.get("phase") not in ("generating_pdf", "pdf_ready", "mail_rejected"):
                 uncertain = True
@@ -77,8 +80,10 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
         return {"id": row["id"], "kind": row["kind"], "status": row["status"],
                 "attempts": row["attempts"], "updated_at": row["updated_at"],
                 "last_error": row["last_error"], "phase": result.get("phase"),
+                "retry_not_before": deadline,
                 "reconciliation_required": uncertain, "invalid_state": invalid,
-                "can_retry": row["status"] == "failed" and not row["retryable"] and not uncertain and not invalid}
+                "can_retry": row["status"] == "failed" and not row["retryable"] and not uncertain and not invalid
+                    and (deadline is None or time.time() >= deadline)}
 
     @bp.get("/api/admin/overview")
     def overview():
