@@ -21,7 +21,7 @@ from src.services.graph_mail_service import (
 )
 from src.services.graph_storage_service import GraphStorageService
 from src.services.local_pdf_service import LocalPdfService
-from src.services.teams_notification_service import TeamsNotificationService
+from src.services.teams_notification_service import TeamsNotificationService, TeamsNotificationConfigurationError
 from src.services.local_changes import DIRTY_MARKER, bundle_guard, dirty_version, mark_dirty
 from src.services.bundle_removals import copy_confirmations, refresh_own_removal_versions
 from src.services.file_mutex import file_mutex, FileMutexBusy
@@ -216,8 +216,10 @@ class GraphSyncQueue:
         has_mail = kind == "archive_and_mail_local" or bool(payload.get("mail"))
         return self.mail_job_max_attempts if has_mail else None
 
+    @admitted
     def status(self, job_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             self._quarantine_invalid_jobs(connection)
             try:
                 with file_mutex(self._worker_mutex_path):
@@ -368,11 +370,23 @@ class GraphSyncQueue:
                 started.setdefault(source, row["id"])
 
     def summary(self) -> dict[str, int]:
-        result = {"pending": 0, "running": 0, "failed": 0, "complete": 0}
+        result = {"pending": 0, "running": 0, "failed": 0, "complete": 0,
+                  "teams_missing": 0, "teams_conflicts": 0}
         with self._connect() as connection:
+            connection.execute("BEGIN")
             rows = connection.execute(
                 "SELECT status, COUNT(*) AS total FROM graph_sync_jobs GROUP BY status"
             ).fetchall()
+            parents = connection.execute("SELECT p.payload_json,p.result_json,c.id AS child_id "
+                "FROM graph_sync_jobs p LEFT JOIN graph_sync_jobs c ON c.id = 'teams:' || p.id "
+                "WHERE p.status='complete' AND p.kind IN ('archive_and_remove','archive_and_mail_local')")
+            for parent in parents:
+                payload = self._json_object(parent["payload_json"])
+                outcome = self._json_object(parent["result_json"])
+                if outcome.get("teams_child_conflict"):
+                    result["teams_conflicts"] += 1
+                if payload.get("teams") and parent["child_id"] is None:
+                    result["teams_missing"] += 1
         for row in rows:
             result[str(row["status"])] = int(row["total"])
         return result
@@ -611,8 +625,6 @@ class GraphSyncQueue:
         ).get("accepted"):
             # Receipts take precedence over missing/retired message bytes and
             # changed configuration. Never rebuild or repeat accepted mail.
-            prior_result["teams_job"] = self._enqueue_teams_notification(
-                payload.get("teams"), parent_job_id=job_id)
             return prior_result
         if kind == "upload_active":
             if self.graph_service is None:
@@ -678,16 +690,11 @@ class GraphSyncQueue:
                     prior_result=prior_result,
                 )
                 prior_result["phase"] = "mail_accepted"
-            teams_job = self._enqueue_teams_notification(
-                payload.get("teams"),
-                parent_job_id=job_id,
-            )
             return {
                 **prior_result,
                 "uploaded_files": uploaded,
                 "removed_active": removed,
                 "mail": mail_result,
-                "teams_job": teams_job,
             }
         if kind == "archive_and_mail_local":
             if self.mail_service is None:
@@ -713,21 +720,16 @@ class GraphSyncQueue:
                 prior_result=prior_result,
             )
             prior_result["phase"] = "mail_accepted"
-            teams_job = self._enqueue_teams_notification(
-                payload.get("teams"),
-                parent_job_id=job_id,
-            )
             return {
                 **prior_result,
                 "uploaded_files": [],
                 "removed_active": False,
                 "local_pdf": prior_result.get("local_pdf"),
                 "mail": mail_result,
-                "teams_job": teams_job,
             }
         if kind == "notify_teams":
             if self.teams_notification_service is None:
-                raise RuntimeError("O serviço de notificações Teams não está disponível.")
+                raise TeamsNotificationConfigurationError("O serviço de notificações Teams não está disponível.")
             notification = dict(payload.get("notification") or {})
             if not notification:
                 raise RuntimeError("A notificação Teams não foi guardada no trabalho.")
@@ -886,24 +888,47 @@ class GraphSyncQueue:
                 "O trabalho deixou de estar ativo antes do envio; requer repetição manual."
             )
 
-    def _enqueue_teams_notification(
-        self,
-        notification: Any,
-        *,
-        parent_job_id: str,
-    ) -> dict[str, Any] | None:
+    def _ensure_teams_child(self, connection, notification, parent_job_id):
+        """Use the caller's writer transaction; never open a second writer."""
+        if not connection.in_transaction:
+            raise RuntimeError("A intenção Teams exige uma transação ativa.")
         if not notification:
             return None
-        self._assert_job_running(parent_job_id)
-        if self.teams_notification_service is None:
-            raise RuntimeError("O serviço de notificações Teams não está disponível.")
         child_id = f"teams:{parent_job_id}"
-        child = self.enqueue(
-            "notify_teams",
-            {"notification": dict(notification)},
-            job_id=child_id,
-        )
-        return {"id": child_id, "status": child.get("status", "pending")}
+        payload = {"notification": dict(notification)}
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        now = time.time()
+        connection.execute("INSERT INTO graph_sync_jobs "
+            "(id,kind,payload_json,status,attempts,next_attempt_at,max_attempts,created_at,updated_at) "
+            "VALUES (?,'notify_teams',?,'pending',0,?,NULL,?,?) ON CONFLICT(id) DO NOTHING",
+            (child_id, canonical, now, now, now))
+        child = connection.execute("SELECT kind,payload_json,result_json,status FROM graph_sync_jobs WHERE id=?",
+                                   (child_id,)).fetchone()
+        try:
+            stored = json.dumps(json.loads(child["payload_json"]), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        except (ValueError, TypeError):
+            stored = None
+        if child["kind"] != "notify_teams" or stored != canonical:
+            # Preserve the conflicting payload/receipt for diagnosis. A queued
+            # divergent intent must not become an unrelated external effect.
+            if child["status"] != "complete":
+                result = self._json_object(child["result_json"])
+                if not result.get("teams_child_conflict"):
+                    result["previous_result_json"] = child["result_json"]
+                result.update(invalid_state=True, teams_child_conflict=True)
+                connection.execute("UPDATE graph_sync_jobs SET status='failed',retryable=0,result_json=?,"
+                    "last_error=?,updated_at=? WHERE id=?", (json.dumps(result, ensure_ascii=False),
+                    "Intenção Teams divergente; requer reconciliação.", now, child_id))
+            return {"id": child_id, "status": "conflict", "code": "teams_child_conflict"}
+        return {"id": child_id, "status": child["status"]}
+
+    def _attach_teams_child(self, connection, parent_id, payload, result):
+        child = self._ensure_teams_child(connection, payload.get("teams"), parent_id)
+        result["teams_job"] = child
+        if child and child.get("code") == "teams_child_conflict":
+            result["teams_child_conflict"] = True
+        else:
+            result.pop("teams_child_conflict", None)
 
     def _checkpoint_result(self, job_id: str, partial_result: dict[str, Any]) -> None:
         now = time.time()
@@ -912,13 +937,15 @@ class GraphSyncQueue:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT result_json FROM graph_sync_jobs WHERE id = ? AND status='running' AND attempt_token=?",
+                "SELECT result_json,payload_json FROM graph_sync_jobs WHERE id = ? AND status='running' AND attempt_token=?",
                 (job_id, job["attempt_token"]),
             ).fetchone()
             if row is None:
                 raise GraphJobNoLongerActiveError("A tentativa do worker já não está ativa.")
             current = json.loads(row["result_json"]) if row and row["result_json"] else {}
             current.update(partial_result)
+            if (current.get("mail") or {}).get("accepted") is True:
+                self._attach_teams_child(connection, job_id, self._json_object(row["payload_json"]), current)
             connection.execute(
                 "UPDATE graph_sync_jobs SET result_json = ?, updated_at = ? WHERE id = ? AND status='running' AND attempt_token=?",
                 (json.dumps(current, ensure_ascii=False), now, job_id, job["attempt_token"]),
@@ -934,13 +961,21 @@ class GraphSyncQueue:
         job_id = str(job["id"])
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT result_json,payload_json,kind FROM graph_sync_jobs "
+                "WHERE id=? AND status='running' AND attempt_token=?", (job_id, job.get("attempt_token", ""))).fetchone()
+            if row is None:
+                raise GraphJobNoLongerActiveError("A tentativa do worker já não está ativa.")
+            merged = self._json_object(row["result_json"])
+            merged.update(result)
+            if row["kind"] in {"archive_and_remove", "archive_and_mail_local"}:
+                self._attach_teams_child(connection, job_id, self._json_object(row["payload_json"]), merged)
             cursor = connection.execute(
                 """
                 UPDATE graph_sync_jobs
                 SET status = 'complete', result_json = ?, last_error = NULL, updated_at = ?
                 WHERE id = ? AND status='running' AND attempt_token=?
                 """,
-                (json.dumps(result, ensure_ascii=False), now, job_id, job.get("attempt_token", "")),
+                (json.dumps(merged, ensure_ascii=False), now, job_id, job.get("attempt_token", "")),
             )
             if not cursor.rowcount:
                 raise GraphJobNoLongerActiveError("A tentativa do worker já não está ativa.")
@@ -1073,14 +1108,15 @@ class GraphSyncQueue:
                 continue
             result = self._json_object(row["result_json"])
             if dict(result.get("mail") or {}).get("accepted"):
+                self._attach_teams_child(connection, row["id"], payload, result)
                 cursor = connection.execute(
                     """
                     UPDATE graph_sync_jobs
                     SET status = 'complete', retryable = 0, last_error = NULL,
-                        updated_at = ?
+                        updated_at = ?, result_json = ?
                     WHERE id = ? AND status = 'running'
                     """,
-                    (now, row["id"]),
+                    (now, json.dumps(result, ensure_ascii=False), row["id"]),
                 )
                 if cursor.rowcount:
                     log_event(

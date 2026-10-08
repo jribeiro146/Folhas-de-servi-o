@@ -298,9 +298,53 @@ e requirements-server.txt. Dockerfile instala requirements-server.txt; foi inclu
 como contexto na revisão. Isto não equivale a build/ensaio Linux: falta runtime
 Docker/Podman/WSL neste computador e o pacote final continua por validar.
 
-## Próximas etapas, ainda não implementadas
+## Notificações Teams: implementação por etapas
 
-Recuperar notificações Teams de forma
-durável e distinguir o seu resultado incerto; sanitizar diagnóstico; migração,
+### Intenção Teams durável — primeira parte da etapa Teams
+
+O filho `teams:{parent_job_id}` é criado na mesma transação IMMEDIATE que guarda
+o recibo aceite de email e retira o BLOB da mensagem. Não se chama `enqueue` dentro
+da transação nem se abre outra ligação para escrever. O recibo, a intenção e a
+retirada confirmam juntos; se falhar a transação após um POST aceite, mantém-se
+`sending_mail` para reconciliação, sem repetir o email. Uma interrupção depois do
+commit conserva o filho, mesmo antes de o pai ser marcado como concluído.
+
+A conclusão normal, a retoma com recibo aceite e a reconciliação de trabalhos
+inativos usam a mesma inserção idempotente. Comparam tipo e payload em JSON
+canónico se o ID já existir. Um conflito preserva os dados/comprovativos existentes,
+guarda `teams_child_conflict` no pai sem apagar `mail_accepted`, e retém um filho
+divergente ainda não concluído como inválido para não o executar. O diagnóstico
+original é guardado uma única vez, sem aninhamento a cada tentativa.
+
+A persistência da intenção não depende da disponibilidade do serviço Teams.
+Se o filho for executado sem serviço configurado, fica falhado sem retry automático;
+o pai continua concluído e o email aceite não é repetido. Resolver a configuração
+e repetir esse filho é uma operação administrativa separada, sujeita às regras
+de reconciliação da etapa seguinte.
+
+`status` já alterava trabalhos inativos; agora tem admissão de release e transação
+explícita. O mutex do worker continua a impedir reconciliar um processo vivo e é
+tentado sem bloquear, incluindo quando a consulta ocorre no próprio worker.
+`_claim_next` reutiliza a sua transação existente. `summary` permanece só de leitura
+e acrescenta contagens `teams_missing` e `teams_conflicts`, disponíveis no diagnóstico
+da API/admin e no resumo do worker. Pais históricos já concluídos sem filho são
+assinalados, sem criar ou enviar automaticamente notificações antigas.
+
+O esquema SQLite não mudou nesta parte: mantém-se queue=2 e a ativação de release
+exige escritores parados. A classificação de resultado externo incerto do Teams e
+o limite de retries ainda são a próxima alteração, antes de se considerar a etapa
+Teams concluída. Não instalar este checkpoint isoladamente.
+
+Testes sintéticos usam processos que terminam antes/depois do commit do recibo,
+comprovativo externo simulado persistido, um único filho, zero reenvios de email,
+serviço ausente, reconciliação concorrente, admissão de versão e colisão divergente.
+O ensaio de falha posterior ao aceite foi movido do antigo helper de enqueue para
+a fronteira de conclusão, preservando a verificação do recibo durante retry/guard.
+Os testes de busy do heartbeat/worker dirigem a falha à thread respetiva, porque
+as consultas de status também têm agora admissão e podiam consumir a falha simulada.
+
+### Etapas seguintes
+
+Distinguir o resultado incerto do Teams e limitar retries; sanitizar diagnóstico; migração,
 backup/restauro e pacote final. Esta alteração não aprova essas funcionalidades,
 a instalação ou o candidato completo.

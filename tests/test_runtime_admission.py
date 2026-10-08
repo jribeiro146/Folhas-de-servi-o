@@ -74,11 +74,13 @@ def test_queue_refuses_stale_mutations_before_claim_or_external_call(tmp_path):
     job = queue.enqueue("remove_active", {"source_name": "synthetic.xlsx"})
     contract.activate("b" * 64, next_formats=SUPPORTED_FORMATS)
     for operation in (queue.run_until_idle, lambda: queue.retry(job["id"]),
-                      lambda: queue.enqueue("remove_active", {"source_name": "other.xlsx"})):
+                      lambda: queue.enqueue("remove_active", {"source_name": "other.xlsx"}),
+                      lambda: queue.status(job["id"])):
         with pytest.raises(ContractError):
             operation()
-    assert queue.status(job["id"])["status"] == "pending"
-    assert queue.status(job["id"])["attempts"] == 0
+    with queue._connect() as db:
+        row = db.execute("SELECT status,attempts FROM graph_sync_jobs WHERE id=?", (job["id"],)).fetchone()
+    assert tuple(row) == ("pending", 0)
     assert not queue._worker_running
 
 
@@ -195,7 +197,12 @@ def test_old_heartbeat_cannot_update_queue_after_activation(tmp_path):
     contract.activate("b" * 64, next_formats=SUPPORTED_FORMATS)
     with pytest.raises(ContractError):
         queue._heartbeat(job)
-    assert queue.status(queued["id"]) == before
+    with pytest.raises(ContractError):
+        queue.status(queued["id"])
+    with queue._connect() as db:
+        row = db.execute("SELECT updated_at,status,attempt_token FROM graph_sync_jobs WHERE id=?", (queued["id"],)).fetchone()
+    assert row["updated_at"] == before["updated_at"] and row["status"] == before["status"]
+    assert row["attempt_token"] == job["attempt_token"]
 
 
 def test_queue_initialization_refuses_old_release_without_creating_directories(tmp_path):
@@ -298,16 +305,17 @@ def test_heartbeat_resumes_after_transient_busy(tmp_path, monkeypatch):
     queue.enqueue("remove_active", {"source_name": "synthetic.xlsx"})
     job = queue._claim_next()
     before = queue.status(job["id"])["updated_at"]
-    _busy_once(monkeypatch, contract)
+    failures = _busy_once(monkeypatch, contract, thread_name="synthetic-heartbeat")
     queue.heartbeat_seconds = .02
     stop = threading.Event()
-    thread = threading.Thread(target=queue._keep_alive, args=(job, stop))
+    thread = threading.Thread(target=queue._keep_alive, args=(job, stop), name="synthetic-heartbeat")
     thread.start()
     try:
         deadline = time.monotonic() + 2
         while queue.status(job["id"])["updated_at"] == before and time.monotonic() < deadline:
             time.sleep(.01)
         assert queue.status(job["id"])["updated_at"] > before
+        assert failures == ["busy"]
     finally:
         stop.set()
         thread.join(2)
@@ -325,9 +333,10 @@ def test_async_queue_retries_transient_busy(tmp_path, monkeypatch):
     queue = GraphSyncQueue(Graph(), contract.data_dir / "queue.sqlite3", auto_start=False,
                            runtime_contract=contract)
     job = queue.enqueue("remove_active", {"source_name": "synthetic.xlsx"})
-    _busy_once(monkeypatch, contract)
+    failures = _busy_once(monkeypatch, contract, thread_name="graph-sync-outbox")
     queue.start()
     assert queue.wait(job["id"], timeout=3)["status"] == "complete"
+    assert failures == ["busy"]
 
 
 def test_refresh_retries_transient_busy(tmp_path, monkeypatch):

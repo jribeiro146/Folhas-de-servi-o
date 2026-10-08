@@ -625,13 +625,14 @@ def test_held_expiration_preserves_mail_receipt_and_recovery_never_resends(tmp_p
     queue.mail_job_max_attempts = 1
     failed_once = []
 
-    def after_mail(*args, **kwargs):
+    complete = queue._mark_complete
+    def after_mail(job, result):
         if not failed_once:
             failed_once.append(True)
             raise RuntimeError("Failure after accepted mail, before completion")
-        return None
+        return complete(job, result)
 
-    queue._enqueue_teams_notification = after_mail
+    queue._mark_complete = after_mail
     with editing.transaction("document", lambda: {}) as state:
         state["operations"] = {"finalize": {"status": "complete"}}
     job = queue.enqueue("archive_and_remove", {
