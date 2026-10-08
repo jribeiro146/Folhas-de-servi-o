@@ -261,13 +261,100 @@ def test_web_and_worker_start_together_with_preflight_on_new_storage(tmp_path):
         results.close()
 
 
-def test_marked_store_with_unknown_check_constraint_is_not_compatible(tmp_path):
+@pytest.mark.parametrize("declaration", ["TEXT NOT NULL CHECK(length(state_json)<4)",
+                                       "TEXT COLLATE NOCASE NOT NULL", "TEXT /* synthetic */ NOT NULL"])
+def test_marked_store_with_unknown_check_constraint_is_not_compatible(tmp_path, declaration):
     database = tmp_path / "editing.sqlite3"
     factory("editing", database)
     with closing(sqlite3.connect(database)) as db:
         ddl = db.execute("SELECT sql FROM sqlite_master WHERE name='editing_states'").fetchone()[0]
         db.execute("DROP TABLE editing_states")
-        db.execute(ddl.replace("state_json TEXT NOT NULL", "state_json TEXT NOT NULL CHECK(length(state_json)<4)"))
+        db.execute(ddl.replace("state_json TEXT NOT NULL", "state_json " + declaration))
         db.commit()
     with pytest.raises(ContractError):
         factory("editing", database)
+
+
+@pytest.mark.parametrize("mode", ["DELETE", "WAL"])
+def test_preflight_recovers_journal_left_by_a_dead_writer(tmp_path, mode):
+    import subprocess
+    import sys
+    import time
+    from pathlib import Path
+    from src.services.sqlite_storage_format import preflight_stores, initialize_store
+    database = tmp_path / "editing-state" / "editing-state.sqlite3"
+    database.parent.mkdir()
+    database.touch()
+    if mode == "WAL":
+        with closing(sqlite3.connect(database)) as db:
+            initialize_store(db, "editing")
+            db.execute("PRAGMA journal_mode=WAL")
+    before = database.read_bytes()
+    ready = tmp_path / "writer-ready"
+    code = '''
+import sqlite3, sys
+from pathlib import Path
+from tools.test_runtime import block_outbound_network
+block_outbound_network()
+from src.services.sqlite_storage_format import SCHEMAS, IDENTITIES
+db = sqlite3.connect(sys.argv[1], isolation_level=None)
+mode = sys.argv[3]
+db.execute("PRAGMA journal_mode=" + mode)
+db.execute("PRAGMA synchronous=FULL")
+db.execute("PRAGMA cache_size=1")
+if mode == "WAL":
+    db.execute("INSERT INTO editing_states VALUES ('synthetic','committed',1)")
+db.execute("BEGIN IMMEDIATE")
+if mode == "DELETE":
+    for ddl in SCHEMAS["editing"]: db.execute(ddl)
+    db.execute("PRAGMA application_id=" + str(IDENTITIES["editing"]))
+    db.execute("PRAGMA user_version=1")
+db.execute("INSERT INTO editing_states VALUES ('uncommitted',randomblob(2000000),1)")
+Path(sys.argv[2]).write_text("ready")
+sys.stdin.read(1)
+'''
+    child = subprocess.Popen([sys.executable, "-B", "-c", code, str(database), str(ready), mode],
+                             cwd=Path(__file__).resolve().parents[1], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        deadline = time.monotonic() + 15
+        while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
+            time.sleep(.01)
+        if not ready.exists():
+            if child.poll() is None:
+                child.kill()
+            _, errors = child.communicate(timeout=10)
+            pytest.fail(errors.decode(errors="replace") or "Synthetic writer timed out")
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.communicate(timeout=10)
+    # No live connection in this process; inspecting files cannot release locks
+    # from the killed writer. Never remove a journal to make this test pass.
+    journal = database.with_name(database.name + ("-journal" if mode == "DELETE" else "-wal"))
+    assert journal.stat().st_size > 512
+    assert journal.read_bytes()[:8] != b"\0" * 8
+    if mode == "DELETE":
+        assert database.read_bytes() != before
+    preflight_stores(tmp_path)
+    factory("editing", database)
+    with closing(sqlite3.connect(database)) as db:
+        rows = db.execute("SELECT document_id,state_json FROM editing_states").fetchall()
+    assert rows == ([("synthetic", "committed")] if mode == "WAL" else [])
+
+
+def test_prepared_stores_allow_retained_legacy_snapshots_without_import(tmp_path, monkeypatch):
+    import src.web.application as web
+    import src.queue_worker as worker
+    import src.services.editing_state_service as editing_module
+    RuntimeContract(tmp_path, get_release_info()["source_sha256"]).initialize_empty()
+    editing = factory("editing", tmp_path / "editing-state" / "editing-state.sqlite3")
+    legacy = editing.database_path.parent / "legacy.json"
+    legacy.write_bytes(b'{"document_id":"synthetic","version":99,"revision":19}')
+    original = legacy.read_bytes()
+    for module in (web, worker, editing_module):
+        monkeypatch.setattr(module, "APP_DATA_DIR", tmp_path)
+    assert web.create_app().test_client().get("/").status_code == 200
+    worker.build_queue()
+    assert legacy.read_bytes() == original
+    assert editing.document_ids() == []

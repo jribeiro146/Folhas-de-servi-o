@@ -28,3 +28,9 @@ O P2 e o P3 foram reproduzidos em seis testes. Preflight e factory aceitam agora
 Foi removido também o fallback individual para JSON em EditingStateService: uma linha ausente recebe um novo estado, nunca o conteúdo de um snapshot antigo. Importação/quarentena são exclusivas da futura ferramenta offline; os ficheiros não são apagados. Teste com versão 99, revisão e autosave legados confirma que o snapshot não é adotado nem alterado. Dois processos reais arrancam agora a web e o worker com os preflights sobre a mesma instalação nova.
 
 Na revisão própria adicional, reproduziu-se um CHECK desconhecido que passava na comparação só por PRAGMA. A comparação do DDL canónico acrescentada acima fecha esse caso. Não foram operados dados reais.
+
+## Resposta à segunda revisão
+
+Os P2/P3 anteriores foram confirmados corrigidos. O P3 adicional de recuperação foi reproduzido: um subprocesso criou o DDL em DELETE, forçou páginas para disco e morreu com journal válido; `mode=ro` impedia o rollback e classificava a base como ilegível. O preflight usa agora `mode=rw`: continua a não criar um ficheiro ausente, não faz DDL nem escreve dados da aplicação, mas permite a recuperação normal do SQLite antes da inspeção. A transação de inspeção continua a ser BEGIN (leitura).
+
+O teste prova que a base mudou no disco antes do crash e que há journal válido, sem o apagar pela aplicação. Após recuperar, a criação prossegue sem os dados não confirmados. Um segundo processo morto em WAL deixa também WAL/SHM; o valor confirmado permanece, o valor não confirmado desaparece. Há ainda regressões de COLLATE/comentário desconhecidos no DDL e arranque web/worker sobre base marcada com snapshots JSON retidos, intactos e não importados. Linux permanece por executar.

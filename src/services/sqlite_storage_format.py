@@ -115,7 +115,9 @@ def preflight_stores(data_dir):
         legacy_json = kind == "editing" and any(path.parent.glob("*.json"))
         if path.exists():
             try:
-                with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as db:
+                # rw never creates a missing file, but permits SQLite to recover
+                # its hot journal after a crash before inspecting the schema.
+                with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True, timeout=1)) as db:
                     # Read all metadata from one snapshot while a concurrent
                     # initializer may publish its schema/markers atomically.
                     db.execute("BEGIN")
