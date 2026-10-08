@@ -92,20 +92,26 @@ refatoração, formatos persistentes e respetivos testes ainda não foram implem
 ## Mensagem fixa em memória (08/10/2026)
 
 `prepare_delivery` produz `GraphMailDelivery`, um objeto imutável com os bytes
-JSON finais e a identidade de envio (remetente e tenant), sem credenciais.
+JSON finais e a identidade de envio (remetente, tenant e caixa de teste normalizada),
+sem credenciais. Caixa de teste vazia identifica modo normal; preenchida identifica
+modo de teste, sem guardar dois campos redundantes que possam divergir.
 Não obtém tokens nem usa rede. O PDF é lido uma vez, com limite de 3 MiB + 1 byte,
 e a mensagem codificada continua limitada a 4 000 000 bytes. Erros de leitura
 são recusas conhecidas anteriores ao envio.
 
 `validate_delivery` verifica a configuração, a política de transporte, a identidade
-e a mensagem final sem reescrever conteúdo. Exige um único PDF válido, assunto e
-corpo, correlação e gravação nos itens enviados. Devolve metadados; isso não é uma
+e a mensagem final sem reescrever conteúdo. Exige um único PDF válido, assunto não
+vazio, corpo HTML em string (eventualmente vazia por compatibilidade com trabalhos
+legados), correlação e gravação nos itens enviados. Assunto legado só com espaços
+usa o assunto por omissão. Devolve metadados; isso não é uma
 aceitação do Graph. A validação antecipada de política só dispensa a guarda de
 ambiente quando há um transporte Python de teste explicitamente injetado.
 
 `send_delivery` repete a validação e transmite os mesmos bytes, sem ler ficheiros
 ou adaptar destinatários. Se mudar o remetente, tenant ou caixa de teste de forma
-incompatível, recusa. As credenciais podem ser renovadas sem alterar a mensagem.
+incompatível, recusa, incluindo a saída do modo de teste e a sua ativação mesmo
+quando o destinatário original coincide com a caixa de teste. As credenciais podem
+ser renovadas sem alterar a mensagem.
 O comprovativo é preparado antes do POST e só recebe `accepted=true` depois do
 retorno do transporte; continua a não comprovar entrega. Falhas ambíguas mantêm
 a classificação anterior. `send_prepared` preserva a interface antiga através
@@ -122,6 +128,37 @@ Esta API ainda não persiste mensagens nem muda a ordem da fila. O próximo pass
 tem de guardar e verificar o snapshot antes da remoção remota, contemplando
 interrupções, formatos persistentes e restauro. A assinatura institucional opcional
 também ainda não foi implementada.
+
+### Resposta à primeira revisão da mensagem fixa
+
+Quatro falhas reproduziram os dois achados: saída do modo de teste, entrada no
+modo de teste com o mesmo destinatário e assunto legado só com espaços nos dois
+modos. A identidade inclui agora a caixa de teste normalizada e o assunto vazio
+após strip usa o texto por omissão. Mantém-se corpo HTML vazio por compatibilidade,
+agora explicitado acima. Troca de caixa A por B continua recusada; diferenças
+apenas de maiúsculas/espaços na configuração e rotação do secret são permitidas.
+
+Pesquisa de consumidores em todos os ficheiros Python de src e tools: a única
+chamada operacional a GraphMailService.send_prepared é em
+GraphSyncQueue._send_mail_once. Web prepara os dados com prepare_service_email
+e testa ligação; não faz envio direto. O método homónimo do Teams é independente.
+prepare_delivery/send_delivery são por enquanto usados pelo wrapper e pelos testes.
+
+Não existe tests/test_graph_sync_queue*.py nesta árvore. Os testes de fila estão
+em test_graph_mail_service.py, test_graph_finalization_queue.py,
+test_audit_mail_recovery.py, test_audit_worker_ownership.py,
+test_graph_publication_recovery.py e test_audit_queue_corruption.py, entre outros
+testes de web/finalização. Nenhum depende de classificar OSError de leitura do PDF
+como mail_unknown. Foram acrescentados dois casos públicos de fila: PDF ausente
+ou PermissionError na leitura após o exportador devolver o caminho. Confirmam
+mail_rejected, sem reconciliação, sem retry automático e zero I/O de transporte.
+Preservam-se testes de resultado ambíguo depois do POST e de falha anterior no token.
+
+O Claude considerou adequado o desenho seguinte com BLOB/checkpoint na mesma
+SQLite, sob condição de identidade/hash/tamanho, transação por tentativa, FULL
+em cada conexão, formato queue=2, checkpoint de remoção, migração explícita e
+retenção/restauro. Esse parecer é sobre o desenho; persistência e mudança da ordem
+ainda não foram implementadas nesta alteração.
 
 ## Próximas etapas, ainda não implementadas
 

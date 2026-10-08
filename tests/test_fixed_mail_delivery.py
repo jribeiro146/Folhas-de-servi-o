@@ -137,3 +137,47 @@ def test_incomplete_fixed_message_is_rejected_before_any_delivery(tmp_path, brok
     service = mail.GraphMailService(mail_config(), transport=lambda *a, **kw: pytest.fail("No I/O"))
     with pytest.raises(mail.GraphMailConfigurationError):
         service.send_delivery(invalid)
+
+
+@pytest.mark.parametrize("initial, current", [("sandbox@example.invalid", ""),
+    ("sandbox@example.invalid", "other@example.invalid"), ("", "customer@example.invalid")])
+def test_fixed_message_binds_test_mode_in_both_directions(tmp_path, initial, current):
+    pdf = tmp_path / "synthetic.pdf"
+    pdf.write_bytes(b"%PDF-synthetic")
+    calls = []
+    transport = lambda req, **kw: calls.append(req) or Response()
+    service = mail.GraphMailService(replace(mail_config(), test_recipient=initial), transport=transport)
+    delivery = service.prepare_delivery({"to": "customer@example.invalid"}, pdf, operation_id="mode")
+    changed = mail.GraphMailService(replace(mail_config(), test_recipient=current), transport=transport)
+    with pytest.raises(mail.GraphMailConfigurationError):
+        changed.send_delivery(delivery)
+    assert calls == []
+
+
+@pytest.mark.parametrize("test_box", ["", "sandbox@example.invalid"])
+def test_legacy_whitespace_subject_uses_default_and_empty_html_remains_allowed(tmp_path, test_box):
+    pdf = tmp_path / "synthetic.pdf"
+    pdf.write_bytes(b"%PDF-synthetic")
+    calls = []
+    service = mail.GraphMailService(replace(mail_config(), test_recipient=test_box),
+                                   transport=lambda req, **kw: calls.append(req) or Response())
+    service.send_prepared({"to": "customer@example.invalid", "subject": "  \t ", "body_html": ""},
+                          pdf, operation_id="legacy")
+    message = json.loads(calls[-1].data)["message"]
+    assert message["subject"] == ("[TESTE] " if test_box else "") + "Folha de serviço nº - Sensorpoint"
+    assert message["body"] == {"contentType": "HTML", "content": ""}
+
+
+def test_test_identity_normalization_and_secret_rotation_preserve_fixed_bytes(tmp_path):
+    pdf = tmp_path / "synthetic.pdf"
+    pdf.write_bytes(b"%PDF-synthetic")
+    calls = []
+    transport = lambda req, **kw: calls.append(req) or Response()
+    service = mail.GraphMailService(replace(mail_config(), test_recipient=" Sandbox@Example.Invalid "),
+                                   transport=transport)
+    delivery = service.prepare_delivery({"to": "customer@example.invalid"}, pdf, operation_id="rotate")
+    assert delivery.test_recipient == "sandbox@example.invalid"
+    other = mail.GraphMailService(replace(mail_config(), test_recipient="sandbox@example.invalid",
+                                         client_secret="synthetic-rotated"), transport=transport)
+    assert other.send_delivery(delivery)["accepted"] is True
+    assert calls[-1].data == delivery.payload

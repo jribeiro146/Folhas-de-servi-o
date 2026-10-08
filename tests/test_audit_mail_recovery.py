@@ -2,6 +2,7 @@
 import io
 import json
 import time
+from pathlib import Path
 from http.client import RemoteDisconnected
 from urllib.error import URLError, HTTPError
 
@@ -98,3 +99,30 @@ def test_unknown_runtime_error_after_post_is_not_an_automatic_retry(tmp_path, mo
     queue.run_until_idle()
     assert queue.status(job["id"])["reconciliation_required"]
     assert not queue.status(job["id"])["will_retry"]
+
+
+@pytest.mark.parametrize("failure", ["missing", "unreadable"])
+def test_pdf_read_failure_before_send_is_a_known_terminal_refusal(tmp_path, monkeypatch, failure):
+    calls = []
+    queue, job = queue_with_mail(tmp_path, monkeypatch, lambda *a, **kw: calls.append(a))
+    pdf = tmp_path / "synthetic.pdf"
+    if failure == "missing":
+        pdf.unlink()
+    else:
+        original_open = Path.open
+
+        def denied(path, *args, **kwargs):
+            if path == pdf:
+                raise PermissionError("Synthetic unreadable PDF")
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", denied)
+    queue.run_until_idle()
+    state = queue.status(job["id"])
+    assert state["status"] == "failed"
+    assert state["result"]["phase"] == "mail_rejected"
+    assert state["will_retry"] is False
+    assert state["reconciliation_required"] is False
+    queue.run_until_idle()
+    assert queue.status(job["id"])["attempts"] == 1
+    assert calls == []

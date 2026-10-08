@@ -77,6 +77,7 @@ class GraphMailDelivery:
     payload: bytes
     sender: str
     tenant_id: str
+    test_recipient: str
 
 
 @dataclass(frozen=True)
@@ -319,7 +320,7 @@ class GraphMailService:
         seen = {recipient.casefold()}
         if not self.config.test_recipient and technician and technician.casefold() not in seen:
             cc_recipients.append(technician)
-        subject = str(prepared.get("subject") or "Folha de serviço nº - Sensorpoint").strip()
+        subject = str(prepared.get("subject") or "").strip() or "Folha de serviço nº - Sensorpoint"
         if self.config.test_recipient and not subject.startswith("[TESTE]"):
             subject = f"[TESTE] {subject}"
         body_html = str(prepared.get("body_html") or "").strip()
@@ -365,7 +366,9 @@ class GraphMailService:
         payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         delivery = GraphMailDelivery(payload_bytes,
                                      self.validate_address(self.config.sender, label="remetente"),
-                                     self.config.tenant_id.strip())
+                                     self.config.tenant_id.strip(),
+                                     self.validate_address(self.config.test_recipient).casefold()
+                                     if self.config.test_recipient else "")
         self.validate_delivery(delivery)
         return delivery
 
@@ -380,7 +383,10 @@ class GraphMailService:
         if (not isinstance(delivery, GraphMailDelivery)
                 or not isinstance(delivery.sender, str) or not isinstance(delivery.tenant_id, str)
                 or delivery.sender.casefold() != self.validate_address(self.config.sender).casefold()
-                or delivery.tenant_id.casefold() != self.config.tenant_id.strip().casefold()):
+                or delivery.tenant_id.casefold() != self.config.tenant_id.strip().casefold()
+                or not isinstance(delivery.test_recipient, str)
+                or delivery.test_recipient != (self.validate_address(self.config.test_recipient).casefold()
+                                               if self.config.test_recipient else "")):
             raise GraphMailConfigurationError("A identidade de envio difere da mensagem preparada.")
         self._validate_delivery_payload(delivery.payload)
         try:
