@@ -181,3 +181,27 @@ def test_test_identity_normalization_and_secret_rotation_preserve_fixed_bytes(tm
                                          client_secret="synthetic-rotated"), transport=transport)
     assert other.send_delivery(delivery)["accepted"] is True
     assert calls[-1].data == delivery.payload
+
+
+@pytest.mark.parametrize("test_box, subject, allowed", [
+    ("sandbox@example.invalid", "Synthetic without marker", False),
+    ("", "Synthetic without marker", True),
+    ("", "[TESTE] Synthetic", True),
+])
+def test_fixed_test_message_requires_marker_without_rewriting_normal_messages(tmp_path, test_box, subject, allowed):
+    pdf = tmp_path / "synthetic.pdf"
+    pdf.write_bytes(b"%PDF-synthetic")
+    calls = []
+    service = mail.GraphMailService(replace(mail_config(), test_recipient=test_box),
+                                   transport=lambda req, **kw: calls.append(req) or Response())
+    delivery = service.prepare_delivery({"to": "customer@example.invalid"}, pdf, operation_id="marker")
+    payload = json.loads(delivery.payload)
+    payload["message"]["subject"] = subject
+    changed = replace(delivery, payload=json.dumps(payload).encode("utf-8"))
+    if allowed:
+        assert service.send_delivery(changed)["accepted"] is True
+        assert calls[-1].data == changed.payload
+    else:
+        with pytest.raises(mail.GraphMailConfigurationError):
+            service.send_delivery(changed)
+        assert calls == []

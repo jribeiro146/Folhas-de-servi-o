@@ -126,3 +126,42 @@ def test_pdf_read_failure_before_send_is_a_known_terminal_refusal(tmp_path, monk
     queue.run_until_idle()
     assert queue.status(job["id"])["attempts"] == 1
     assert calls == []
+
+
+def test_graph_queue_pdf_read_failure_has_known_mail_result_even_after_removal(tmp_path, monkeypatch):
+    pdf = tmp_path / "synthetic.pdf"
+    pdf.write_bytes(b"%PDF-synthetic")
+    events = []
+    class Graph:
+        def upload_archive_bundle(self, _):
+            events.append("upload")
+            return ["synthetic.xlsx"]
+
+        def export_archive_pdf(self, _):
+            events.append("pdf")
+            return pdf, "synthetic.pdf"
+
+        def remove_active_name(self, *args, **kwargs):
+            events.append("remove")
+            return True
+
+    original_open = Path.open
+    def denied(path, *args, **kwargs):
+        if path == pdf:
+            raise PermissionError("Synthetic unreadable PDF")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied)
+    mail = GraphMailService(GraphMailConfig("synthetic", "synthetic", "synthetic", "sender@example.invalid"),
+                            transport=lambda *a, **kw: pytest.fail("No mail I/O"))
+    queue = GraphSyncQueue(Graph(), tmp_path / "queue.sqlite3", mail_service=mail, auto_start=False)
+    job = queue.enqueue("archive_and_remove", {"archived_path": str(tmp_path / "synthetic.xlsx"),
+        "source_name": "synthetic.xlsx", "mail": {"to": "customer@example.invalid"}})
+    queue.run_until_idle()
+    state = queue.status(job["id"])
+    assert state["status"] == "failed"
+    assert state["result"]["phase"] == "mail_rejected"
+    assert not state["reconciliation_required"] and not state["will_retry"]
+    # Current, explicitly pending workflow limitation; durable preflight must
+    # move validation ahead of this remove in the next functional change.
+    assert events == ["upload", "pdf", "remove"]

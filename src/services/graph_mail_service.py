@@ -396,6 +396,7 @@ class GraphMailService:
                     or len(message["toRecipients"]) != 1 or len(message.get("ccRecipients", [])) > 1
                     or "bccRecipients" in message
                     or not isinstance(message["subject"], str) or not message["subject"]
+                    or (delivery.test_recipient and not message["subject"].startswith("[TESTE]"))
                     or not isinstance(message["body"], dict)
                     or message["body"].get("contentType") != "HTML"
                     or not isinstance(message["body"].get("content"), str)):

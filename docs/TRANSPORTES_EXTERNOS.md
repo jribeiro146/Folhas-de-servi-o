@@ -160,6 +160,26 @@ em cada conexão, formato queue=2, checkpoint de remoção, migração explícit
 retenção/restauro. Esse parecer é sobre o desenho; persistência e mudança da ordem
 ainda não foram implementadas nesta alteração.
 
+### Resposta à segunda revisão da mensagem fixa
+
+A revalidação exige agora prefixo `[TESTE]` quando a identidade guardada identifica
+modo de teste. Não acrescenta o prefixo nem modifica os bytes ao enviar. Em modo
+normal, um assunto com ou sem esse marcador continua permitido e não muda o modo.
+O caso de teste com marcador removido falhou antes da correção; dois controlos
+positivos confirmam os bytes inalterados no modo normal.
+
+Acrescentado também o cenário Graph com PDF ilegível: mail_rejected conhecido,
+sem reconciliação nem transporte mail. O teste expõe a limitação ainda existente:
+o ativo foi removido antes dessa recusa. Será alterado quando a preparação durável
+for integrada no fluxo, na próxima mudança, sem alegar resolução antecipada.
+
+O pedido de executar `tools/validate_migration.py` refere uma ferramenta do pacote
+demo exterior, `App_Folhas_Checklists/aplicacao/tools/validate_migration.py`.
+Esse ficheiro não existe no checkout de produção desta revisão. Executar o do demo
+não validaria este SHA; não foi copiado nem apresentado como teste da produção.
+A bateria pytest completa da árvore canónica é a verificação aplicável, complementada
+pelos ensaios de migração explícita ainda previstos no plano.
+
 ## Próximas etapas, ainda não implementadas
 
 Antecipar a validação no fluxo Graph antes da remoção do ativo: neste ponto,
