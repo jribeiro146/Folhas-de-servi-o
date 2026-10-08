@@ -12,7 +12,6 @@ import datetime as dt
 import os
 import secrets
 import time
-import gc
 import re
 import unicodedata
 from io import BytesIO
@@ -166,24 +165,31 @@ class ExcelService:
             self._validate_sheet_names(wb.sheetnames)
         finally:
             wb.close()
-            gc.collect()
 
     def read_link(self, fields: list[FieldDef] | tuple[FieldDef, ...] | None = None) -> dict[str, Any]:
         wb = self._load_workbook(read_only=True, data_only=True)
         try:
             self._validate_sheet_names(wb.sheetnames)
             ws = wb[SHEET_LINK]
-            field_columns = self._resolve_link_columns(ws)
+            # ReadOnlyWorksheet.cell() reopens the XML for every cell. Exhaust
+            # one bounded iterator for headers/data so its source also closes.
+            first_row = min(LINK_LABELS_ROW, LINK_DATA_ROW)
+            last_row = max(LINK_LABELS_ROW, LINK_DATA_ROW)
+            width = max(ws.max_column or 1, max(column_index_from_string(field.column) for field in FIELD_MAP))
+            rows = dict(enumerate(ws.iter_rows(
+                min_row=first_row, max_row=last_row, min_col=1, max_col=width, values_only=True,
+            ), start=first_row))
+            field_columns = self._resolve_link_columns(ws, header_values=rows.get(LINK_LABELS_ROW, ()))
+            values = rows.get(LINK_DATA_ROW, ())
             data: dict[str, Any] = {}
 
             for field in fields or FIELD_MAP:
                 col_idx = field_columns.get(field.column)
-                data[field.column] = ws.cell(row=LINK_DATA_ROW, column=col_idx).value if col_idx else None
+                data[field.column] = values[col_idx - 1] if col_idx and col_idx <= len(values) else None
 
             return data
         finally:
             wb.close()
-            gc.collect()
 
     def read_link_as_form_data(self) -> dict[str, Any]:
         input_fields = tuple(field for field in FIELD_MAP if field.label in LINK_FORM_INPUT_LABELS)
@@ -239,7 +245,6 @@ class ExcelService:
             raise ExcelFileLockedError(self._locked_message()) from exc
         finally:
             wb.close()
-            gc.collect()
 
         try:
             os.replace(str(temp_path), str(self.file_path))
@@ -361,8 +366,11 @@ class ExcelService:
         return False
 
     @classmethod
-    def _resolve_link_columns(cls, worksheet) -> dict[str, int]:
-        header_columns = cls._build_header_columns(worksheet)
+    def _resolve_link_columns(cls, worksheet, *, header_values=None) -> dict[str, int]:
+        header_columns = (
+            cls._build_header_columns(worksheet) if header_values is None
+            else cls._header_columns_from_values(header_values)
+        )
         has_link_headers = sum(len(columns) for columns in header_columns.values()) >= 5
         resolved: dict[str, int] = {}
 
@@ -379,10 +387,15 @@ class ExcelService:
 
     @classmethod
     def _build_header_columns(cls, worksheet) -> dict[str, list[int]]:
+        rows = list(worksheet.iter_rows(min_row=LINK_LABELS_ROW, max_row=LINK_LABELS_ROW, values_only=True))
+        return cls._header_columns_from_values(rows[0] if rows else ())
+
+    @classmethod
+    def _header_columns_from_values(cls, values) -> dict[str, list[int]]:
         header_columns: dict[str, list[int]] = {}
 
-        for col_idx in range(1, worksheet.max_column + 1):
-            normalized = cls._normalize_header_label(worksheet.cell(row=LINK_LABELS_ROW, column=col_idx).value)
+        for col_idx, value in enumerate(values, start=1):
+            normalized = cls._normalize_header_label(value)
             if not normalized:
                 continue
             header_columns.setdefault(normalized, []).append(col_idx)
