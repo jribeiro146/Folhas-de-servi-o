@@ -149,11 +149,13 @@ class RuntimeContract:
         with self._session(require_match=False) as (_, snapshot):
             return snapshot
 
-    def activate(self, next_source_sha256: str, *, next_formats: dict) -> dict:
+    def activate(self, next_source_sha256: str, *, next_formats: dict, validate_storage=None) -> dict:
         """Switch compatible code after all admitted operations have stopped.
 
         The instance's source is the expected previous release. This is not a
         migration or rollback command and never changes storage format markers.
+        A trusted caller may validate the application stores under the same
+        exclusion; any failure aborts the transition.
         """
         _validate_source(next_source_sha256)
         if (not isinstance(next_formats, dict) or next_formats != SUPPORTED_FORMATS
@@ -161,6 +163,8 @@ class RuntimeContract:
             raise ContractError("A versão de destino exige outro formato; preparar migração explícita.")
         try:
             with self._session(exclusive=True) as (connection, snapshot):
+                if validate_storage is not None:
+                    validate_storage()
                 if snapshot["source_sha256"] != next_source_sha256:
                     connection.execute("UPDATE state_contract SET source_sha256=?, epoch=epoch+1 WHERE singleton=1",
                                        (next_source_sha256,))
