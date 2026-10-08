@@ -29,6 +29,9 @@ GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 TOKEN_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
 EMAIL_PATTERN = re.compile(r"^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$")
 MAX_SIMPLE_ATTACHMENT_BYTES = 3 * 1024 * 1024
+# Conservative decimal limit: the provider documents 4 MB, without promising
+# the larger binary interpretation or mailbox-specific acceptance.
+MAX_SIMPLE_REQUEST_BYTES = 4_000_000
 
 
 class GraphMailError(Exception):
@@ -147,6 +150,42 @@ class GraphMailService:
         if len(address) > 254 or not EMAIL_PATTERN.fullmatch(address):
             raise GraphMailError(f"O {label} não é válido.")
         return address
+
+    def _validate_delivery_payload(self, data: bytes | None) -> None:
+        """Validate the actual serialized request before credentials or delivery."""
+        if not isinstance(data, bytes):
+            raise GraphMailConfigurationError("A mensagem codificada de e-mail não é válida.")
+        if len(data) > MAX_SIMPLE_REQUEST_BYTES:
+            raise GraphMailError(
+                "O e-mail excede 4 MB após codificação, incluindo corpo e anexos. "
+                "Reduza o tamanho do conteúdo para usar o envio simples do Graph."
+            )
+        try:
+            payload = json.loads(data.decode("utf-8"))
+            if not isinstance(payload, dict) or not isinstance(payload.get("message"), dict):
+                raise ValueError("Invalid message")
+            message = payload["message"]
+            if not message.get("toRecipients"):
+                raise ValueError("Missing recipient")
+            expected = (self.validate_address(self.config.test_recipient).casefold()
+                        if self.config.test_recipient else None)
+            for key in ("toRecipients", "ccRecipients", "bccRecipients"):
+                recipients = message.get(key, [])
+                if not isinstance(recipients, list):
+                    raise ValueError("Invalid recipient list")
+                for recipient in recipients:
+                    if not isinstance(recipient, dict) or not isinstance(recipient.get("emailAddress"), dict):
+                        raise ValueError("Invalid recipient")
+                    value = recipient["emailAddress"].get("address")
+                    if not isinstance(value, str):
+                        raise ValueError("Invalid address")
+                    address = self.validate_address(value)
+                    if expected is not None and address.casefold() != expected:
+                        raise ValueError("Recipient outside test mailbox")
+        except (ValueError, TypeError, UnicodeError, RecursionError, GraphMailError) as exc:
+            raise GraphMailConfigurationError(
+                "Destinatários efetivos inválidos ou fora da caixa de teste autorizada."
+            ) from exc
 
     def prepare_service_email(
         self,
@@ -282,11 +321,13 @@ class GraphMailService:
             },
             "saveToSentItems": True,
         }
+        payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self._validate_delivery_payload(payload_bytes)
         sender = parse.quote(self.config.sender, safe="@._-+")
         self._graph_bytes(
             "POST",
             f"/users/{sender}/sendMail",
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            data=payload_bytes,
             content_type="application/json",
         )
         return {
@@ -378,7 +419,9 @@ class GraphMailService:
             except ValueError as exc:
                 raise GraphMailConfigurationError(str(exc)) from exc
             transport = request.urlopen
-        is_send = method.upper() == "POST" and parse.urlsplit(url).path.endswith("/sendMail")
+        is_send = method.upper() == "POST" and parse.unquote(parse.urlsplit(url).path).rstrip("/").casefold().endswith("/sendmail")
+        if is_send:
+            self._validate_delivery_payload(data)
         request_headers = dict(headers or {})
         if authenticated:
             request_headers["Authorization"] = f"Bearer {self._access_token_value()}"

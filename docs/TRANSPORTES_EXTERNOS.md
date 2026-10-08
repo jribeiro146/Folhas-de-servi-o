@@ -37,9 +37,35 @@ externo nem alegação de resultado incerto. Depois de corrigida a configuraçã
 a repetição manual segue as regras operacionais existentes. Os testes cobrem
 as duas filas, ausência de I/O e uma única tentativa após a recusa.
 
-## Próximas etapas, ainda não implementadas neste commit
+## Envelope efetivo e limite codificado (08/10/2026)
 
-Validar o envelope efetivo Para/CC/BCC e o limite do pedido codificado; acrescentar
-assinatura institucional opcional em recurso privado; recuperar notificações
-Teams de forma durável e distinguir o seu resultado incerto; sanitizar diagnóstico.
-Esta alteração não aprova essas funcionalidades nem o candidato completo.
+A mensagem JSON efetivamente transmitida é validada antes da obtenção de token
+ou do POST, também com transporte injetado e em chamadas diretas à fronteira HTTP.
+Para/CC/BCC exigem estruturas e endereços válidos; com caixa de teste configurada,
+todos têm de coincidir com ela. Sem caixa de teste, mantêm-se destinatários externos
+de produção. `send_prepared` continua a reconstruir CC apenas com o técnico e a
+excluir BCC legado. A validação não escreve na fila nem modifica mensagens antigas.
+
+O limite local é **4 000 000 bytes** para o JSON UTF-8 completo, incluindo corpo,
+metadados e base64 dos anexos. A documentação Microsoft refere 4 MB para pedidos
+de escrita; escolheu-se a interpretação decimal conservadora, em vez de aceitar
+4 MiB (4 194 304 bytes). Um PDF permitido pelo limite bruto pode ser recusado após
+codificação. A mensagem indica que deve reduzir o conteúdo; não há upload de
+anexos grandes automático. Estar dentro do limite não garante aceitação/entrega
+ou ultrapassa políticas da caixa Microsoft. Fontes oficiais:
+[limites do pedido Graph](https://learn.microsoft.com/en-us/graph/use-the-api) e
+[sendMail](https://learn.microsoft.com/en-us/graph/api/user-sendmail?view=graph-rest-1.0).
+
+Testes sintéticos verificam o limite exato e mais um byte, corpo UTF-8, base64,
+Para/CC/BCC, payload inválido, token em cache e variantes do caminho sendMail,
+sempre sem I/O externo. Recusas são falhas conhecidas, sem repetição automática;
+os recibos e a reconciliação de envios incertos conservam a política existente.
+
+## Próximas etapas, ainda não implementadas
+
+Antecipar a validação no fluxo Graph antes da remoção do ativo: neste ponto,
+`archive_and_remove` ainda remove antes de chamar `send_prepared`; não se dá a
+etapa de fluxo como concluída. Só se validou a fronteira do mail. Acrescentar
+assinatura institucional opcional privada; recuperar notificações Teams de forma
+durável e distinguir o seu resultado incerto; sanitizar diagnóstico. Esta alteração
+não aprova essas funcionalidades, a instalação ou o candidato completo.
