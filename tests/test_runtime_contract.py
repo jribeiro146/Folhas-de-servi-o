@@ -194,6 +194,7 @@ def test_exclusive_transition_blocks_entry_and_recovers_its_hot_journal_after_cr
     from src.services.runtime_contract import RuntimeContract, ContractBusy
     contract = RuntimeContract(tmp_path / "data", "a" * 64)
     contract.initialize_empty()
+    before_database = contract.path.read_bytes()  # No SQLite connection is open yet.
     ready = tmp_path / "ready"
     # SQLite boundary fixture: interrupt a real exclusive update before commit.
     # Force pages to spill so this exercises recovery, not only an in-memory rollback.
@@ -232,6 +233,10 @@ sys.stdin.read(1)
         if process.poll() is None:
             process.kill()
         process.communicate(timeout=10)
+    # The writer is dead and the failed reader connection is closed. Reading
+    # bytes here cannot invalidate a live POSIX lock in either process.
+    assert contract.path.read_bytes() != before_database
+    assert contract.path.with_name(contract.path.name + "-journal").exists()
     with contract.operation() as snapshot:
         assert snapshot["source_sha256"] == "a" * 64
         assert snapshot["epoch"] == 1
@@ -284,4 +289,27 @@ def test_initialize_repeatedly_preserves_contract_and_rejects_a_different_releas
     assert contract.initialize_empty() == before
     with pytest.raises(ContractError, match="incompatível"):
         RuntimeContract(contract.data_dir, "b" * 64).initialize_empty()
+    assert contract.inspect() == before
+    assert contract.activate("a" * 64, next_formats=FORMATS) == before
+
+
+def test_failed_activation_commit_has_a_controlled_error_and_preserves_previous_state(tmp_path, monkeypatch):
+    from src.services.runtime_contract import RuntimeContract, ContractError
+    contract = RuntimeContract(tmp_path / "data", "a" * 64)
+    before = contract.initialize_empty()
+    original_connect = sqlite3.connect
+
+    class CommitFailure(sqlite3.Connection):
+        def commit(self):
+            failure = sqlite3.OperationalError("synthetic storage full")
+            failure.sqlite_errorcode = sqlite3.SQLITE_FULL
+            raise failure
+
+    def connect(*args, **kwargs):
+        return original_connect(*args, factory=CommitFailure, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(sqlite3, "connect", connect)
+        with pytest.raises(ContractError, match="ativação"):
+            contract.activate("b" * 64, next_formats=FORMATS)
     assert contract.inspect() == before

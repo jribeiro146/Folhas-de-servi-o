@@ -159,11 +159,16 @@ class RuntimeContract:
         if (not isinstance(next_formats, dict) or next_formats != SUPPORTED_FORMATS
                 or any(type(value) is not int for value in next_formats.values())):
             raise ContractError("A versão de destino exige outro formato; preparar migração explícita.")
-        with self._session(exclusive=True) as (connection, snapshot):
-            if snapshot["source_sha256"] != next_source_sha256:
-                connection.execute("UPDATE state_contract SET source_sha256=?, epoch=epoch+1 WHERE singleton=1",
-                                   (next_source_sha256,))
-            result = {**self._read(connection), "matches_release": True}
-            connection.commit()
-            # Return this committed transition, without a racy second connection.
-            return result
+        try:
+            with self._session(exclusive=True) as (connection, snapshot):
+                if snapshot["source_sha256"] != next_source_sha256:
+                    connection.execute("UPDATE state_contract SET source_sha256=?, epoch=epoch+1 WHERE singleton=1",
+                                       (next_source_sha256,))
+                result = {**self._read(connection), "matches_release": True}
+                connection.commit()
+                # Return this committed transition, without a racy second connection.
+                return result
+        except sqlite3.Error as exc:
+            if (getattr(exc, "sqlite_errorcode", 0) & 255) in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                raise ContractBusy("Não foi possível concluir a ativação; há uma operação em curso.") from exc
+            raise ContractError("Não foi possível confirmar a ativação; consultar o contrato antes de repetir.") from exc
