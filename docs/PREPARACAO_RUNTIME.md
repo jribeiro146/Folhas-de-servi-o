@@ -26,8 +26,9 @@ worker e não usa credenciais/transportes.
 
 ## Mudança entre versões compatíveis
 
-A mensagem durável exige fila de formato 2 (editing continua 1). `activate` não
-converte uma fila de formato 1: recusa-a. Esta transição exige a ferramenta de
+A mensagem durável e a retenção de resultados incertos Teams exigem fila de
+formato 3 (editing continua 1). `activate` não converte filas de formato 1 ou 2:
+recusa-as. Esta transição exige a ferramenta de
 migração offline ainda prevista no plano; não mudar marcadores manualmente nem
 apagar a fila para contornar a recusa. Não instalar este checkpoint em produção.
 

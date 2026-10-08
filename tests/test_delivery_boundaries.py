@@ -103,6 +103,11 @@ def test_default_transport_allows_enabled_production_using_only_a_simulator(tmp_
     monkeypatch.setattr(teams, "TEAMS_NOTIFICATIONS_ENABLED", True, raising=False)
     calls = []
     monkeypatch.setattr(mail.request, "urlopen", lambda req, **kwargs: calls.append(req.full_url) or Response())
+    class SimulatedOpener:
+        def open(self, req, **kwargs):
+            calls.append(req.full_url)
+            return Response()
+    monkeypatch.setattr(teams.request, "build_opener", lambda *handlers: SimulatedOpener())
     assert send_mail(mail_service(), tmp_path)["accepted"] is True
     service = teams.TeamsNotificationService(teams.TeamsNotificationConfig("https://example.invalid/workflow"))
     prepared = service.prepare_service_sent_notification(service_number="synthetic")

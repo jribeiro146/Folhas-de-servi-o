@@ -20,7 +20,7 @@ CONTRACT_FILE = "runtime-contract.sqlite3"
 APPLICATION_ID = 0x46534354
 CONTRACT_VERSION = 1
 # Versions of the storage contracts, not individual document schema versions.
-SUPPORTED_FORMATS = {"editing": 1, "queue": 2, "bundle": 1, "sadi": 1, "inventory": 1}
+SUPPORTED_FORMATS = {"editing": 1, "queue": 3, "bundle": 1, "sadi": 1, "inventory": 1}
 
 
 class ContractError(RuntimeError):

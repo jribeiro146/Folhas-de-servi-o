@@ -13,7 +13,7 @@ class StorageFormatError(ContractError):
 
 
 IDENTITIES = {"editing": 0x46534544, "queue": 0x46535155}
-VERSIONS = {"editing": 1, "queue": 2}
+VERSIONS = {"editing": 1, "queue": 3}
 SCHEMAS = {
     "editing": (
         """CREATE TABLE editing_states (

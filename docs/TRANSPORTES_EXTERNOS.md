@@ -330,10 +330,8 @@ e acrescenta contagens `teams_missing` e `teams_conflicts`, disponíveis no diag
 da API/admin e no resumo do worker. Pais históricos já concluídos sem filho são
 assinalados, sem criar ou enviar automaticamente notificações antigas.
 
-O esquema SQLite não mudou nesta parte: mantém-se queue=2 e a ativação de release
-exige escritores parados. A classificação de resultado externo incerto do Teams e
-o limite de retries ainda são a próxima alteração, antes de se considerar a etapa
-Teams concluída. Não instalar este checkpoint isoladamente.
+Na alteração da intenção persistente, o esquema manteve-se queue=2. A proteção
+abaixo eleva-o a queue=3 para impedir a execução por workers anteriores.
 
 Testes sintéticos usam processos que terminam antes/depois do commit do recibo,
 comprovativo externo simulado persistido, um único filho, zero reenvios de email,
@@ -343,8 +341,44 @@ a fronteira de conclusão, preservando a verificação do recibo durante retry/g
 Os testes de busy do heartbeat/worker dirigem a falha à thread respetiva, porque
 as consultas de status também têm agora admissão e podiam consumir a falha simulada.
 
+### Resultado do POST Teams e repetição limitada
+
+A fila valida configuração/guardas/payload antes de gravar sending_teams. Esta
+fase é confirmada em SQLite, com synchronous=FULL, antes de entrar no transporte.
+Uma aceitação 2xx produz teams_accepted e accepted=true, gravados na mesma
+transação que a conclusão. Se essa transação falhar, permanece sending_teams:
+não há prova durável de aceitação nem permissão para repetir.
+
+Timeout, falha de ligação, resposta inválida, 3xx, 408, 425, 5xx ou outra exceção
+depois de começar o pedido deixam teams_unknown. Os redirecionamentos automáticos
+do transporte urllib estão desativados. Stale sending_teams também é retido
+como desconhecido, nunca reclamado para envio. Antes do POST, uma interrupção
+conhecida fica parada para revisão manual. A fila e as duas rotas de retry,
+incluindo o painel administrativo, recusam repetir resultados incertos.
+
+Rejeições HTTP 4xx, exceto 408/425, são conhecidas e terminais. Só HTTP429 com
+Retry-After explícito e válido permite retry automático: segundos ou data HTTP
+com fuso, até 24h. Um prazo superior exige revisão manual; nunca é encurtado.
+O prazo indicado não é limitado pelos anteriores cinco minutos da fila.
+FS_TEAMS_JOB_MAX_ATTEMPTS tem valor inicial 3, mínimo 1; o limite é persistido
+em cada filho, incluindo os criados atomicamente com o email. Após esgotá-lo,
+uma rejeição conhecida pode ser repetida por ação administrativa auditada.
+
+As mensagens de erro não incluem o URL assinado, corpo ou texto da exceção
+externa. O cabeçalho de correlação ajuda o diagnóstico, mas não assegura
+idempotência do Workflow. Uma resposta 202 comprova aceitação para processamento,
+não publicação no canal: [semântica assíncrona Microsoft](https://learn.microsoft.com/en-us/power-automate/guidance/coding-guidelines/asychronous-flow-pattern).
+Não se consultou nem alterou qualquer Workflow real.
+
+Os testes usam transportes sintéticos, morte abrupta de subprocesso após o POST
+simulado, falha da transação do recibo/conclusão, reabertura sem serviço,
+rejeições HTTP e deadlines/limites, quarentena e bloqueio nas duas rotas admin.
+Não há migração implícita de queue2; os validadores antigos/novos recusam os
+formatos incompatíveis. Migração e restauro deverão reter tentativas antigas
+sem resultado comprovado, pois a base restaurada não desfaz um efeito remoto.
+
 ### Etapas seguintes
 
-Distinguir o resultado incerto do Teams e limitar retries; sanitizar diagnóstico; migração,
+Sanitizar o diagnóstico restante; fluxos completos, identidade/admin, migração,
 backup/restauro e pacote final. Esta alteração não aprova essas funcionalidades,
 a instalação ou o candidato completo.

@@ -21,7 +21,10 @@ from src.services.graph_mail_service import (
 )
 from src.services.graph_storage_service import GraphStorageService
 from src.services.local_pdf_service import LocalPdfService
-from src.services.teams_notification_service import TeamsNotificationService, TeamsNotificationConfigurationError
+from src.services.teams_notification_service import (
+    TeamsNotificationService, TeamsNotificationConfigurationError,
+    TeamsNotificationError, TeamsNotificationUnknownResultError,
+)
 from src.services.local_changes import DIRTY_MARKER, bundle_guard, dirty_version, mark_dirty
 from src.services.bundle_removals import copy_confirmations, refresh_own_removal_versions
 from src.services.file_mutex import file_mutex, FileMutexBusy
@@ -32,6 +35,14 @@ from src.services.sqlite_storage_format import initialize_store, validate_store,
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def delivery_uncertain(kind: str, result: dict[str, Any]) -> bool:
+    if kind == "notify_teams":
+        return (result.get("phase") in {"sending_teams", "teams_unknown"}
+                and result.get("accepted") is not True)
+    mail = result.get("mail") if isinstance(result.get("mail"), dict) else {}
+    return result.get("phase") in {"sending_mail", "mail_unknown"} and mail.get("accepted") is not True
 
 
 class GraphJobNoLongerActiveError(RuntimeError):
@@ -70,6 +81,7 @@ class GraphSyncQueue:
             int(os.environ.get("FS_MAIL_JOB_MAX_ATTEMPTS", "3")),
             1,
         )
+        self.teams_job_max_attempts = max(int(os.environ.get("FS_TEAMS_JOB_MAX_ATTEMPTS", "3")), 1)
         self.mail_job_stale_seconds = max(
             int(os.environ.get("FS_MAIL_JOB_STALE_SECONDS", "900")),
             90,
@@ -213,6 +225,8 @@ class GraphSyncQueue:
         return True
 
     def _job_max_attempts(self, kind: str, payload: dict[str, Any]) -> int | None:
+        if kind == "notify_teams":
+            return self.teams_job_max_attempts
         has_mail = kind == "archive_and_mail_local" or bool(payload.get("mail"))
         return self.mail_job_max_attempts if has_mail else None
 
@@ -728,15 +742,7 @@ class GraphSyncQueue:
                 "mail": mail_result,
             }
         if kind == "notify_teams":
-            if self.teams_notification_service is None:
-                raise TeamsNotificationConfigurationError("O serviço de notificações Teams não está disponível.")
-            notification = dict(payload.get("notification") or {})
-            if not notification:
-                raise RuntimeError("A notificação Teams não foi guardada no trabalho.")
-            return self.teams_notification_service.send_prepared(
-                notification,
-                operation_id=job_id,
-            )
+            return self._send_teams_once(payload.get("notification"), job_id=job_id, prior_result=prior_result)
         if kind == "remove_active":
             if self.graph_service is None:
                 raise RuntimeError("O armazenamento Microsoft Graph não está ativo.")
@@ -888,6 +894,39 @@ class GraphSyncQueue:
                 "O trabalho deixou de estar ativo antes do envio; requer repetição manual."
             )
 
+    def _send_teams_once(self, notification, *, job_id, prior_result):
+        previous = prior_result or {}
+        if previous.get("accepted") is True:
+            return previous
+        if delivery_uncertain("notify_teams", previous):
+            raise TeamsNotificationUnknownResultError("Resultado Teams desconhecido; requer reconciliação.")
+        service = self.teams_notification_service
+        try:
+            if service is None:
+                raise TeamsNotificationConfigurationError("O serviço de notificações Teams não está disponível.")
+            service.validate_prepared(notification)
+        except TeamsNotificationError:
+            self._checkpoint_result(job_id, {"phase": "teams_rejected"})
+            raise
+        self._checkpoint_result(job_id, {"phase": "sending_teams"})
+        try:
+            receipt = service.send_prepared(notification, operation_id=job_id)
+            if not isinstance(receipt, dict) or receipt.get("accepted") is not True:
+                raise TeamsNotificationUnknownResultError("Resultado Teams inválido; requer reconciliação.")
+        except TeamsNotificationUnknownResultError:
+            self._checkpoint_result(job_id, {"phase": "teams_unknown"})
+            raise
+        except TeamsNotificationError:
+            self._checkpoint_result(job_id, {"phase": "teams_rejected"})
+            raise
+        except GraphJobNoLongerActiveError:
+            raise
+        except Exception:
+            self._checkpoint_result(job_id, {"phase": "teams_unknown"})
+            raise TeamsNotificationUnknownResultError("Resultado Teams desconhecido; requer reconciliação.") from None
+        # Receipt and completion are committed together by _mark_complete.
+        return {**receipt, "phase": "teams_accepted"}
+
     def _ensure_teams_child(self, connection, notification, parent_job_id):
         """Use the caller's writer transaction; never open a second writer."""
         if not connection.in_transaction:
@@ -900,8 +939,8 @@ class GraphSyncQueue:
         now = time.time()
         connection.execute("INSERT INTO graph_sync_jobs "
             "(id,kind,payload_json,status,attempts,next_attempt_at,max_attempts,created_at,updated_at) "
-            "VALUES (?,'notify_teams',?,'pending',0,?,NULL,?,?) ON CONFLICT(id) DO NOTHING",
-            (child_id, canonical, now, now, now))
+            "VALUES (?,'notify_teams',?,'pending',0,?,?,?,?) ON CONFLICT(id) DO NOTHING",
+            (child_id, canonical, now, self.teams_job_max_attempts, now, now))
         child = connection.execute("SELECT kind,payload_json,result_json,status FROM graph_sync_jobs WHERE id=?",
                                    (child_id,)).fetchone()
         try:
@@ -998,7 +1037,9 @@ class GraphSyncQueue:
         delay = min(300.0, self.retry_base_seconds * (2 ** min(attempts - 1, 8)))
         retry_after = getattr(error, "retry_after_seconds", None)
         if retry_after is not None:
-            delay = min(300.0, max(delay, float(retry_after)))
+            delay = max(delay, float(retry_after))
+            if job["kind"] != "notify_teams":
+                delay = min(300.0, delay)
         now = time.time()
         max_attempts = job.get("max_attempts")
         below_limit = max_attempts is None or attempts < int(max_attempts)
@@ -1103,6 +1144,20 @@ class GraphSyncQueue:
         ).fetchall()
         for row in rows:
             payload = self._json_object(row["payload_json"])
+            if row["kind"] == "notify_teams":
+                result = self._json_object(row["result_json"])
+                accepted = result.get("accepted") is True
+                uncertain = delivery_uncertain("notify_teams", result)
+                if uncertain:
+                    result["phase"] = "teams_unknown"
+                connection.execute(
+                    "UPDATE graph_sync_jobs SET status=?,retryable=0,next_attempt_at=?,"
+                    "last_error=?,updated_at=?,result_json=? WHERE id=? AND status='running'",
+                    ("complete" if accepted else "failed", now, None if accepted else
+                     ("Resultado Teams desconhecido; requer reconciliação." if uncertain else
+                      "Notificação interrompida antes do pedido; requer revisão manual."),
+                     now, json.dumps(result, ensure_ascii=False), row["id"]))
+                continue
             has_mail = row["kind"] == "archive_and_mail_local" or bool(payload.get("mail"))
             if not has_mail:
                 continue
@@ -1324,6 +1379,8 @@ class GraphSyncQueue:
                 receipt = result.get("mail") or {}
                 if "accepted" in receipt and not isinstance(receipt["accepted"], bool):
                     raise ValueError("Invalid acceptance")
+                if row["kind"] == "notify_teams" and "accepted" in result and not isinstance(result["accepted"], bool):
+                    raise ValueError("Invalid Teams acceptance")
                 if "phase" in result and not isinstance(result["phase"], str):
                     raise ValueError("Invalid phase")
             except (TypeError, ValueError):
@@ -1341,10 +1398,8 @@ class GraphSyncQueue:
     def _serialize(row: sqlite3.Row) -> dict[str, Any]:
         status = str(row["status"])
         result = GraphSyncQueue._json_object(row["result_json"])
-        receipt = result.get("mail") if isinstance(result.get("mail"), dict) else {}
-        unknown_mail = (result.get("phase") in ("sending_mail", "mail_unknown")
-                        and not receipt.get("accepted"))
-        will_retry = status == "failed" and bool(row["retryable"]) and not unknown_mail and not result.get("invalid_state")
+        uncertain = delivery_uncertain(str(row["kind"]), result)
+        will_retry = status == "failed" and bool(row["retryable"]) and not uncertain and not result.get("invalid_state")
         return {
             "id": str(row["id"]),
             "attempt_token": str(row["attempt_token"]),
@@ -1352,7 +1407,7 @@ class GraphSyncQueue:
             "payload": GraphSyncQueue._json_object(row["payload_json"]),
             "status": status,
             "will_retry": will_retry,
-            "reconciliation_required": unknown_mail,
+            "reconciliation_required": uncertain,
             "attempts": int(row["attempts"]),
             "max_attempts": (
                 int(row["max_attempts"]) if row["max_attempts"] is not None else None

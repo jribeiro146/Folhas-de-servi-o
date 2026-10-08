@@ -163,7 +163,7 @@ def test_non_admin_service_cannot_revoke_even_with_matching_version(tmp_path):
     assert not service.repository.admin_history()
 
 @pytest.mark.parametrize("prefix", ["/api/admin/jobs/", "/api/graph/jobs/"])
-@pytest.mark.parametrize("phase", ["sending_mail","mail_unknown",None])
+@pytest.mark.parametrize("phase", ["sending_mail","mail_unknown",None,"sending_teams","teams_unknown"])
 def test_admin_cannot_retry_uncertain_mail(tmp_path, monkeypatch, phase, prefix):
     from src.services.graph_sync_queue import GraphSyncQueue
     monkeypatch.setattr(web,"AUTH_ENABLED",True)
@@ -172,7 +172,8 @@ def test_admin_cannot_retry_uncertain_mail(tmp_path, monkeypatch, phase, prefix)
         def user_from_session(self,payload):
             return SimpleNamespace(**payload) if payload else None
     queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", auto_start=False)
-    job = queue.enqueue("archive_and_mail_local", {"mail":{"to":"synthetic@example.invalid"}})
+    kind = "notify_teams" if phase in {"sending_teams", "teams_unknown"} else "archive_and_mail_local"
+    job = queue.enqueue(kind, {"notification": {}} if kind == "notify_teams" else {"mail":{"to":"synthetic@example.invalid"}})
     with queue._connect() as db:
         db.execute("UPDATE graph_sync_jobs SET status='failed',result_json=? WHERE id=?", (json.dumps({"phase":phase} if phase else {}),job["id"]))
     service = EditingStateService(tmp_path / "edits")

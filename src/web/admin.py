@@ -5,6 +5,7 @@ from urllib.parse import urlsplit
 from flask import Blueprint, g, jsonify, render_template, request, session
 from src.services.admin_access import can_administer
 from src.services.editing_state_service import EditingStateError
+from src.services.graph_sync_queue import delivery_uncertain
 
 
 def register_admin(app, editing, queue, refresh, authenticated_microsoft):
@@ -64,7 +65,9 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
             if ("accepted" in mail and not isinstance(mail["accepted"], bool)
                     or ("phase" in result and not isinstance(result["phase"], str))):
                 raise ValueError()
-            uncertain = result.get("phase") in ("sending_mail", "mail_unknown") and mail.get("accepted") is not True
+            if row["kind"] == "notify_teams" and "accepted" in result and not isinstance(result["accepted"], bool):
+                raise ValueError()
+            uncertain = delivery_uncertain(row["kind"], result)
             has_mail = row["kind"] == "archive_and_mail_local" or bool(payload.get("mail"))
             if has_mail and mail.get("accepted") is not True and result.get("phase") not in ("generating_pdf", "pdf_ready", "mail_rejected"):
                 uncertain = True

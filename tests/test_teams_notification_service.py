@@ -94,7 +94,7 @@ def test_queue_notifies_teams_in_a_separate_job_after_mail(tmp_path):
             events.append("mail")
             return {"accepted": True, "to": self.message(delivery)["toRecipients"][0]["emailAddress"]["address"]}
 
-    class FakeTeams:
+    class FakeTeams(TeamsNotificationService):
         @staticmethod
         def send_prepared(prepared, *, operation_id):
             events.append("teams")
@@ -108,7 +108,8 @@ def test_queue_notifies_teams_in_a_separate_job_after_mail(tmp_path):
         tmp_path / "mail-and-teams.sqlite3",
         mail_service=FakeMail(),
         local_pdf_service=FakeLocalPdf(),
-        teams_notification_service=FakeTeams(),
+        teams_notification_service=FakeTeams(
+            TeamsNotificationConfig("https://example.invalid/teams"), transport=lambda *a, **kw: None),
     )
     parent = queue.enqueue(
         "archive_and_mail_local",
