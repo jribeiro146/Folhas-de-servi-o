@@ -861,7 +861,7 @@ def test_terminal_mail_failure_only_runs_again_after_explicit_retry(tmp_path):
     assert mail.calls == 2
 
 
-def test_legacy_pending_mail_is_held_for_explicit_review_on_upgrade(tmp_path):
+def test_legacy_pending_mail_requires_explicit_preparation_without_mutation(tmp_path):
     archive_dir = tmp_path / "Arquivadas" / "FS-LEGACY"
     archive_dir.mkdir(parents=True)
     archived_excel = archive_dir / "FS-LEGACY.xlsx"
@@ -914,18 +914,12 @@ def test_legacy_pending_mail_is_held_for_explicit_review_on_upgrade(tmp_path):
             self.calls += 1
             return {"accepted": True}
 
+    connection.close()
+    from src.services.runtime_contract import ContractError
+    before = database.read_bytes()
     mail = UnexpectedMail()
-    queue = GraphSyncQueue(
-        None,
-        database,
-        mail_service=mail,
-        local_pdf_service=object(),
-    )
-    time.sleep(0.1)
-
-    held = queue.status("send:legacy:pending")
-
-    assert held["status"] == "failed"
-    assert held["will_retry"] is False
-    assert "repetição manual" in held["last_error"]
+    with pytest.raises(ContractError):
+        GraphSyncQueue(None, database, mail_service=mail, local_pdf_service=object())
+    assert database.read_bytes() == before
+    assert not (tmp_path / "graph-sync-assets").exists()
     assert mail.calls == 0

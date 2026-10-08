@@ -25,6 +25,7 @@ from src.services.file_mutex import file_mutex, FileMutexBusy
 from src.services.atomic_files import replace_local
 from src.services.runtime_admission import admitted, operation_for
 from src.services.runtime_contract import ContractError, ContractBusy
+from src.services.sqlite_storage_format import initialize_store, validate_store
 
 
 LOGGER = logging.getLogger(__name__)
@@ -82,7 +83,7 @@ class GraphSyncQueue:
         self._initialize()
         self._start_if_enabled()
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self, *, check_format=True) -> sqlite3.Connection:
         connection = sqlite3.connect(
             self.database_path,
             timeout=self.busy_timeout_ms / 1000,
@@ -90,107 +91,32 @@ class GraphSyncQueue:
         )
         connection.row_factory = sqlite3.Row
         connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
+        if check_format:
+            try:
+                validate_store(connection, "queue")
+            except BaseException:
+                connection.close()
+                raise
         return connection
 
     @admitted
     def _initialize(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self.asset_root.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + (self.busy_timeout_ms / 1000)
         while True:
             try:
-                with self._connect() as connection:
+                with self._connect(check_format=False) as connection:
+                    initialize_store(connection, "queue")
                     connection.execute("PRAGMA journal_mode = WAL")
                     connection.execute("PRAGMA synchronous = NORMAL")
                     connection.execute("BEGIN IMMEDIATE")
-                    connection.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS graph_sync_jobs (
-                            id TEXT PRIMARY KEY,
-                            kind TEXT NOT NULL,
-                            payload_json TEXT NOT NULL,
-                            status TEXT NOT NULL,
-                            attempts INTEGER NOT NULL DEFAULT 0,
-                            next_attempt_at REAL NOT NULL,
-                            retryable INTEGER NOT NULL DEFAULT 0,
-                            max_attempts INTEGER,
-                            last_error TEXT,
-                            result_json TEXT,
-                            created_at REAL NOT NULL,
-                            updated_at REAL NOT NULL
-                        )
-                        """
-                    )
-                    columns = {
-                        str(row[1])
-                        for row in connection.execute("PRAGMA table_info(graph_sync_jobs)")
-                    }
-                    legacy_queue = "retryable" not in columns
-                    if legacy_queue:
-                        connection.execute(
-                            "ALTER TABLE graph_sync_jobs "
-                            "ADD COLUMN retryable INTEGER NOT NULL DEFAULT 0"
-                        )
-                    if "max_attempts" not in columns:
-                        connection.execute(
-                            "ALTER TABLE graph_sync_jobs ADD COLUMN max_attempts INTEGER"
-                        )
-                    if "attempt_token" not in columns:
-                        connection.execute("ALTER TABLE graph_sync_jobs ADD COLUMN attempt_token TEXT NOT NULL DEFAULT ''")
                     self._quarantine_invalid_jobs(connection)
-                    if legacy_queue:
-                        self._hold_legacy_mail_jobs(connection)
+                self.asset_root.mkdir(parents=True, exist_ok=True)
                 return
             except sqlite3.OperationalError as exc:
                 if "locked" not in str(exc).casefold() or time.monotonic() >= deadline:
                     raise
                 time.sleep(0.025)
-
-    def _hold_legacy_mail_jobs(self, connection: sqlite3.Connection) -> None:
-        hold_message = (
-            "Envio criado por uma versão anterior; requer repetição manual antes de continuar."
-        )
-        rows = connection.execute(
-            """
-            SELECT id, kind, payload_json, status, last_error
-            FROM graph_sync_jobs
-            WHERE status IN ('pending', 'running', 'failed')
-            """
-        ).fetchall()
-        now = time.time()
-        for row in rows:
-            payload = self._json_object(row["payload_json"])
-            has_mail = row["kind"] == "archive_and_mail_local" or bool(payload.get("mail"))
-            if not has_mail:
-                continue
-            previous_error = str(row["last_error"] or "").strip()
-            visible_error = (
-                f"{previous_error} {hold_message}" if previous_error else hold_message
-            )
-            cursor = connection.execute(
-                """
-                UPDATE graph_sync_jobs
-                SET status = 'failed', retryable = 0, max_attempts = ?,
-                    next_attempt_at = ?, last_error = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    self.mail_job_max_attempts,
-                    now,
-                    visible_error[:2000],
-                    now,
-                    row["id"],
-                ),
-            )
-            if cursor.rowcount:
-                log_event(
-                    LOGGER,
-                    logging.WARNING,
-                    "Trabalho de uma versão anterior retido para revisão manual.",
-                    event="graph_job_legacy_held",
-                    job_id=row["id"],
-                    job_kind=row["kind"],
-                )
 
     @admitted
     def enqueue(
@@ -623,6 +549,7 @@ class GraphSyncQueue:
                 if not database.is_file():
                     raise ValueError("Commit database unavailable")
                 with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=1) as editing_db:
+                    validate_store(editing_db, "editing")
                     state_row = editing_db.execute(
                         "SELECT state_json FROM editing_states WHERE document_id = ?",
                         (guard.get("document_id"),),

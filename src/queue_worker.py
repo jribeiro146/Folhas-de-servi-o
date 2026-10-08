@@ -26,6 +26,7 @@ from src.services.local_pdf_service import LocalPdfService
 from src.services.teams_notification_service import TeamsNotificationService
 from src.services.runtime_admission import resolve_runtime, operation_for, admit_contract
 from src.services.runtime_contract import ContractBusy
+from src.services.sqlite_storage_format import preflight_stores
 
 
 LOGGER = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ def build_queue(*, release_root: Path | None = None, runtime_contract=None) -> G
         storage_paths=(GRAPH_CACHE_DIR, LOG_DIR, EXCEL_ACTIVAS_DIR, EXCEL_ARQUIVADAS_DIR, EXCEL_CANCELADAS_DIR),
     )
     with admit_contract(contract):
+        preflight_stores(APP_DATA_DIR)
         return _build_admitted_queue(release_info, contract)
 
 

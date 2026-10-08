@@ -68,6 +68,7 @@ from src.services.document_style_service import load_document_assets
 from src.services.runtime_safety import runtime_mode
 from src.services.runtime_admission import resolve_runtime, admit_contract
 from src.services.runtime_contract import ContractError
+from src.services.sqlite_storage_format import preflight_stores
 from src.services.local_changes import bundle_guard, mark_dirty
 from src.services.file_mutex import FileMutexBusy
 from src.services.document_artifact_service import DocumentArtifactService
@@ -159,6 +160,7 @@ def create_app(
         storage_paths=(GRAPH_CACHE_DIR, LOG_DIR, EXCEL_ACTIVAS_DIR, EXCEL_ARQUIVADAS_DIR, EXCEL_CANCELADAS_DIR),
     )
     with admit_contract(contract):
+        preflight_stores(APP_DATA_DIR)
         return _create_app(
             file_service=file_service,
             archive_service=archive_service,
