@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import html
+import io
 import json
 import re
 import time
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
+from PIL import Image, UnidentifiedImageError
+
 from src.config import (
     GRAPH_CLIENT_ID,
     GRAPH_CLIENT_SECRET,
@@ -20,6 +23,8 @@ from src.config import (
     MAIL_SENDER,
     MAIL_TEST_RECIPIENT,
     MAIL_ENABLED,
+    APP_DATA_DIR,
+    MAIL_SIGNATURE_FILE,
 )
 from src.services.runtime_safety import require_live_delivery
 
@@ -32,6 +37,8 @@ MAX_SIMPLE_ATTACHMENT_BYTES = 3 * 1024 * 1024
 # Conservative decimal limit: the provider documents 4 MB, without promising
 # the larger binary interpretation or mailbox-specific acceptance.
 MAX_SIMPLE_REQUEST_BYTES = 4_000_000
+MAX_SIGNATURE_BYTES = 512 * 1024
+SIGNATURE_CONTENT_ID = "service-signature@sensorpoint.pt"
 
 
 def _unique_json_members(pairs):
@@ -87,6 +94,7 @@ class GraphMailConfig:
     client_secret: str
     sender: str
     test_recipient: str = ""
+    signature_filename: str = ""
 
     @classmethod
     def from_env(cls) -> "GraphMailConfig":
@@ -96,6 +104,7 @@ class GraphMailConfig:
             client_secret=GRAPH_CLIENT_SECRET,
             sender=MAIL_SENDER,
             test_recipient=MAIL_TEST_RECIPIENT,
+            signature_filename=MAIL_SIGNATURE_FILE,
         )
 
     def missing_fields(self) -> list[str]:
@@ -363,6 +372,16 @@ class GraphMailService:
             },
             "saveToSentItems": True,
         }
+        signature = self._prepare_signature()
+        if signature is not None:
+            attachment, width, height = signature
+            payload["message"]["attachments"].append(attachment)
+            payload["message"]["body"]["content"] += (
+                '<p style="margin:16px 0 0;">'
+                f'<img src="cid:{SIGNATURE_CONTENT_ID}" width="{width}" height="{height}" '
+                'alt="Sensorpoint" style="display:block;max-width:100%;height:auto;border:0;">'
+                '</p>'
+            )
         payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         delivery = GraphMailDelivery(payload_bytes,
                                      self.validate_address(self.config.sender, label="remetente"),
@@ -371,6 +390,61 @@ class GraphMailService:
                                      if self.config.test_recipient else "")
         self.validate_delivery(delivery)
         return delivery
+
+    @staticmethod
+    def _signature_image(data):
+        """Validate bounded PNG/JPEG bytes without modifying the original image."""
+        if not isinstance(data, bytes) or not 0 < len(data) <= MAX_SIGNATURE_BYTES:
+            raise GraphMailConfigurationError("A assinatura institucional excede 512 KiB ou está vazia.")
+        try:
+            with Image.open(io.BytesIO(data)) as picture:
+                if picture.format not in {"PNG", "JPEG"}:
+                    raise ValueError("Unsupported image format")
+                width, height = picture.size
+                if not (1 <= width <= 2048 and 1 <= height <= 1024):
+                    raise ValueError("Signature dimensions exceed bounds")
+                mime, extension = ("image/png", ".png") if picture.format == "PNG" else ("image/jpeg", ".jpg")
+                picture.verify()
+            # JPEG verify() only checks identification. Decode the already
+            # bounded dimensions too, so truncated pixel data cannot pass.
+            with Image.open(io.BytesIO(data)) as picture:
+                picture.load()
+        except (OSError, ValueError, UnidentifiedImageError, Image.DecompressionBombError) as exc:
+            raise GraphMailConfigurationError(
+                "Assinatura institucional inválida: use PNG ou JPEG até 2048 por 1024 píxeis."
+            ) from exc
+        return mime, extension, width, height
+
+    def _prepare_signature(self):
+        filename = self.config.signature_filename
+        if filename == "":
+            return None
+        if (not isinstance(filename, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", filename)
+                or Path(filename).suffix.casefold() not in {".png", ".jpg", ".jpeg"}):
+            raise GraphMailConfigurationError("FS_MAIL_SIGNATURE_FILE exige apenas um nome de ficheiro PNG ou JPEG.")
+        try:
+            private_root = APP_DATA_DIR.resolve() / "mail-assets"
+            if private_root.is_relative_to(Path(__file__).resolve().parents[1]):
+                raise ValueError("Signature cannot be stored in application resources")
+            resolved_root = private_root.resolve(strict=True)
+            candidate = resolved_root / filename
+            resolved_file = candidate.resolve(strict=True)
+            if resolved_root != private_root or resolved_file != candidate or not resolved_file.is_file():
+                raise ValueError("Signature must be a regular file in the private directory")
+            with resolved_file.open("rb") as stream:
+                data = stream.read(MAX_SIGNATURE_BYTES + 1)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise GraphMailConfigurationError(
+                "A assinatura institucional configurada não está disponível na pasta privada mail-assets."
+            ) from exc
+        mime, extension, width, height = self._signature_image(data)
+        if Path(filename).suffix.casefold() not in ({".jpg", ".jpeg"} if extension == ".jpg" else {".png"}):
+            raise GraphMailConfigurationError("A extensão da assinatura institucional não corresponde à imagem.")
+        display_width = min(width, 792)
+        display_height = max(1, round(height * display_width / width))
+        return ({"@odata.type": "#microsoft.graph.fileAttachment", "name": "assinatura-institucional" + extension,
+                 "contentType": mime, "contentBytes": base64.b64encode(data).decode("ascii"),
+                 "contentId": SIGNATURE_CONTENT_ID, "isInline": True}, display_width, display_height)
 
     def validate_delivery(self, delivery: GraphMailDelivery) -> dict[str, Any]:
         """Recheck policy without changing bytes; return metadata, not acceptance."""
@@ -402,8 +476,8 @@ class GraphMailService:
                     or not isinstance(message["body"].get("content"), str)):
                 raise ValueError("Invalid fixed service message")
             attachments = message["attachments"]
-            if not isinstance(attachments, list) or len(attachments) != 1:
-                raise ValueError("A service message requires one PDF")
+            if not isinstance(attachments, list) or len(attachments) not in {1, 2}:
+                raise ValueError("A service message requires one PDF and an optional inline signature")
             attachment = attachments[0]
             if (not isinstance(attachment, dict)
                     or attachment.get("@odata.type") != "#microsoft.graph.fileAttachment"
@@ -415,6 +489,18 @@ class GraphMailService:
             pdf_bytes = base64.b64decode(attachment["contentBytes"], validate=True)
             if not pdf_bytes.startswith(b"%PDF-") or len(pdf_bytes) > MAX_SIMPLE_ATTACHMENT_BYTES:
                 raise ValueError("Invalid PDF content")
+            if len(attachments) == 2:
+                signature = attachments[1]
+                if (not isinstance(signature, dict)
+                        or set(signature) != {"@odata.type", "name", "contentType", "contentBytes", "contentId", "isInline"}
+                        or signature["@odata.type"] != "#microsoft.graph.fileAttachment"
+                        or signature["isInline"] is not True or signature["contentId"] != SIGNATURE_CONTENT_ID
+                        or not isinstance(signature["contentBytes"], str)
+                        or f'cid:{SIGNATURE_CONTENT_ID}' not in message["body"]["content"]):
+                    raise ValueError("Invalid inline signature attachment")
+                mime, extension, _, _ = self._signature_image(base64.b64decode(signature["contentBytes"], validate=True))
+                if signature["contentType"] != mime or signature["name"] != "assinatura-institucional" + extension:
+                    raise ValueError("Invalid inline image metadata")
             headers = message["internetMessageHeaders"]
             if (not isinstance(headers, list) or len(headers) != 1 or not isinstance(headers[0], dict)
                     or headers[0].get("name") != "x-sensorpoint-operation-id"

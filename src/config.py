@@ -148,6 +148,8 @@ MICROSOFT_AUTH_ALLOWED_DOMAINS: list[str] = [
 MAIL_ENABLED: bool = _env_flag("FS_MAIL_ENABLED", False)
 MAIL_SENDER: str = os.environ.get("FS_MAIL_SENDER", "").strip()
 MAIL_TEST_RECIPIENT: str = os.environ.get("FS_MAIL_TEST_RECIPIENT", "").strip()
+# Optional private image in APP_DATA_DIR/mail-assets; only a filename is accepted.
+MAIL_SIGNATURE_FILE: str = os.environ.get("FS_MAIL_SIGNATURE_FILE", "").strip()
 
 # O destino (canal ou chat) é escolhido no Workflow do Teams associado ao URL.
 TEAMS_NOTIFICATIONS_ENABLED: bool = _env_flag("FS_TEAMS_NOTIFICATIONS_ENABLED", False)

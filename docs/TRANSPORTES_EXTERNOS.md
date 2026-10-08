@@ -125,8 +125,8 @@ mensagens incompletas/corrompidas. Os testes antigos que observam o payload por
 `_graph_bytes` passam agora uma dependência de transporte explícita para não
 contornarem implicitamente a validação antecipada de política.
 
-Esta API, isoladamente, não persiste mensagens. A integração durável da fila está
-descrita abaixo. A assinatura institucional opcional continua por implementar.
+Esta API, isoladamente, não persiste mensagens. A integração durável da fila e a
+assinatura institucional opcional estão descritas abaixo, em etapas próprias.
 
 ### Resposta à primeira revisão da mensagem fixa
 
@@ -230,9 +230,49 @@ de guardar/enviar. Os testes de orquestração usam preparação/validação rea
 substituem apenas o envio. A bateria completa e a revisão independente ficam
 registadas no índice da colaboração com os respetivos commits.
 
+## Assinatura institucional opcional privada (08/10/2026)
+
+Por omissão, não há imagem de assinatura. Para a ativar, o profissional configura
+`FS_MAIL_SIGNATURE_FILE=instituicao.png` e guarda essa imagem em
+`FS_APP_DATA_DIR/mail-assets/instituicao.png`. Esta variável aceita **só um nome**,
+com letras ASCII, números, ponto, hífen ou underscore; não aceita caminhos, URLs,
+subpastas ou streams alternativos. A pasta e o ficheiro não podem resolver para
+outro destino por ligação; recursos em `src`, incluindo `web/static`, são recusados.
+O diretório de dados deve permanecer fora da raiz pública do servidor, protegido
+por permissões locais. A aplicação não instala a imagem, não cria uma rota de
+download e não copia a imagem pessoal da demo. Nenhum binário real foi incluído.
+
+Aceita PNG ou JPEG com extensão correspondente, até **512 KiB e 2048 × 1024 píxeis**.
+A leitura é limitada; Pillow verifica a estrutura e descodifica os píxeis dentro
+destes limites, incluindo a recusa de JPEG truncado. O nome transmitido é genérico,
+`assinatura-institucional.png` ou `.jpg`; não revela o caminho privado. A imagem
+segue inline por CID e um bloco HTML com texto alternativo “Sensorpoint”, largura
+máxima de apresentação 792 píxeis e proporção mantida. Não altera o PDF, arquivo
+da folha ou checklist privada SADI.
+
+A preparação acrescenta a imagem uma vez à mensagem fixa e sujeita o **pedido
+completo** ao limite de 4 000 000 bytes. Se a imagem configurada faltar, for inválida
+ou exceder os limites, o trabalho recebe recusa conhecida antes de remover o ativo.
+Não há omissão silenciosa de uma imagem configurada. Para desativar em novas
+mensagens, deixar a variável vazia e reiniciar de forma coordenada na instalação.
+
+Snapshots já preparados conservam os bytes originais, mesmo se a configuração
+for desativada ou o ficheiro mudar/desaparecer. A revalidação verifica a imagem
+guardada, CID, tipo, nome, propriedades inline e presença no corpo sem reler o disco.
+Aceita apenas um PDF e, opcionalmente, esta imagem; não permite um segundo PDF
+ou anexos adicionais arbitrários. Não há nova versão SQLite nesta etapa: os bytes
+ficam no BLOB do formato 2 e a identidade da release continua a impedir workers
+de código diferente. Um worker anterior recusaria o envelope com imagem antes de
+remover/enviar, em vez de reconstruir a mensagem.
+
+Ensaios usam imagens PNG/JPEG geradas de raiz: desativação/ficheiros removidos após
+preparação, bytes iguais, limite codificado incluindo a imagem, caminho inválido,
+destino resolvido diferente, recurso público, leitura limitada, imagem falsa,
+truncada, demasiado grande ou ilegível, e recusa no fluxo Graph sem remoção do ativo.
+
 ## Próximas etapas, ainda não implementadas
 
-Assinatura institucional opcional privada; recuperar notificações Teams de forma
+Recuperar notificações Teams de forma
 durável e distinguir o seu resultado incerto; sanitizar diagnóstico; migração,
 backup/restauro e pacote final. Esta alteração não aprova essas funcionalidades,
 a instalação ou o candidato completo.
