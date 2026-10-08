@@ -34,6 +34,18 @@ MAX_SIMPLE_ATTACHMENT_BYTES = 3 * 1024 * 1024
 MAX_SIMPLE_REQUEST_BYTES = 4_000_000
 
 
+def _unique_json_members(pairs):
+    result = {}
+    seen = set()
+    for key, value in pairs:
+        normalized = key.casefold()
+        if normalized in seen:
+            raise ValueError("Ambiguous JSON member")
+        seen.add(normalized)
+        result[key] = value
+    return result
+
+
 class GraphMailError(Exception):
     """Erro de validação ou comunicação no envio de e-mail."""
 
@@ -161,10 +173,15 @@ class GraphMailService:
                 "Reduza o tamanho do conteúdo para usar o envio simples do Graph."
             )
         try:
-            payload = json.loads(data.decode("utf-8"))
+            payload = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_json_members)
             if not isinstance(payload, dict) or not isinstance(payload.get("message"), dict):
                 raise ValueError("Invalid message")
+            if payload.keys() - {"message", "saveToSentItems"}:
+                raise ValueError("Unknown payload member")
             message = payload["message"]
+            if message.keys() - {"subject", "body", "toRecipients", "ccRecipients", "bccRecipients",
+                                 "internetMessageHeaders", "attachments"}:
+                raise ValueError("Unknown message member")
             if not message.get("toRecipients"):
                 raise ValueError("Missing recipient")
             expected = (self.validate_address(self.config.test_recipient).casefold()
@@ -323,7 +340,7 @@ class GraphMailService:
         }
         payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self._validate_delivery_payload(payload_bytes)
-        sender = parse.quote(self.config.sender, safe="@._-+")
+        sender = parse.quote(self.validate_address(self.config.sender, label="remetente"), safe="@._-+")
         self._graph_bytes(
             "POST",
             f"/users/{sender}/sendMail",
@@ -403,6 +420,22 @@ class GraphMailService:
         )
         return json.loads(content.decode("utf-8")) if content else {}
 
+    def _allowed_request_is_send(self, url: str, method: str, authenticated: bool) -> bool:
+        """This service supports only its configured token and sendMail routes."""
+        self.validate_config()
+        token_url = TOKEN_URL_TEMPLATE.format(tenant_id=parse.quote(self.config.tenant_id))
+        if method.upper() == "POST" and authenticated is False and url == token_url:
+            return False
+        target = parse.urlsplit(url)
+        sender = self.validate_address(self.config.sender, label="remetente")
+        expected = f"/v1.0/users/{sender}/sendMail".casefold()
+        if (method.upper() == "POST" and authenticated is True
+                and target.scheme == "https" and target.netloc.casefold() == "graph.microsoft.com"
+                and not target.query and not target.fragment
+                and parse.unquote(target.path).rstrip("/").casefold() == expected):
+            return True
+        raise GraphMailConfigurationError("Operação não permitida no transporte de e-mail configurado.")
+
     def _request_bytes(
         self,
         url: str,
@@ -419,7 +452,7 @@ class GraphMailService:
             except ValueError as exc:
                 raise GraphMailConfigurationError(str(exc)) from exc
             transport = request.urlopen
-        is_send = method.upper() == "POST" and parse.unquote(parse.urlsplit(url).path).rstrip("/").casefold().endswith("/sendmail")
+        is_send = self._allowed_request_is_send(url, method, authenticated)
         if is_send:
             self._validate_delivery_payload(data)
         request_headers = dict(headers or {})

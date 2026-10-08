@@ -7,6 +7,8 @@ import pytest
 from src.services.graph_mail_service import GraphMailService, GraphMailError, GraphMailConfigurationError
 from tests.test_graph_mail_service import mail_config
 from tests.test_delivery_boundaries import Response
+from src.services.graph_sync_queue import GraphSyncQueue
+from types import SimpleNamespace
 
 LIMIT = 4_000_000
 
@@ -30,7 +32,7 @@ def test_raw_envelope_cannot_bypass_test_recipient_in_any_field(key):
     payload = envelope()
     payload["message"][key] = [{"emailAddress": {"address": "outside@example.invalid"}}]
     with pytest.raises(GraphMailConfigurationError):
-        client._graph_bytes("POST", "/users/synthetic/sendMail", data=json.dumps(payload).encode())
+        client._graph_bytes("POST", "/users/service@sensorpoint.pt/sendMail", data=json.dumps(payload).encode())
     assert calls == []
 
 
@@ -42,7 +44,7 @@ def test_malformed_actual_envelope_is_refused_before_token(payload):
     calls = []
     client = service(calls)
     with pytest.raises(GraphMailConfigurationError):
-        client._graph_bytes("POST", "/users/synthetic/sendMail", data=json.dumps(payload).encode())
+        client._graph_bytes("POST", "/users/service@sensorpoint.pt/sendMail", data=json.dumps(payload).encode())
     assert calls == []
 
 
@@ -68,9 +70,9 @@ def test_exact_serialized_limit_and_one_byte_over_are_distinguished():
     raw = json.dumps(envelope()).encode()
     boundary = raw + b" " * (LIMIT - len(raw))
     with pytest.raises(GraphMailError, match="4 M"):
-        client._graph_bytes("POST", "/users/synthetic/sendMail", data=boundary + b" ")
+        client._graph_bytes("POST", "/users/service@sensorpoint.pt/sendMail", data=boundary + b" ")
     assert calls == []
-    client._graph_bytes("POST", "/users/synthetic/sendMail", data=boundary)
+    client._graph_bytes("POST", "/users/service@sensorpoint.pt/sendMail", data=boundary)
     assert len(calls) == 2  # token, then the exact payload
     assert calls[1].data == boundary
 
@@ -96,11 +98,11 @@ def test_invalid_encoded_payload_is_a_controlled_refusal(data):
     calls = []
     client = service(calls)
     with pytest.raises(GraphMailConfigurationError):
-        client._graph_bytes("POST", "/users/synthetic/sendMail", data=data)
+        client._graph_bytes("POST", "/users/service@sensorpoint.pt/sendMail", data=data)
     assert calls == []
 
 
-@pytest.mark.parametrize("path", ["/users/synthetic/sendMail", "/users/synthetic/sendmail/", "/users/synthetic/%73endMail"])
+@pytest.mark.parametrize("path", ["/users/service@sensorpoint.pt/sendMail", "/users/service@sensorpoint.pt/sendmail/", "/users/service@sensorpoint.pt/%73endMail"])
 def test_normalized_send_path_cannot_skip_validation_even_with_cached_token(path):
     calls = []
     client = service(calls, test=True)
@@ -110,4 +112,74 @@ def test_normalized_send_path_cannot_skip_validation_even_with_cached_token(path
     payload["message"]["bccRecipients"] = [{"emailAddress": {"address": "outside@example.invalid"}}]
     with pytest.raises(GraphMailConfigurationError):
         client._graph_bytes("POST", path, data=json.dumps(payload).encode())
+    assert calls == []
+
+
+@pytest.mark.parametrize("path", ["/$batch", "/users/service@sensorpoint.pt/messages/m/send",
+    "/users/service@sensorpoint.pt/messages/m/forward", "/users/service@sensorpoint.pt/messages/m/replyAll",
+    "/users/service@sensorpoint.pt/sendMail;p", "/users/other@example.invalid/sendMail"])
+def test_other_writes_are_rejected_even_with_a_valid_test_envelope(path):
+    calls = []
+    client = service(calls, test=True)
+    with pytest.raises(GraphMailConfigurationError):
+        client._graph_bytes("POST", path, data=json.dumps(envelope()).encode())
+    assert calls == []
+
+
+@pytest.mark.parametrize("raw", [
+    b'{"message":{"toRecipients":[{"emailAddress":{"address":"sandbox@example.invalid"}}],"bccRecipients":[{"emailAddress":{"address":"outside@example.invalid"}}],"bccRecipients":[]}}',
+    b'{"message":{"toRecipients":[{"emailAddress":{"address":"sandbox@example.invalid"}}],"BccRecipients":[{"emailAddress":{"address":"outside@example.invalid"}}]}}',
+    b'{"message":{"toRecipients":[{"emailAddress":{"address":"sandbox@example.invalid","Address":"outside@example.invalid"}}]}}',
+])
+def test_ambiguous_json_members_are_rejected_without_io(raw):
+    calls = []
+    client = service(calls, test=True)
+    with pytest.raises(GraphMailConfigurationError):
+        client._graph_bytes("POST", "/users/service@sensorpoint.pt/sendMail", data=raw)
+    assert calls == []
+
+
+@pytest.mark.parametrize("member", ["from", "sender", "replyTo", "unknown"])
+def test_unexpected_message_fields_are_rejected(member):
+    calls = []
+    client = service(calls, test=True)
+    payload = envelope()
+    payload["message"][member] = {"emailAddress": {"address": "outside@example.invalid"}}
+    with pytest.raises(GraphMailConfigurationError):
+        client._graph_bytes("POST", "/users/service@sensorpoint.pt/sendMail", data=json.dumps(payload).encode())
+    assert calls == []
+
+
+@pytest.mark.parametrize("url, method, authenticated", [
+    ("https://outside.invalid/v1.0/users/service@sensorpoint.pt/sendMail", "POST", True),
+    ("http://graph.microsoft.com/v1.0/users/service@sensorpoint.pt/sendMail", "POST", True),
+    ("https://graph.microsoft.com/v1.0/users/service@sensorpoint.pt/sendMail?extra=1", "POST", True),
+    ("https://graph.microsoft.com/v1.0/users/service@sensorpoint.pt/sendMail", "GET", True),
+    ("https://graph.microsoft.com/v1.0/users/service@sensorpoint.pt/sendMail", "POST", False),
+    ("https://login.microsoftonline.com/other/oauth2/v2.0/token", "POST", False),
+    ("https://login.microsoftonline.com/tenant/oauth2/v2.0/token", "POST", True),
+])
+def test_only_exact_authorized_routes_and_auth_modes_are_allowed(url, method, authenticated):
+    calls = []
+    client = service(calls)
+    with pytest.raises(GraphMailConfigurationError):
+        client._request_bytes(url, method=method, authenticated=authenticated, data=json.dumps(envelope()).encode())
+    assert calls == []
+
+
+def test_oversized_message_is_a_known_refusal_in_the_queue(tmp_path):
+    calls = []
+    client = service(calls)
+    pdf = tmp_path / "synthetic.pdf"
+    pdf.write_bytes(b"%PDF-" + b"x" * (3 * 1024 * 1024 - 5))
+    queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", mail_service=client,
+                          local_pdf_service=SimpleNamespace(export_archive_pdf=lambda path: pdf), auto_start=False)
+    job = queue.enqueue("archive_and_mail_local", {"archived_path": str(tmp_path / "synthetic.xlsx"),
+                                                 "mail": {"to": "customer@example.invalid"}})
+    queue.run_until_idle()
+    state = queue.status(job["id"])
+    assert state["status"] == "failed"
+    assert state["result"]["phase"] == "mail_rejected"
+    assert state["will_retry"] is False
+    assert state["reconciliation_required"] is False
     assert calls == []

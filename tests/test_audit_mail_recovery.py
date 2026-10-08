@@ -88,7 +88,7 @@ def test_token_failure_is_safe_to_retry_before_send(monkeypatch):
     service = GraphMailService(GraphMailConfig("synthetic", "synthetic", "synthetic", "sender@example.invalid"),
                                transport=unavailable)
     with pytest.raises(GraphMailTransientError):
-        service._request_bytes("https://synthetic.invalid/token", method="POST", authenticated=False)
+        service._request_bytes("https://login.microsoftonline.com/synthetic/oauth2/v2.0/token", method="POST", authenticated=False)
 
 
 def test_unknown_runtime_error_after_post_is_not_an_automatic_retry(tmp_path, monkeypatch):

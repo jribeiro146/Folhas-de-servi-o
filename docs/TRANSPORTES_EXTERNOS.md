@@ -61,6 +61,34 @@ Para/CC/BCC, payload inválido, token em cache e variantes do caminho sendMail,
 sempre sem I/O externo. Recusas são falhas conhecidas, sem repetição automática;
 os recibos e a reconciliação de envios incertos conservam a política existente.
 
+### Resposta à primeira revisão do envelope
+
+Os caminhos alternativos de escrita e o JSON ambíguo estavam desprotegidos nas
+chamadas internas diretas. Treze cenários reproduziram os dois achados. O serviço
+agora aceita apenas POST ao endpoint de token do tenant configurado (sem bearer)
+e POST a `/v1.0/users/<remetente configurado>/sendMail` no host Graph oficial (com
+bearer). Não aceita `$batch`, forward/reply/envio de drafts, outro remetente, host,
+método ou query. Esta restrição aplica-se com transporte injetado também.
+
+Um `object_pairs_hook` recusa chaves JSON repetidas, inclusive diferenças só de
+capitalização. No topo e em `message`, só aceita as propriedades utilizadas pelo
+serviço, com a grafia exata. `from`, `sender`, `replyTo` ou propriedades desconhecidas
+são recusadas. Não se depende da interpretação de JSON ambíguo pelo Graph.
+
+Pesquisa dos consumidores em `src`, `tools` e `tests`: fora do próprio serviço,
+nenhum consumidor operacional chama `_graph_bytes` ou `_request_bytes` de
+**GraphMailService**. Web usa prepare/test_connection e a fila usa send_prepared.
+Os serviços Graph de armazenamento/pastas têm os seus próprios métodos homónimos,
+não afetados. Os únicos acessos diretos do mail são testes de fronteira/envelope
+e um teste de falha de token, ajustado para o endpoint sintético do tenant da
+configuração (continua transporte simulado, sem rede). Outros testes substituem
+`_graph_bytes` por um simulador para observar o payload.
+
+O Claude recomendou, para o passo de preflight, bytes imutáveis e um checkpoint
+durável com hash/tamanho antes de remover o ativo; revalidar contra a configuração
+no envio e reter se faltar/divergir, sem reconstruir mail aceite/incerto. Essa
+refatoração, formatos persistentes e respetivos testes ainda não foram implementados.
+
 ## Próximas etapas, ainda não implementadas
 
 Antecipar a validação no fluxo Graph antes da remoção do ativo: neste ponto,
