@@ -244,13 +244,24 @@ download e não copia a imagem pessoal da demo. Nenhum binário real foi incluí
 
 Aceita PNG ou JPEG com extensão correspondente, até **512 KiB e 2048 × 1024 píxeis**.
 A leitura é limitada; Pillow verifica a estrutura e descodifica os píxeis dentro
-destes limites, incluindo a recusa de JPEG truncado. O nome transmitido é genérico,
+destes limites, incluindo a recusa de JPEG truncado. MPO é recusado explicitamente;
+não é tratado como JPEG simples. Se outro código ativar globalmente
+`ImageFile.LOAD_TRUNCATED_IMAGES`, a assinatura é recusada com erro de configuração,
+sem alterar essa flag global nem aceitar uma descodificação permissiva.
+O nome transmitido é genérico,
 `assinatura-institucional.png` ou `.jpg`; não revela o caminho privado. A imagem
 segue inline por CID e um bloco HTML com texto alternativo “Sensorpoint”, largura
 máxima de apresentação 792 píxeis e proporção mantida. Não altera o PDF, arquivo
 da folha ou checklist privada SADI.
 
-A preparação acrescenta a imagem uma vez à mensagem fixa e sujeita o **pedido
+A preparação web chama `validate_signature_config()` através de
+`prepare_service_email`, antes do teste de credenciais, claim da operação,
+arquivo e enqueue. Imagem configurada ausente/inválida devolve 503, preservando o
+rascunho e sem criar uma operação de envio. Esta leitura não fixa o snapshot nem
+reserva o ficheiro; o worker repete a validação porque a imagem pode mudar entretanto.
+Não está em `validate_config`, que também é usado para revalidar snapshots.
+
+A preparação final acrescenta a imagem uma vez à mensagem fixa e sujeita o **pedido
 completo** ao limite de 4 000 000 bytes. Se a imagem configurada faltar, for inválida
 ou exceder os limites, o trabalho recebe recusa conhecida antes de remover o ativo.
 Não há omissão silenciosa de uma imagem configurada. Para desativar em novas
@@ -269,6 +280,23 @@ Ensaios usam imagens PNG/JPEG geradas de raiz: desativação/ficheiros removidos
 preparação, bytes iguais, limite codificado incluindo a imagem, caminho inválido,
 destino resolvido diferente, recurso público, leitura limitada, imagem falsa,
 truncada, demasiado grande ou ilegível, e recusa no fluxo Graph sem remoção do ativo.
+
+### Resposta à primeira revisão da assinatura
+
+O P2 foi reproduzido: imagem ausente/inválida devolvia HTTP200/pending e arquivava
+antes da recusa do worker. Os dois ensaios web agora confirmam HTTP503, rascunho
+preservado, nenhuma operação persistida/arquivo/trabalho/token; o controlo com
+imagem válida mantém a finalização. Outro ensaio remove a imagem depois do
+preflight e confirma a recusa no worker antes da remoção remota. Snapshots antigos
+sem imagem continuam a enviar os bytes originais se a assinatura for ativada depois,
+mesmo sem o ficheiro atual. O modo global permissivo também foi reproduzido e é
+recusado explicitamente; a pesquisa em src não encontrou nenhum código que o ative.
+
+Pillow já era dependência da aplicação (Excel, schema SADI, assinaturas). Ficou
+fixado em **12.1.1**, a versão efetivamente instalada e testada, em requirements.txt
+e requirements-server.txt. Dockerfile instala requirements-server.txt; foi incluído
+como contexto na revisão. Isto não equivale a build/ensaio Linux: falta runtime
+Docker/Podman/WSL neste computador e o pacote final continua por validar.
 
 ## Próximas etapas, ainda não implementadas
 

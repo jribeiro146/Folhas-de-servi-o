@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageFile, UnidentifiedImageError
 
 from src.config import (
     GRAPH_CLIENT_ID,
@@ -234,6 +234,7 @@ class GraphMailService:
     ) -> dict[str, Any]:
         """Valida e fixa destinatários/conteúdo antes de a folha ser arquivada."""
         self.validate_config()
+        self.validate_signature_config()
         customer_recipient = self.validate_address(customer_email, label="e-mail do cliente")
         recipient = (
             self.validate_address(self.config.test_recipient, label="destinatário de teste")
@@ -394,6 +395,8 @@ class GraphMailService:
     @staticmethod
     def _signature_image(data):
         """Validate bounded PNG/JPEG bytes without modifying the original image."""
+        if ImageFile.LOAD_TRUNCATED_IMAGES:
+            raise GraphMailConfigurationError("A validação de imagens está em modo permissivo; desative a leitura de imagens truncadas.")
         if not isinstance(data, bytes) or not 0 < len(data) <= MAX_SIGNATURE_BYTES:
             raise GraphMailConfigurationError("A assinatura institucional excede 512 KiB ou está vazia.")
         try:
@@ -414,6 +417,10 @@ class GraphMailService:
                 "Assinatura institucional inválida: use PNG ou JPEG até 2048 por 1024 píxeis."
             ) from exc
         return mime, extension, width, height
+
+    def validate_signature_config(self) -> None:
+        """Preflight before local finalization; never used to revalidate a snapshot."""
+        self._prepare_signature()
 
     def _prepare_signature(self):
         filename = self.config.signature_filename

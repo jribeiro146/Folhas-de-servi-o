@@ -4,7 +4,7 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageFile
 import pytest
 
 import src.services.graph_mail_service as mail
@@ -48,6 +48,52 @@ def test_signature_is_inline_and_fixed_after_private_files_are_removed(tmp_path,
     assert service.send_delivery(delivery)["accepted"] is True
     sends = [r for r in calls if r.full_url.endswith("/sendMail")]
     assert len(sends) == 1 and sends[0].data == delivery.payload
+
+
+def test_signature_validation_refuses_permissive_global_image_decoder(tmp_path, monkeypatch):
+    service, signature, pdf, calls = setup_signature(tmp_path, monkeypatch, filename="signature.jpg", image_format="JPEG")
+    signature.write_bytes(signature.read_bytes()[:-20])
+    monkeypatch.setattr(ImageFile, "LOAD_TRUNCATED_IMAGES", True)
+    with pytest.raises(mail.GraphMailConfigurationError):
+        service.prepare_delivery({"to": "customer@example.invalid"}, pdf, operation_id="truncated")
+    assert ImageFile.LOAD_TRUNCATED_IMAGES is True and calls == []
+
+
+def test_mpo_is_explicitly_rejected_as_an_institutional_signature(tmp_path, monkeypatch):
+    service, signature, pdf, calls = setup_signature(tmp_path, monkeypatch, filename="signature.jpg", image_format="JPEG")
+    Image.new("RGB", (30, 20), "white").save(signature, format="MPO", save_all=True,
+                                           append_images=[Image.new("RGB", (30, 20), "black")])
+    with pytest.raises(mail.GraphMailConfigurationError, match="PNG ou JPEG"):
+        service.prepare_delivery({"to": "customer@example.invalid"}, pdf, operation_id="mpo")
+    assert calls == []
+
+
+def test_unsigned_snapshot_is_not_changed_when_signature_is_enabled_later(tmp_path, monkeypatch):
+    service, signature, pdf, calls = setup_signature(tmp_path, monkeypatch)
+    signed_config = service.config
+    service.config = replace(service.config, signature_filename="")
+    fixed = service.prepare_delivery({"to": "customer@example.invalid"}, pdf, operation_id="old")
+    service.config = signed_config
+    signature.unlink()
+    assert service.send_delivery(fixed)["accepted"]
+    sends = [r for r in calls if r.full_url.endswith("/sendMail")]
+    assert len(sends) == 1 and sends[0].data == fixed.payload
+    assert len(json.loads(sends[0].data)["message"]["attachments"]) == 1
+
+
+def test_worker_rechecks_image_removed_after_successful_web_preparation(tmp_path, monkeypatch):
+    service, signature, _, calls = setup_signature(tmp_path, monkeypatch)
+    prepared = service.prepare_service_email(customer_email="customer@example.invalid",
+        technician_email="tech@example.invalid", customer_name="Synthetic", service_number="TEST")
+    assert calls == []
+    signature.unlink()
+    queue = GraphSyncQueue(Graph(tmp_path), tmp_path / "queue.sqlite3", mail_service=service, auto_start=False)
+    job = queue.enqueue("archive_and_remove", {"archived_path": str(tmp_path / "sheet.xlsx"),
+        "source_name": "sheet.xlsx", "mail": prepared})
+    queue.run_until_idle()
+    state = queue.status(job["id"])
+    assert state["status"] == "failed" and state["result"]["phase"] == "mail_rejected"
+    assert not state["will_retry"] and not (tmp_path / "remote-removed").exists() and calls == []
 
 
 @pytest.mark.parametrize("filename", ["../outside.png", "sub/image.png", r"sub\image.png", "C:/image.png", "image.png:stream", "."])

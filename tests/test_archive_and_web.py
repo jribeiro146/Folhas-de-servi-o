@@ -1000,6 +1000,70 @@ def test_send_checks_mail_credentials_before_archiving(isolated_dirs, monkeypatc
     assert queue.calls == []
 
 
+@pytest.mark.parametrize("signature_state", ["missing", "invalid", "valid"])
+def test_signature_preflight_happens_before_claim_archive_and_queue(isolated_dirs, monkeypatch, tmp_path, signature_state):
+    import sqlite3
+    from contextlib import closing
+    from dataclasses import replace
+    from PIL import Image
+    import src.web.application as application_module
+    import src.services.graph_mail_service as mail_module
+    from tests.test_durable_mail import make_mail
+
+    monkeypatch.setattr(application_module, "ACTIVE_AUTH_PROVIDER", "microsoft")
+    monkeypatch.setattr(application_module, "AUTH_ENABLED", True)
+    monkeypatch.setattr(mail_module, "APP_DATA_DIR", tmp_path)
+    private = tmp_path / "mail-assets"
+    private.mkdir()
+    if signature_state == "valid":
+        Image.new("RGB", (100, 30), "white").save(private / "institution.png")
+    elif signature_state == "invalid":
+        (private / "institution.png").write_bytes(b"fake")
+    mail = make_mail([])
+    mail.config = replace(mail.config, signature_filename="institution.png")
+    checks = []
+    monkeypatch.setattr(mail, "test_connection", lambda: checks.append("credentials") or {"authenticated": True})
+    draft_name = "2026_7002_2026-08-12_JF"
+    source = copy_sample(isolated_dirs["active"], f"{draft_name}.xlsx")
+    class Auth:
+        @staticmethod
+        def user_from_session(payload):
+            return SimpleNamespace(**payload) if payload else None
+    class Queue:
+        def __init__(self):
+            self.calls = []
+        def enqueue(self, kind, payload, *, job_id=None):
+            self.calls.append((kind, payload, job_id))
+            return {"id": job_id, "status": "pending"}
+    queue = Queue()
+    editing_service = EditingStateService(isolated_dirs["editing"])
+    app = create_app(file_service=FileService(isolated_dirs["active"]), archive_service=ArchiveService(),
+        mail_service=mail, microsoft_auth_service=Auth(), editing_state_service=editing_service,
+        graph_sync_queue=queue)
+    client = app.test_client()
+    with client.session_transaction() as state:
+        state["microsoft_user"] = {"id": "synthetic-tech", "display_name": "Técnico Teste", "email": "tech@example.invalid"}
+    editing = acquire_editing(client, draft_name, "signature-tab")
+    response = client.post(f"/api/file/{draft_name}/send", json={
+        "service_number": "2026_7002", "customer_name": "Cliente fictício",
+        "customer_email": "customer@example.invalid", "client_not_present": True,
+        "intervention_report": "Serviço concluído",
+        "technician_records": [{"technician": "João Freire", "start_time": "09:00", "end_time": "10:00", "date": "2026-09-08"}],
+        "_edit": edit_metadata(editing, client_id="signature-tab")})
+    if signature_state == "valid":
+        assert response.status_code == 200, response.get_json()
+        assert response.get_json()["success"] and len(queue.calls) == 1
+        assert list(isolated_dirs["archived"].rglob("*.xlsx")) and checks == ["credentials"]
+    else:
+        assert response.status_code == 503, response.get_json()
+        assert "assinatura" in response.get_json()["error"].lower()
+        assert source.exists() and not queue.calls and not checks
+        assert not list(isolated_dirs["archived"].rglob("*.xlsx"))
+        with closing(sqlite3.connect(editing_service.repository.database_path)) as db:
+            raw = db.execute("SELECT state_json FROM editing_states WHERE document_id=?", (editing["document_id"],)).fetchone()[0]
+        assert not json.loads(raw).get("operations")
+
+
 def test_legacy_retry_endpoint_requires_authenticated_admin(isolated_dirs):
     class RetryQueue:
         calls = []
