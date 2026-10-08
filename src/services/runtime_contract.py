@@ -47,6 +47,9 @@ class RuntimeContract:
         """Explicitly initialize NEW storage; never adopt existing data here."""
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         lock = self.data_dir / ".runtime-contract.init.lock"
+        if (not self.path.exists() and any(path != lock for path in self.data_dir.iterdir())
+                and not lock.exists()):
+            raise ContractError("Os dados existentes requerem preparação e migração explícitas; não são uma instalação vazia.")
         try:
             with file_mutex(lock):
                 if self.path.exists():
@@ -93,14 +96,16 @@ class RuntimeContract:
         try:
             _validate_source(source)
             formats = json.loads(raw_formats)
-            if (not isinstance(formats, dict) or formats != SUPPORTED_FORMATS
-                    or any(type(value) is not int for value in formats.values())
+            if (not isinstance(formats, dict) or not formats
+                    or any(not isinstance(key, str) or re.fullmatch(r"[a-z][a-z0-9_]{0,63}", key) is None
+                           or type(value) is not int or value < 1 for key, value in formats.items())
                     or type(epoch) is not int or epoch < 1):
                 raise ValueError("Invalid state formats")
         except (ValueError, TypeError) as exc:
             raise ContractError("Formatos persistentes incompatíveis; requer migração explícita.") from exc
         return {"source_sha256": source, "formats": formats, "epoch": epoch,
-                "matches_release": source == self.source_sha256}
+                "matches_release": source == self.source_sha256,
+                "formats_compatible": formats == SUPPORTED_FORMATS}
 
     @contextmanager
     def _session(self, *, exclusive=False, require_match=True):
@@ -108,9 +113,11 @@ class RuntimeContract:
         try:
             # mode=rw deliberately refuses a missing database instead of creating one.
             connection = sqlite3.connect(self.path.as_uri() + "?mode=rw", uri=True,
-                                         isolation_level=None, timeout=0.25)
+                                         isolation_level=None, timeout=0.25, check_same_thread=False)
             connection.execute("BEGIN EXCLUSIVE" if exclusive else "BEGIN")
             snapshot = self._read(connection)
+            if require_match and not snapshot["formats_compatible"]:
+                raise ContractError("Formatos persistentes incompatíveis; requer migração explícita.")
             if require_match and not snapshot["matches_release"]:
                 raise ContractError("Versão de código incompatível com os dados ativos; aguarde atualização coordenada.")
         except sqlite3.Error as exc:
@@ -126,8 +133,10 @@ class RuntimeContract:
         try:
             yield connection, snapshot
         finally:
-            connection.rollback()
-            connection.close()
+            try:
+                connection.rollback()
+            finally:
+                connection.close()
 
     @contextmanager
     def operation(self):
@@ -140,13 +149,16 @@ class RuntimeContract:
         with self._session(require_match=False) as (_, snapshot):
             return snapshot
 
-    def activate(self, next_source_sha256: str) -> dict:
+    def activate(self, next_source_sha256: str, *, next_formats: dict) -> dict:
         """Switch compatible code after all admitted operations have stopped.
 
         The instance's source is the expected previous release. This is not a
         migration or rollback command and never changes storage format markers.
         """
         _validate_source(next_source_sha256)
+        if (not isinstance(next_formats, dict) or next_formats != SUPPORTED_FORMATS
+                or any(type(value) is not int for value in next_formats.values())):
+            raise ContractError("A versão de destino exige outro formato; preparar migração explícita.")
         with self._session(exclusive=True) as (connection, snapshot):
             if snapshot["source_sha256"] != next_source_sha256:
                 connection.execute("UPDATE state_contract SET source_sha256=?, epoch=epoch+1 WHERE singleton=1",
