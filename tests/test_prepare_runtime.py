@@ -180,3 +180,56 @@ def test_inspect_reports_other_release_and_future_formats_without_adopting_them(
     assert run_cli(package, "activate", "--data-dir", data, "--expected-source", first["source_sha256"],
                    "--writers-stopped").returncode == 2
     assert contract.inspect() == {**state, "matches_release": True}
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows UNC resolution")
+def test_local_alias_resolving_to_unc_is_rejected_before_io(monkeypatch):
+    from tools.prepare_runtime import _data_path
+    remote = Path(r"\\synthetic.invalid\share\data")
+    monkeypatch.setattr(Path, "resolve", lambda self: remote)
+    with pytest.raises(ValueError, match="local"):
+        _data_path(r"C:\synthetic-alias\data")
+
+
+def test_activation_of_existing_stores_and_invalid_expected_source(package, tmp_path):
+    data = tmp_path / "data"
+    first = write_release_manifest(package, revision="a" * 40)
+    assert run_cli(package, "init", "--data-dir", data).returncode == 0
+    paths = {"editing": data / "editing-state/editing-state.sqlite3", "queue": data / "graph-sync.sqlite3"}
+    for kind, path in paths.items():
+        path.parent.mkdir(exist_ok=True)
+        db = sqlite3.connect(path)
+        try:
+            initialize_store(db, kind)
+        finally:
+            db.close()
+    before = {kind: path.read_bytes() for kind, path in paths.items()}
+    (package / "src" / "revision.py").write_text("revision=2\n")
+    second = write_release_manifest(package, revision="b" * 40)
+    contract = RuntimeContract(data, first["source_sha256"])
+    result = run_cli(package, "init", "--data-dir", data)
+    assert result.returncode == 2
+    assert json.loads(result.stderr)["code"] == "state_contract_invalid"
+    for expected in ("invalid", "a" * 63, "g" * 64):
+        result = run_cli(package, "activate", "--data-dir", data, "--expected-source", expected, "--writers-stopped")
+        assert result.returncode == 2
+        assert json.loads(result.stderr)["code"] == "preparation_failed"
+        assert contract.inspect()["epoch"] == 1
+    db = sqlite3.connect(paths["queue"])
+    try:
+        # IMMEDIATE allows readers; EXCLUSIVE prevents the preflight snapshot.
+        db.execute("BEGIN EXCLUSIVE")
+        result = run_cli(package, "activate", "--data-dir", data,
+                         "--expected-source", first["source_sha256"], "--writers-stopped")
+        assert result.returncode == 2
+        assert json.loads(result.stderr)["code"] == "state_contract_busy"
+        assert contract.inspect()["epoch"] == 1
+    finally:
+        db.rollback()
+        db.close()
+    result = run_cli(package, "activate", "--data-dir", data,
+                     "--expected-source", first["source_sha256"], "--writers-stopped")
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert json.loads(result.stdout)["runtime"]["source_sha256"] == second["source_sha256"]
+    assert contract.inspect()["epoch"] == 2
+    assert {kind: path.read_bytes() for kind, path in paths.items()} == before

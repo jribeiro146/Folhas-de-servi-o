@@ -7,7 +7,7 @@ dados antigos, backup/restauro e validação Linux continuam etapas separadas do
 Usar Python 3.13 (mínimo 3.12), o código de um artefacto preparado fora de Git por
 `tools/build_release.py`, e uma pasta persistente **absoluta num disco local do
 mesmo servidor**. Não usar OneDrive, NFS/SMB, raiz do disco ou pastas em `src`.
-O CLI recusa caminho relativo, raiz, UNC e dados em `src`; não deteta todos os
+O CLI recusa caminho relativo, raiz, UNC (também após resolução) e dados em `src`; não deteta todos os
 sistemas de ficheiros remotos/sincronizados. Confirmar isso na instalação.
 
 ## Instalação vazia
@@ -65,3 +65,9 @@ Testes sintéticos executam o CLI num artefacto mínimo copiado, sem app/config,
 com manifesto válido/inválido, pastas antigas, ativação concorrente, validação
 dentro da exclusão, SHA esperado desatualizado e stores incompatíveis. Não são
 uma validação do pacote final nem do servidor.
+
+Resposta à primeira revisão: a resolução de uma ligação local para UNC era
+aceite. Reproduzido com `Path.resolve` simulado, sem rede; agora verifica também
+o destino resolvido. Teste adicional cobre stores marcados existentes, contrato
+de outra release, SHA esperado malformado e store ocupado. `BEGIN IMMEDIATE`
+permite leitura em modo DELETE; o ensaio de recusa usa `BEGIN EXCLUSIVE`.

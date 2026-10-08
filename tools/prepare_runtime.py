@@ -20,6 +20,8 @@ def _data_path(value: str) -> Path:
     if not path.is_absolute() or value.startswith(("\\\\", "//")):
         raise ValueError("Indique uma pasta absoluta num disco local do servidor.")
     path = path.resolve()
+    if str(path).startswith(("\\\\", "//")):
+        raise ValueError("A pasta resolvida tem de ficar num disco local do servidor.")
     if path == Path(path.anchor):
         raise ValueError("A raiz do disco não pode ser usada como pasta de dados.")
     return path
