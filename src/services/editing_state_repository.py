@@ -17,12 +17,12 @@ class SqliteStateRepository:
 
     def __init__(self, database_path: str | Path, *, legacy_root: str | Path | None = None):
         self.database_path = Path(database_path)
-        if (legacy_root is not None and not self.database_path.exists()
-                and any(Path(legacy_root).glob("*.json"))):
+        legacy_json = legacy_root is not None and any(Path(legacy_root).glob("*.json"))
+        if legacy_json and not self.database_path.exists():
             raise StorageFormatError("Estados JSON antigos requerem preparação explícita.")
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.busy_timeout_ms = max(int(os.environ.get("FS_STATE_DB_BUSY_MS", "10000")), 1000)
-        self._initialize()
+        self._initialize(allow_new=not legacy_json)
 
     def _connect(self, *, check_format=True) -> sqlite3.Connection:
         connection = sqlite3.connect(
@@ -41,12 +41,12 @@ class SqliteStateRepository:
                 raise
         return connection
 
-    def _initialize(self) -> None:
+    def _initialize(self, *, allow_new=True) -> None:
         deadline = time.monotonic() + (self.busy_timeout_ms / 1000)
         while True:
             try:
                 with self._connect(check_format=False) as connection:
-                    initialize_store(connection, "editing")
+                    initialize_store(connection, "editing", allow_new=allow_new)
                     connection.execute("PRAGMA journal_mode = WAL")
                     connection.execute("PRAGMA synchronous = NORMAL")
                 return

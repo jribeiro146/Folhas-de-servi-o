@@ -628,10 +628,9 @@ class EditingStateService:
         path: Path | None = None,
         audit: dict[str, Any] | None = None, must_exist: bool = False,
     ) -> Iterator[dict[str, Any]]:
-        legacy_path = self._state_path(document_id)
         with self.repository.transaction(
             document_id,
-            lambda: self._read_state(legacy_path, document_id),
+            lambda: self._new_state(document_id),
             audit=audit, must_exist=must_exist,
         ) as state:
             self._normalize_state(state)
@@ -639,14 +638,7 @@ class EditingStateService:
                 self._sync_fingerprint(state, path)
             yield state
 
-    def _read_state(self, path: Path, document_id: str) -> dict[str, Any]:
-        if path.exists():
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(payload, dict):
-                    return payload
-            except (OSError, json.JSONDecodeError):
-                pass
+    def _new_state(self, document_id: str) -> dict[str, Any]:
         return {
             "version": STATE_VERSION,
             "document_id": document_id,
@@ -833,10 +825,6 @@ class EditingStateService:
             "autosaved_at": autosave.get("updated_at"),
             "source_changed_at": state.get("source_changed_at"),
         }
-
-    def _state_path(self, document_id: str) -> Path:
-        safe = hashlib.sha256(document_id.encode("utf-8")).hexdigest()
-        return self.root / f"{safe}.json"
 
     @staticmethod
     def _fingerprint(path: Path) -> str:

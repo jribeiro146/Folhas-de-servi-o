@@ -163,3 +163,111 @@ def test_two_processes_initialize_one_store_without_partial_schema(tmp_path, kin
                 child.join(2)
         ready.close()
         results.close()
+
+
+@pytest.mark.parametrize("kind,relative", [("editing", "editing-state/editing-state.sqlite3"), ("queue", "graph-sync.sqlite3")])
+@pytest.mark.parametrize("uncommitted", [False, True])
+def test_preflight_accepts_zero_byte_or_uncommitted_new_database(tmp_path, kind, relative, uncommitted):
+    from src.services.sqlite_storage_format import preflight_stores, SCHEMAS
+    database = tmp_path / relative
+    database.parent.mkdir(parents=True, exist_ok=True)
+    database.touch()
+    with closing(sqlite3.connect(database)) as writer:
+        if uncommitted:
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute(SCHEMAS[kind][0])
+        preflight_stores(tmp_path)
+        writer.rollback()
+    factory(kind, database)
+    preflight_stores(tmp_path)
+
+
+def test_zero_byte_editing_database_with_legacy_json_remains_unprepared(tmp_path):
+    from src.services.sqlite_storage_format import preflight_stores
+    from src.services.editing_state_repository import SqliteStateRepository
+    directory = tmp_path / "editing-state"
+    directory.mkdir()
+    database = directory / "editing-state.sqlite3"
+    database.touch()
+    (directory / "old.json").write_text('{"document_id":"synthetic","revision":17}')
+    with pytest.raises(ContractError):
+        preflight_stores(tmp_path)
+    with pytest.raises(ContractError):
+        SqliteStateRepository(database, legacy_root=directory)
+    assert database.read_bytes() == b""
+
+
+def test_marked_editing_database_never_adopts_an_unimported_legacy_json(tmp_path):
+    import hashlib
+    import json
+    from src.services.editing_state_service import EditingStateService
+    service = EditingStateService(tmp_path)
+    document = "synthetic-unimported"
+    legacy = tmp_path / (hashlib.sha256(document.encode()).hexdigest() + ".json")
+    original = json.dumps({"document_id": document, "version":99, "revision":17,
+                           "autosave":{"private":"legacy evidence"}, "sessions":{}, "owner":None})
+    legacy.write_text(original)
+    service.snapshot_document(document)
+    with closing(sqlite3.connect(service.repository.database_path)) as db:
+        stored = json.loads(db.execute("SELECT state_json FROM editing_states WHERE document_id=?", (document,)).fetchone()[0])
+    assert stored["revision"] == 1
+    assert stored["autosave"] is None
+    assert legacy.read_text() == original
+
+
+def _start_operational_entry(entry, directory, ready, go, results):
+    import os
+    from tools.test_runtime import block_outbound_network
+    block_outbound_network()
+    os.environ["FS_APP_DATA_DIR"] = directory
+    ready.put(True)
+    if not go.wait(10):
+        raise RuntimeError("Synthetic startup timed out")
+    if entry == "web":
+        from src.web.application import app
+        assert app.test_client().get("/").status_code == 200
+    else:
+        from src.queue_worker import build_queue
+        build_queue()
+    results.put("ok")
+
+
+def test_web_and_worker_start_together_with_preflight_on_new_storage(tmp_path):
+    import multiprocessing
+    RuntimeContract(tmp_path, get_release_info()["source_sha256"]).initialize_empty()
+    context = multiprocessing.get_context("spawn")
+    ready, results, go = context.Queue(), context.Queue(), context.Event()
+    children = [context.Process(target=_start_operational_entry, args=(entry, str(tmp_path), ready, go, results))
+                for entry in ("web", "worker")]
+    for child in children:
+        child.start()
+    try:
+        assert ready.get(timeout=10) and ready.get(timeout=10)
+        go.set()
+        assert results.get(timeout=30) == results.get(timeout=30) == "ok"
+        for child in children:
+            child.join(5)
+            assert child.exitcode == 0
+        factory("editing", tmp_path / "editing-state" / "editing-state.sqlite3")
+        factory("queue", tmp_path / "graph-sync.sqlite3")
+    finally:
+        go.set()
+        for child in children:
+            child.join(2)
+            if child.is_alive():
+                child.terminate()
+                child.join(2)
+        ready.close()
+        results.close()
+
+
+def test_marked_store_with_unknown_check_constraint_is_not_compatible(tmp_path):
+    database = tmp_path / "editing.sqlite3"
+    factory("editing", database)
+    with closing(sqlite3.connect(database)) as db:
+        ddl = db.execute("SELECT sql FROM sqlite_master WHERE name='editing_states'").fetchone()[0]
+        db.execute("DROP TABLE editing_states")
+        db.execute(ddl.replace("state_json TEXT NOT NULL", "state_json TEXT NOT NULL CHECK(length(state_json)<4)"))
+        db.commit()
+    with pytest.raises(ContractError):
+        factory("editing", database)
