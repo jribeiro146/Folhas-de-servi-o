@@ -52,12 +52,12 @@ def open_browser(url: str) -> None:
 
 def main() -> None:
     """Arranque principal do servidor local e da interface web."""
-    configure_logging("local-web")
     logger = logging.getLogger(__name__)
     try:
         from src.web.application import app
 
         with admit_contract(app.config["RUNTIME_CONTRACT"]):
+            configure_logging("local-web")
             ensure_directories()
         probe_host = "127.0.0.1" if DEFAULT_HOST == "0.0.0.0" else DEFAULT_HOST
         display_host = "localhost" if DEFAULT_HOST == "0.0.0.0" else DEFAULT_HOST

@@ -94,13 +94,15 @@ def main(argv: list[str] | None = None, *, release_root: Path | None = None) -> 
     )
     args = parser.parse_args(argv)
 
-    configure_logging("worker")
     try:
         queue = None
         while True:
             try:
                 if queue is None:
-                    queue = build_queue(release_root=release_root)
+                    candidate = build_queue(release_root=release_root)
+                    with operation_for(candidate):
+                        configure_logging("worker")
+                    queue = candidate
                     log_event(
                         LOGGER, logging.INFO, "Worker da fila iniciado.",
                         event="queue_worker_started",

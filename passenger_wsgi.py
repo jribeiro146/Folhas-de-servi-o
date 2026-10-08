@@ -15,12 +15,13 @@ if str(ROOT_DIR) not in sys.path:
 os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
 from src.logging_config import configure_logging, log_event  # noqa: E402
+from src.services.runtime_admission import admit_contract  # noqa: E402
 
-
-configure_logging("web")
 
 try:
     from src.web.application import app as application  # noqa: E402
+    with admit_contract(application.config["RUNTIME_CONTRACT"]):
+        configure_logging("web")
 except Exception:
     log_event(
         logging.getLogger(__name__),

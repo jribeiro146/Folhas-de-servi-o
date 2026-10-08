@@ -382,3 +382,101 @@ def test_nested_admission_does_not_leak_on_exception_or_admit_other_release(tmp_
             pytest.fail("Old admission leaked")
     with admit_contract(wrong):
         pass
+
+
+@pytest.mark.parametrize("entry", ["passenger", "local-web", "worker"])
+def test_unprepared_startup_with_default_logging_does_not_contaminate_empty_data(entry):
+    import subprocess
+    import sys
+    code = '''
+import os, runpy, sys
+from tools.test_runtime import configure, block_outbound_network
+root = configure()
+block_outbound_network()
+data = root / "virgin"
+os.environ["FS_APP_DATA_DIR"] = str(data)
+os.environ["FS_LOG_ENABLED"] = "true"
+os.environ.pop("FS_LOG_DIR", None)
+from src.services.runtime_contract import RuntimeContract, ContractError
+from src.services.release_identity import get_release_info
+entry = sys.argv[1]
+if entry == "passenger":
+    try:
+        runpy.run_path("passenger_wsgi.py")
+    except ContractError:
+        pass
+    else:
+        raise AssertionError("Unexpected startup")
+elif entry == "local-web":
+    from src.main import main
+    try:
+        main()
+    except SystemExit as exc:
+        assert exc.code == 1
+    else:
+        raise AssertionError("Unexpected startup")
+else:
+    from src.queue_worker import main
+    assert main([]) == 1
+assert not data.exists(), "Startup created persistent data before admission"
+RuntimeContract(data, get_release_info()["source_sha256"]).initialize_empty()
+from src.web.application import app
+assert app.test_client().get("/").status_code == 200
+print("CLEAN_BOOTSTRAP_OK")
+'''
+    result = subprocess.run([sys.executable, "-B", "-c", code, entry],
+                            cwd=Path(__file__).resolve().parents[1], capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert b"CLEAN_BOOTSTRAP_OK" in result.stdout
+
+
+@pytest.mark.parametrize("path", ["/", "/static/js/document-editor.js"])
+def test_busy_http_refuses_before_later_hooks_and_never_caches_error(tmp_path, path):
+    import sqlite3
+    from src.web.application import create_app
+    contract = RuntimeContract(tmp_path / "data", get_release_info()["source_sha256"])
+    contract.initialize_empty()
+    app = create_app(runtime_contract=contract)
+    hooks = []
+    app.before_request(lambda: hooks.append("ran"))
+    db = sqlite3.connect(contract.path)
+    try:
+        db.execute("BEGIN EXCLUSIVE")
+        result = app.test_client().get(path)
+        assert result.status_code == 503
+        assert result.json["code"] == "state_contract_busy"
+        assert result.headers["Retry-After"] == "2"
+        assert "no-store" in result.headers["Cache-Control"]
+        assert hooks == []
+    finally:
+        db.close()
+    assert app.test_client().get(path).status_code == 200
+    assert hooks == ["ran"]
+
+
+def test_persistent_refresh_contention_can_be_recovered_explicitly(tmp_path, monkeypatch):
+    import threading
+    from contextlib import contextmanager
+    from tests.test_graph_refresh_coordinator import SyntheticGraph, wait_finished
+    from src.services.graph_sync_coordinator import GraphRefreshCoordinator
+    contract = RuntimeContract(tmp_path / "data", "a" * 64)
+    contract.initialize_empty()
+    original = contract.operation
+
+    @contextmanager
+    def busy():
+        if threading.current_thread().name == "graph-active-refresh":
+            raise ContractBusy("Synthetic persistent contention")
+        with original() as value:
+            yield value
+    monkeypatch.setattr(contract, "operation", busy)
+    coordinator = GraphRefreshCoordinator(SyntheticGraph(), contract.data_dir / "active", runtime_contract=contract)
+    first = coordinator.request_refresh(force=True)
+    assert wait_finished(coordinator)["outcome"] == "error"
+    throttled = coordinator.request_refresh()
+    assert throttled["refresh_id"] == first["refresh_id"]
+    assert throttled["outcome"] == "error"
+    monkeypatch.setattr(contract, "operation", original)
+    again = coordinator.request_refresh(force=True)
+    assert again["refresh_id"] != first["refresh_id"]
+    assert wait_finished(coordinator)["outcome"] == "success"

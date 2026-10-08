@@ -7,6 +7,36 @@ const vm = require("node:vm");
 const editor = fs.readFileSync(path.join(__dirname, "../../src/web/static/js/document-editor.js"), "utf8");
 const save = editor.slice(editor.indexOf("    const commitMessageKey ="), editor.indexOf("    const sendFile ="));
 
+for (const code of ["state_contract_busy", "state_contract_invalid"]) {
+    test("draft preserves local form and stays open after " + code, async () => {
+        const messages = [];
+        const requests = [];
+        const payload = { customer_name: "Cliente fictício", observations: "Alteração local" };
+        const context = {
+            activeFileName: "synthetic", hideConfirm() {}, setBusy() {},
+            commitPhotoState: () => assert.fail("Photos must remain pending"),
+            collectFormData: () => payload, requireOperationMetadata: async () => ({}),
+            buildCommitRequest: () => ({}), showToast: (message) => messages.push(message),
+            fetch: async (url) => {
+                requests.push(url);
+                return {ok: false, status: 503, json: async () => ({success: false, code, error: "Aguarde atualização"})};
+            },
+            window: { location: {href: "original"},
+                __EDITING_COORDINATOR__: {
+                    handleConflict: () => false,
+                    markCommitted: () => assert.fail("Refused draft cannot be committed"),
+                },
+            },
+        };
+        vm.runInNewContext(save + "\nthis.save = saveDraft;", context);
+        await context.save();
+        assert.equal(context.window.location.href, "original");
+        assert.equal(payload.observations, "Alteração local");
+        assert.deepEqual(messages, ["Aguarde atualização"]);
+        assert.deepEqual(requests, ["/api/file/synthetic/draft"]);
+    });
+}
+
 for (const status of ["pending", "local"]) {
     test("draft save reports " + status + " and opens the saved draft without another POST", async () => {
         const stored = new Map();
