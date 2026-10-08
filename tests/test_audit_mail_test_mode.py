@@ -10,7 +10,7 @@ from tests.test_graph_mail_service import mail_config
 @pytest.mark.parametrize("test_mode", [False, True])
 def test_prepare_and_actual_send_have_the_same_isolated_recipients(tmp_path, monkeypatch, test_mode):
     config = replace(mail_config(), test_recipient="sandbox@example.invalid" if test_mode else "")
-    service = GraphMailService(config)
+    service = GraphMailService(config, transport=lambda *a, **kw: pytest.fail("Unexpected I/O"))
     prepared = service.prepare_service_email(customer_email="customer@example.invalid",
         technician_email="technician@example.invalid", customer_name="Synthetic", service_number="99")
     assert prepared["cc"] == ([] if test_mode else ["technician@example.invalid"])
@@ -31,7 +31,7 @@ def test_prepare_and_actual_send_have_the_same_isolated_recipients(tmp_path, mon
 
 
 def test_legacy_mail_without_technician_field_has_no_cc_in_test_mode(tmp_path, monkeypatch):
-    service = GraphMailService(replace(mail_config(), test_recipient="sandbox@example.invalid"))
+    service = GraphMailService(replace(mail_config(), test_recipient="sandbox@example.invalid"), transport=lambda *a, **kw: pytest.fail("Unexpected I/O"))
     pdf = tmp_path / "synthetic.pdf"
     pdf.write_bytes(b"%PDF-synthetic")
     envelopes = []

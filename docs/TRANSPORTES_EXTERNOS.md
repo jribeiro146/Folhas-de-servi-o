@@ -89,6 +89,40 @@ durável com hash/tamanho antes de remover o ativo; revalidar contra a configura
 no envio e reter se faltar/divergir, sem reconstruir mail aceite/incerto. Essa
 refatoração, formatos persistentes e respetivos testes ainda não foram implementados.
 
+## Mensagem fixa em memória (08/10/2026)
+
+`prepare_delivery` produz `GraphMailDelivery`, um objeto imutável com os bytes
+JSON finais e a identidade de envio (remetente e tenant), sem credenciais.
+Não obtém tokens nem usa rede. O PDF é lido uma vez, com limite de 3 MiB + 1 byte,
+e a mensagem codificada continua limitada a 4 000 000 bytes. Erros de leitura
+são recusas conhecidas anteriores ao envio.
+
+`validate_delivery` verifica a configuração, a política de transporte, a identidade
+e a mensagem final sem reescrever conteúdo. Exige um único PDF válido, assunto e
+corpo, correlação e gravação nos itens enviados. Devolve metadados; isso não é uma
+aceitação do Graph. A validação antecipada de política só dispensa a guarda de
+ambiente quando há um transporte Python de teste explicitamente injetado.
+
+`send_delivery` repete a validação e transmite os mesmos bytes, sem ler ficheiros
+ou adaptar destinatários. Se mudar o remetente, tenant ou caixa de teste de forma
+incompatível, recusa. As credenciais podem ser renovadas sem alterar a mensagem.
+O comprovativo é preparado antes do POST e só recebe `accepted=true` depois do
+retorno do transporte; continua a não comprovar entrega. Falhas ambíguas mantêm
+a classificação anterior. `send_prepared` preserva a interface antiga através
+de prepare_delivery + send_delivery.
+
+Testes exercitam a API pública com transporte simulado: alteração do dicionário
+de origem e remoção do PDF após preparação, bytes idênticos enviados, ausência
+de I/O na preparação, mudança de configuração/política, leitura limitada e
+mensagens incompletas/corrompidas. Os testes antigos que observam o payload por
+`_graph_bytes` passam agora uma dependência de transporte explícita para não
+contornarem implicitamente a validação antecipada de política.
+
+Esta API ainda não persiste mensagens nem muda a ordem da fila. O próximo passo
+tem de guardar e verificar o snapshot antes da remoção remota, contemplando
+interrupções, formatos persistentes e restauro. A assinatura institucional opcional
+também ainda não foi implementada.
+
 ## Próximas etapas, ainda não implementadas
 
 Antecipar a validação no fluxo Graph antes da remoção do ativo: neste ponto,

@@ -71,6 +71,15 @@ class GraphMailUnknownResultError(GraphMailError):
 
 
 @dataclass(frozen=True)
+class GraphMailDelivery:
+    """Fixed message bytes and sending identity; contains no credentials."""
+
+    payload: bytes
+    sender: str
+    tenant_id: str
+
+
+@dataclass(frozen=True)
 class GraphMailConfig:
     tenant_id: str
     client_id: str
@@ -273,7 +282,18 @@ class GraphMailService:
         *,
         operation_id: str,
     ) -> dict[str, Any]:
-        """Envia uma mensagem já validada com o PDF final em anexo."""
+        """Compatibility entry point; prepare once, then send those exact bytes."""
+        delivery = self.prepare_delivery(prepared, attachment_path, operation_id=operation_id)
+        return self.send_delivery(delivery)
+
+    def prepare_delivery(
+        self,
+        prepared: dict[str, Any],
+        attachment_path: str | Path,
+        *,
+        operation_id: str,
+    ) -> GraphMailDelivery:
+        """Build and validate the final message without token or network I/O."""
         self.validate_config()
         prepared_recipient = self.validate_address(
             str(prepared.get("to") or ""),
@@ -309,7 +329,11 @@ class GraphMailService:
             raise GraphMailError(f"PDF da folha não encontrado: {pdf_path}")
         if pdf_path.suffix.casefold() != ".pdf":
             raise GraphMailError("O anexo da folha tem de ser exclusivamente um ficheiro PDF.")
-        pdf_bytes = pdf_path.read_bytes()
+        try:
+            with pdf_path.open("rb") as pdf_stream:
+                pdf_bytes = pdf_stream.read(MAX_SIMPLE_ATTACHMENT_BYTES + 1)
+        except OSError as exc:
+            raise GraphMailError("Não foi possível ler o PDF para preparar o e-mail.") from exc
         if not pdf_bytes.startswith(b"%PDF-"):
             raise GraphMailError("O anexo produzido não é um PDF válido.")
         if len(pdf_bytes) > MAX_SIMPLE_ATTACHMENT_BYTES:
@@ -339,21 +363,77 @@ class GraphMailService:
             "saveToSentItems": True,
         }
         payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self._validate_delivery_payload(payload_bytes)
-        sender = parse.quote(self.validate_address(self.config.sender, label="remetente"), safe="@._-+")
+        delivery = GraphMailDelivery(payload_bytes,
+                                     self.validate_address(self.config.sender, label="remetente"),
+                                     self.config.tenant_id.strip())
+        self.validate_delivery(delivery)
+        return delivery
+
+    def validate_delivery(self, delivery: GraphMailDelivery) -> dict[str, Any]:
+        """Recheck policy without changing bytes; return metadata, not acceptance."""
+        self.validate_config()
+        if self._transport is None:
+            try:
+                require_live_delivery(MAIL_ENABLED)
+            except ValueError as exc:
+                raise GraphMailConfigurationError(str(exc)) from exc
+        if (not isinstance(delivery, GraphMailDelivery)
+                or not isinstance(delivery.sender, str) or not isinstance(delivery.tenant_id, str)
+                or delivery.sender.casefold() != self.validate_address(self.config.sender).casefold()
+                or delivery.tenant_id.casefold() != self.config.tenant_id.strip().casefold()):
+            raise GraphMailConfigurationError("A identidade de envio difere da mensagem preparada.")
+        self._validate_delivery_payload(delivery.payload)
+        try:
+            payload = json.loads(delivery.payload.decode("utf-8"))
+            message = payload["message"]
+            if (payload.get("saveToSentItems") is not True
+                    or len(message["toRecipients"]) != 1 or len(message.get("ccRecipients", [])) > 1
+                    or "bccRecipients" in message
+                    or not isinstance(message["subject"], str) or not message["subject"]
+                    or not isinstance(message["body"], dict)
+                    or message["body"].get("contentType") != "HTML"
+                    or not isinstance(message["body"].get("content"), str)):
+                raise ValueError("Invalid fixed service message")
+            attachments = message["attachments"]
+            if not isinstance(attachments, list) or len(attachments) != 1:
+                raise ValueError("A service message requires one PDF")
+            attachment = attachments[0]
+            if (not isinstance(attachment, dict)
+                    or attachment.get("@odata.type") != "#microsoft.graph.fileAttachment"
+                    or attachment.get("contentType") != "application/pdf"
+                    or not isinstance(attachment.get("name"), str)
+                    or not attachment["name"].casefold().endswith(".pdf")
+                    or not isinstance(attachment.get("contentBytes"), str)):
+                raise ValueError("Invalid PDF attachment")
+            pdf_bytes = base64.b64decode(attachment["contentBytes"], validate=True)
+            if not pdf_bytes.startswith(b"%PDF-") or len(pdf_bytes) > MAX_SIMPLE_ATTACHMENT_BYTES:
+                raise ValueError("Invalid PDF content")
+            headers = message["internetMessageHeaders"]
+            if (not isinstance(headers, list) or len(headers) != 1 or not isinstance(headers[0], dict)
+                    or headers[0].get("name") != "x-sensorpoint-operation-id"
+                    or not isinstance(headers[0].get("value"), str)
+                    or not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", headers[0]["value"])):
+                raise ValueError("Invalid correlation header")
+            return {
+                "sender": delivery.sender,
+                "to": message["toRecipients"][0]["emailAddress"]["address"],
+                "cc": [item["emailAddress"]["address"] for item in message.get("ccRecipients", [])],
+                "attachment": message["attachments"][0]["name"],
+            }
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise GraphMailConfigurationError("A mensagem preparada está incompleta.") from exc
+
+    def send_delivery(self, delivery: GraphMailDelivery) -> dict[str, Any]:
+        """Send a fixed message; all metadata is checked before the POST."""
+        metadata = self.validate_delivery(delivery)
+        sender = parse.quote(delivery.sender, safe="@._-+")
         self._graph_bytes(
             "POST",
             f"/users/{sender}/sendMail",
-            data=payload_bytes,
+            data=delivery.payload,
             content_type="application/json",
         )
-        return {
-            "accepted": True,
-            "sender": self.config.sender,
-            "to": recipient,
-            "cc": cc_recipients,
-            "attachment": pdf_path.name,
-        }
+        return {"accepted": True, **metadata}
 
     @staticmethod
     def _recipient(address: str) -> dict[str, dict[str, str]]:

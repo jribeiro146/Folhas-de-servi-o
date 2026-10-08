@@ -153,7 +153,7 @@ def test_send_prepared_test_mode_overrides_a_stale_customer_recipient(tmp_path, 
         sender="jribeiro@sensorpoint.pt",
         test_recipient="jribeiro@sensorpoint.pt",
     )
-    service = GraphMailService(config)
+    service = GraphMailService(config, transport=lambda *a, **kw: pytest.fail("Unexpected I/O"))
     pdf_path = tmp_path / "FS-TESTE__folha_final.pdf"
     pdf_path.write_bytes(b"%PDF-1.7\nconteudo")
     captured = {}
@@ -194,7 +194,7 @@ def test_prepare_service_email_rejects_invalid_customer_address():
 
 
 def test_send_prepared_posts_pdf_attachment_to_graph(tmp_path, monkeypatch):
-    service = GraphMailService(mail_config())
+    service = GraphMailService(mail_config(), transport=lambda *a, **kw: pytest.fail("Unexpected I/O"))
     pdf_path = tmp_path / "FS-123__folha_final.pdf"
     pdf_path.write_bytes(b"%PDF-1.7\nconteudo")
     captured = {}
