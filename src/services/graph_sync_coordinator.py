@@ -19,7 +19,7 @@ from src.services.file_diagnostics import SYNC_ID
 from src.services.file_mutex import FileMutexBusy, file_mutex
 from src.services.graph_storage_service import GraphStorageService
 from src.services.runtime_admission import admitted, operation_for
-from src.services.runtime_contract import ContractError
+from src.services.runtime_contract import ContractError, ContractBusy
 
 
 LOGGER = logging.getLogger(__name__)
@@ -202,9 +202,21 @@ class GraphRefreshCoordinator:
         return result
 
     def _run(self, refresh_id: str, run_guard) -> None:
-        admission = operation_for(self)
+        deadline = time.monotonic() + 3
         try:
-            admission.__enter__()
+            while True:
+                admission = operation_for(self)
+                try:
+                    admission.__enter__()
+                    break
+                except ContractBusy:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(.05)
+        except ContractBusy:
+            run_guard.__exit__(None, None, None)
+            LOGGER.warning("Atualização adiada: contrato ocupado; voltar a atualizar a lista.")
+            return
         except ContractError:
             run_guard.__exit__(None, None, None)
             LOGGER.warning("Atualização recusada pelo contrato de execução; reiniciar na versão ativa.")

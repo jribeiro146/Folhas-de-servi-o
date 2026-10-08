@@ -24,7 +24,7 @@ from src.services.bundle_removals import copy_confirmations, refresh_own_removal
 from src.services.file_mutex import file_mutex, FileMutexBusy
 from src.services.atomic_files import replace_local
 from src.services.runtime_admission import admitted, operation_for
-from src.services.runtime_contract import ContractError
+from src.services.runtime_contract import ContractError, ContractBusy
 
 
 LOGGER = logging.getLogger(__name__)
@@ -449,9 +449,15 @@ class GraphSyncQueue:
         return self.status(job_id)
 
     def _worker(self, *, schedule_follow_up: bool = True) -> None:
+        admission_busy = False
         try:
             with operation_for(self), file_mutex(self._worker_mutex_path):
                 self._process_jobs()
+        except ContractBusy:
+            if not schedule_follow_up:
+                raise
+            admission_busy = True
+            LOGGER.info("Worker adiado: contrato temporariamente ocupado.")
         except ContractError:
             synchronous = not schedule_follow_up
             schedule_follow_up = False
@@ -464,7 +470,9 @@ class GraphSyncQueue:
             with self._worker_lock:
                 self._worker_running = False
             if schedule_follow_up:
-                if self._has_active_job():
+                if admission_busy:
+                    delay = 1.0
+                elif self._has_active_job():
                     delay = 5.0
                 elif self._has_due_jobs():
                     # A busy process lock is also possible when its SQLite lease
@@ -538,6 +546,8 @@ class GraphSyncQueue:
             try:
                 if not self._heartbeat(job):
                     return
+            except ContractBusy:
+                LOGGER.info("Heartbeat adiado: contrato temporariamente ocupado.")
             except ContractError:
                 return
             except sqlite3.Error:

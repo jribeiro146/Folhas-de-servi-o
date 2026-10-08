@@ -22,6 +22,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from src.config import ensure_directories
 from src.logging_config import configure_logging, log_event
+from src.services.runtime_admission import admit_contract
 
 DEFAULT_HOST = os.environ.get("FS_HOST", "localhost")
 DEFAULT_PORT = int(os.environ.get("FS_PORT", "5001"))
@@ -56,7 +57,8 @@ def main() -> None:
     try:
         from src.web.application import app
 
-        ensure_directories()
+        with admit_contract(app.config["RUNTIME_CONTRACT"]):
+            ensure_directories()
         probe_host = "127.0.0.1" if DEFAULT_HOST == "0.0.0.0" else DEFAULT_HOST
         display_host = "localhost" if DEFAULT_HOST == "0.0.0.0" else DEFAULT_HOST
         port = pick_port(host=probe_host)

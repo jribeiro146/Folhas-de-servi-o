@@ -232,3 +232,14 @@ def test_log_directory_must_be_absolute():
             settings=_settings(Path("relative-logs")),
             force=True,
         )
+
+
+def test_logging_refuses_code_directory_before_creating_files(tmp_path, monkeypatch):
+    import src.logging_config as module
+    source = tmp_path / "src"
+    source.mkdir()
+    monkeypatch.setattr(module, "__file__", str(source / "logging_config.py"))
+    destination = source / "private-logs"
+    with pytest.raises(ValueError, match="código"):
+        configure_logging("startup", settings=_settings(destination), force=True)
+    assert not destination.exists()

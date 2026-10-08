@@ -216,3 +216,169 @@ def test_additional_storage_paths_inside_code_are_refused(tmp_path):
     for storage in (source / "cache", source / "logs", source / "excel"):
         with pytest.raises(ContractError, match="dados.*código"):
             resolve_runtime(tmp_path / "data", release_root=tmp_path, storage_paths=(storage,))
+
+
+def test_admitted_http_can_enqueue_while_an_exclusive_writer_waits(tmp_path):
+    import sqlite3
+    import threading
+    import time
+    from src.web.application import create_app
+    from src.services.graph_sync_queue import GraphSyncQueue
+    contract = RuntimeContract(tmp_path / "data", get_release_info()["source_sha256"])
+    contract.initialize_empty()
+    queue = GraphSyncQueue(None, contract.data_dir / "queue.sqlite3", auto_start=False,
+                           runtime_contract=contract)
+    application = create_app(runtime_contract=contract)
+    writer_outcome = []
+
+    def writer():
+        # A longer SQLite timeout makes PENDING deterministic; no data is changed.
+        db = sqlite3.connect(contract.path, timeout=1)
+        try:
+            db.execute("BEGIN EXCLUSIVE")
+            writer_outcome.append("acquired")
+        except sqlite3.OperationalError:
+            writer_outcome.append("busy")
+        finally:
+            db.close()
+
+    @application.post("/synthetic-pending")
+    def enqueue_during_pending():
+        thread = threading.Thread(target=writer)
+        thread.start()
+        try:
+            deadline = time.monotonic() + .8
+            while True:
+                probe = sqlite3.connect(contract.path, timeout=0)
+                try:
+                    probe.execute("SELECT epoch FROM state_contract").fetchone()
+                except sqlite3.OperationalError:
+                    break
+                finally:
+                    probe.close()
+                assert time.monotonic() < deadline
+                time.sleep(.005)
+            queued = queue.enqueue("remove_active", {"source_name": "synthetic.xlsx"})
+            return {"job_id": queued["id"]}
+        finally:
+            thread.join(2)
+
+    response = application.test_client().post("/synthetic-pending")
+    assert response.status_code == 200
+    assert queue.status(response.json["job_id"])["status"] == "pending"
+    assert writer_outcome == ["busy"]
+    contract.activate("b" * 64, next_formats=SUPPORTED_FORMATS)
+
+
+def _busy_once(monkeypatch, contract, *, thread_name=None):
+    from contextlib import contextmanager
+    import threading
+    original = contract.operation
+    failures = []
+
+    @contextmanager
+    def admission():
+        if not failures and (thread_name is None or threading.current_thread().name == thread_name):
+            failures.append("busy")
+            raise ContractBusy("Synthetic transient SQLite lock")
+        with original() as state:
+            yield state
+    monkeypatch.setattr(contract, "operation", admission)
+    return failures
+
+
+def test_heartbeat_resumes_after_transient_busy(tmp_path, monkeypatch):
+    import threading
+    import time
+    from src.services.graph_sync_queue import GraphSyncQueue
+    contract = RuntimeContract(tmp_path / "data", "a" * 64)
+    contract.initialize_empty()
+    queue = GraphSyncQueue(None, contract.data_dir / "queue.sqlite3", auto_start=False,
+                           runtime_contract=contract)
+    queue.enqueue("remove_active", {"source_name": "synthetic.xlsx"})
+    job = queue._claim_next()
+    before = queue.status(job["id"])["updated_at"]
+    _busy_once(monkeypatch, contract)
+    queue.heartbeat_seconds = .02
+    stop = threading.Event()
+    thread = threading.Thread(target=queue._keep_alive, args=(job, stop))
+    thread.start()
+    try:
+        deadline = time.monotonic() + 2
+        while queue.status(job["id"])["updated_at"] == before and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert queue.status(job["id"])["updated_at"] > before
+    finally:
+        stop.set()
+        thread.join(2)
+
+
+def test_async_queue_retries_transient_busy(tmp_path, monkeypatch):
+    from src.services.graph_sync_queue import GraphSyncQueue
+    contract = RuntimeContract(tmp_path / "data", "a" * 64)
+    contract.initialize_empty()
+
+    class Graph:
+        def remove_active_name(self, name, **kwargs):
+            return True
+
+    queue = GraphSyncQueue(Graph(), contract.data_dir / "queue.sqlite3", auto_start=False,
+                           runtime_contract=contract)
+    job = queue.enqueue("remove_active", {"source_name": "synthetic.xlsx"})
+    _busy_once(monkeypatch, contract)
+    queue.start()
+    assert queue.wait(job["id"], timeout=3)["status"] == "complete"
+
+
+def test_refresh_retries_transient_busy(tmp_path, monkeypatch):
+    from tests.test_graph_refresh_coordinator import SyntheticGraph, wait_finished
+    from src.services.graph_sync_coordinator import GraphRefreshCoordinator
+    contract = RuntimeContract(tmp_path / "data", "a" * 64)
+    contract.initialize_empty()
+    coordinator = GraphRefreshCoordinator(SyntheticGraph(), contract.data_dir / "active", runtime_contract=contract)
+    failures = _busy_once(monkeypatch, contract, thread_name="graph-active-refresh")
+    coordinator.request_refresh(force=True)
+    assert wait_finished(coordinator)["outcome"] == "success"
+    assert failures == ["busy"]
+
+
+def test_watch_worker_defers_busy_cycle_instead_of_exiting(tmp_path, monkeypatch):
+    import src.queue_worker as worker
+    monkeypatch.setattr(worker, "APP_DATA_DIR", tmp_path / "data")
+    contract = RuntimeContract(worker.APP_DATA_DIR, get_release_info()["source_sha256"])
+    contract.initialize_empty()
+    _busy_once(monkeypatch, contract)
+    original_build = worker.build_queue
+    monkeypatch.setattr(worker, "build_queue", lambda **kwargs: original_build(runtime_contract=contract))
+    delays = []
+
+    def sleep(seconds):
+        delays.append(seconds)
+        if len(delays) == 2:
+            raise KeyboardInterrupt()
+    monkeypatch.setattr(worker.time, "sleep", sleep)
+    with pytest.raises(KeyboardInterrupt):
+        worker.main(["--watch"])
+    assert len(delays) == 2
+
+
+def test_nested_admission_does_not_leak_on_exception_or_admit_other_release(tmp_path):
+    from src.services.runtime_admission import admit_contract
+    contract = RuntimeContract(tmp_path / "data", "a" * 64)
+    contract.initialize_empty()
+    duplicate = RuntimeContract(contract.data_dir, "a" * 64)
+    wrong = RuntimeContract(contract.data_dir, "b" * 64)
+    with pytest.raises(ValueError, match="synthetic"):
+        with admit_contract(contract) as outer:
+            with admit_contract(duplicate) as nested:
+                assert outer is nested
+                with pytest.raises(ContractError):
+                    with admit_contract(wrong):
+                        pytest.fail("Another release was admitted")
+                raise ValueError("synthetic")
+    contract.activate("b" * 64, next_formats=SUPPORTED_FORMATS)
+    with pytest.raises(ContractError):
+        with admit_contract(contract):
+            pytest.fail("Old admission leaked")
+    with admit_contract(wrong):
+        pass

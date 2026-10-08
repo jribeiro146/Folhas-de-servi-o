@@ -24,7 +24,8 @@ from src.services.graph_storage_service import GraphStorageService
 from src.services.graph_sync_queue import GraphSyncQueue
 from src.services.local_pdf_service import LocalPdfService
 from src.services.teams_notification_service import TeamsNotificationService
-from src.services.runtime_admission import resolve_runtime, operation_for
+from src.services.runtime_admission import resolve_runtime, operation_for, admit_contract
+from src.services.runtime_contract import ContractBusy
 
 
 LOGGER = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ def build_queue(*, release_root: Path | None = None, runtime_contract=None) -> G
         APP_DATA_DIR, release_root=release_root, runtime_contract=runtime_contract,
         storage_paths=(GRAPH_CACHE_DIR, LOG_DIR, EXCEL_ACTIVAS_DIR, EXCEL_ARQUIVADAS_DIR, EXCEL_CANCELADAS_DIR),
     )
-    with contract.operation():
+    with admit_contract(contract):
         return _build_admitted_queue(release_info, contract)
 
 
@@ -95,19 +96,26 @@ def main(argv: list[str] | None = None, *, release_root: Path | None = None) -> 
 
     configure_logging("worker")
     try:
-        queue = build_queue(release_root=release_root)
-        log_event(
-            LOGGER,
-            logging.INFO,
-            "Worker da fila iniciado.",
-            event="queue_worker_started",
-            source_revision=queue.release_info["revision"],
-            source_sha256=queue.release_info["source_sha256"],
-            watch=args.watch,
-            interval_seconds=max(args.interval, 1.0),
-        )
+        queue = None
         while True:
-            result = process_once(queue)
+            try:
+                if queue is None:
+                    queue = build_queue(release_root=release_root)
+                    log_event(
+                        LOGGER, logging.INFO, "Worker da fila iniciado.",
+                        event="queue_worker_started",
+                        source_revision=queue.release_info["revision"],
+                        source_sha256=queue.release_info["source_sha256"],
+                        watch=args.watch, interval_seconds=max(args.interval, 1.0),
+                    )
+                result = process_once(queue)
+            except ContractBusy:
+                log_event(LOGGER, logging.WARNING, "Ciclo adiado: contrato temporariamente ocupado.",
+                          event="queue_worker_admission_busy")
+                if not args.watch:
+                    return 1
+                time.sleep(max(args.interval, 1.0))
+                continue
             has_activity = (
                 result["before"] != result["after"]
                 or any(

@@ -66,7 +66,7 @@ from src.services.maintenance_access import can_access_maintenance
 from src.services.maintenance_private_service import MaintenancePrivateService
 from src.services.document_style_service import load_document_assets
 from src.services.runtime_safety import runtime_mode
-from src.services.runtime_admission import resolve_runtime
+from src.services.runtime_admission import resolve_runtime, admit_contract
 from src.services.runtime_contract import ContractError
 from src.services.local_changes import bundle_guard, mark_dirty
 from src.services.file_mutex import FileMutexBusy
@@ -158,7 +158,7 @@ def create_app(
         APP_DATA_DIR, release_root=release_root, runtime_contract=runtime_contract,
         storage_paths=(GRAPH_CACHE_DIR, LOG_DIR, EXCEL_ACTIVAS_DIR, EXCEL_ARQUIVADAS_DIR, EXCEL_CANCELADAS_DIR),
     )
-    with contract.operation():
+    with admit_contract(contract):
         return _create_app(
             file_service=file_service,
             archive_service=archive_service,
@@ -297,7 +297,7 @@ def _create_app(
 
     @app.before_request
     def admit_runtime_operation():
-        guard = runtime_contract.operation()
+        guard = admit_contract(runtime_contract)
         try:
             guard.__enter__()
         except ContractError as exc:

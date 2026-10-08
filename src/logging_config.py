@@ -204,6 +204,8 @@ def _validated_settings(settings: LoggingSettings) -> tuple[int, Path]:
     resolved_directory = directory.resolve()
     if resolved_directory == Path(resolved_directory.anchor):
         raise ValueError("FS_LOG_DIR não pode ser a raiz do disco.")
+    if resolved_directory.is_relative_to(Path(__file__).resolve().parent):
+        raise ValueError("FS_LOG_DIR não pode ficar dentro do código da aplicação.")
     return _VALID_LEVELS[level_name], resolved_directory
 
 

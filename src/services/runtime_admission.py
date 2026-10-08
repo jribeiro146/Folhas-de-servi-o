@@ -1,10 +1,32 @@
 """Bind an operational factory to the code and persistent contract it uses."""
 from pathlib import Path
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from functools import wraps
+import os
+import threading
 
 from src.services.release_identity import get_release_info
 from src.services.runtime_contract import RuntimeContract, ContractError
+
+_admissions = threading.local()
+
+
+@contextmanager
+def admit_contract(contract):
+    """Reuse an outer admission only on the same thread, path and code identity."""
+    entries = getattr(_admissions, "entries", None)
+    if entries is None:
+        entries = _admissions.entries = {}
+    key = (os.getpid(), contract.path.resolve(), contract.source_sha256)
+    if key in entries:
+        yield entries[key]
+        return
+    with contract.operation() as snapshot:
+        entries[key] = snapshot
+        try:
+            yield snapshot
+        finally:
+            entries.pop(key, None)
 
 
 def resolve_runtime(data_dir: Path, *, release_root=None, runtime_contract=None, storage_paths=()):
@@ -27,7 +49,7 @@ def resolve_runtime(data_dir: Path, *, release_root=None, runtime_contract=None,
 def operation_for(component):
     """Standalone services may omit admission; operational factories always bind it."""
     contract = getattr(component, "runtime_contract", None)
-    return contract.operation() if contract is not None else nullcontext()
+    return admit_contract(contract) if contract is not None else nullcontext()
 
 
 def admitted(method):
