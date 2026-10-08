@@ -19,6 +19,8 @@ class TeamsNotificationError(Exception):
 class TeamsNotificationConfigurationError(TeamsNotificationError):
     """O webhook necessário para notificar o Teams não está configurado."""
 
+    retryable = False
+
 
 @dataclass(frozen=True)
 class TeamsNotificationConfig:

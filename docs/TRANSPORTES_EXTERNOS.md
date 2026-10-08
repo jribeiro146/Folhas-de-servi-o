@@ -30,6 +30,13 @@ integração ativa passam a ser recusadas. Os testes antigos passam o simulador
 explicitamente; não desativam a nova guarda. O modo demo do pacote exterior e
 os seus binários não foram transportados para esta base.
 
+Primeira revisão Claude: a recusa de configuração Teams herdava repetição
+automática ilimitada da fila. Reproduzido e corrigido: erros de configuração
+Teams passam a `retryable=False`. O trabalho fica falhado e visível, sem I/O
+externo nem alegação de resultado incerto. Depois de corrigida a configuração,
+a repetição manual segue as regras operacionais existentes. Os testes cobrem
+as duas filas, ausência de I/O e uma única tentativa após a recusa.
+
 ## Próximas etapas, ainda não implementadas neste commit
 
 Validar o envelope efetivo Para/CC/BCC e o limite do pedido codificado; acrescentar

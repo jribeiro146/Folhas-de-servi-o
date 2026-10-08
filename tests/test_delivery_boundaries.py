@@ -1,11 +1,13 @@
 """No default external transport outside enabled production, even on direct calls."""
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 
 import src.services.graph_mail_service as mail
 import src.services.teams_notification_service as teams
+from src.services.graph_sync_queue import GraphSyncQueue
 
 
 class Response:
@@ -106,3 +108,45 @@ def test_default_transport_allows_enabled_production_using_only_a_simulator(tmp_
     prepared = service.prepare_service_sent_notification(service_number="synthetic")
     assert service.send_prepared(prepared, operation_id="synthetic")["accepted"] is True
     assert len(calls) == 3
+
+
+@pytest.mark.parametrize("channel", ["mail", "teams"])
+def test_queue_guard_refusal_is_terminal_without_external_io(tmp_path, monkeypatch, channel):
+    monkeypatch.setenv("FS_ENVIRONMENT", "test")
+    monkeypatch.setattr(mail, "MAIL_ENABLED", True)
+    monkeypatch.setattr(teams, "TEAMS_NOTIFICATIONS_ENABLED", True)
+    calls = []
+    monkeypatch.setattr(mail.request, "urlopen", lambda *args, **kwargs: calls.append(args) or Response())
+    notification = teams.TeamsNotificationService(teams.TeamsNotificationConfig("https://example.invalid/workflow"))
+    pdf = tmp_path / "synthetic.pdf"
+    pdf.write_bytes(b"%PDF-synthetic")
+    queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", mail_service=mail_service(),
+                          teams_notification_service=notification,
+                          local_pdf_service=SimpleNamespace(export_archive_pdf=lambda path: pdf), auto_start=False)
+    if channel == "mail":
+        job = queue.enqueue("archive_and_mail_local", {"archived_path": str(tmp_path / "synthetic.xlsx"),
+                            "mail": {"to": "customer@example.invalid"}})
+    else:
+        job = queue.enqueue("notify_teams", {"notification": notification.prepare_service_sent_notification(service_number="synthetic")})
+    queue.run_until_idle()
+    state = queue.status(job["id"])
+    assert state["status"] == "failed"
+    assert state["will_retry"] is False
+    assert state["reconciliation_required"] is False
+    if channel == "mail":
+        assert state["result"]["phase"] == "mail_rejected"
+    queue.run_until_idle()
+    assert queue.status(job["id"])["attempts"] == 1
+    assert calls == []
+
+
+def test_guard_rechecks_mode_changed_after_service_construction(tmp_path, monkeypatch):
+    monkeypatch.setenv("FS_ENVIRONMENT", "production")
+    monkeypatch.setattr(mail, "MAIL_ENABLED", True)
+    service = mail_service()
+    calls = []
+    monkeypatch.setattr(mail.request, "urlopen", lambda *args, **kwargs: calls.append(args) or Response())
+    monkeypatch.setenv("FS_ENVIRONMENT", "test")
+    with pytest.raises(mail.GraphMailConfigurationError):
+        send_mail(service, tmp_path)
+    assert calls == []
