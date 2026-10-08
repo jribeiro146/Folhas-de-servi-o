@@ -183,9 +183,10 @@ def test_inspect_reports_other_release_and_future_formats_without_adopting_them(
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows UNC resolution")
-def test_local_alias_resolving_to_unc_is_rejected_before_io(monkeypatch):
+@pytest.mark.parametrize("destination", [r"\\synthetic.invalid\share\data", r"\\?\UNC\synthetic.invalid\share\data"])
+def test_local_alias_resolving_to_unc_is_rejected_before_io(monkeypatch, destination):
     from tools.prepare_runtime import _data_path
-    remote = Path(r"\\synthetic.invalid\share\data")
+    remote = Path(destination)
     monkeypatch.setattr(Path, "resolve", lambda self: remote)
     with pytest.raises(ValueError, match="local"):
         _data_path(r"C:\synthetic-alias\data")
@@ -233,3 +234,49 @@ def test_activation_of_existing_stores_and_invalid_expected_source(package, tmp_
     assert json.loads(result.stdout)["runtime"]["source_sha256"] == second["source_sha256"]
     assert contract.inspect()["epoch"] == 2
     assert {kind: path.read_bytes() for kind, path in paths.items()} == before
+
+
+@pytest.mark.parametrize("sqlite_code, expected", [(sqlite3.SQLITE_FULL, "state_contract_invalid"),
+                                                   (sqlite3.SQLITE_BUSY, "state_contract_busy")])
+def test_init_sqlite_failure_is_json_and_leaves_no_partial_database(package, tmp_path, monkeypatch, capsys,
+                                                                  sqlite_code, expected):
+    from tools import prepare_runtime as cli
+    write_release_manifest(package, revision="a" * 40)
+    monkeypatch.setattr(cli, "ROOT", package)
+    data = tmp_path / "data"
+
+    def fail(*args, **kwargs):
+        error = sqlite3.OperationalError("synthetic sqlite failure")
+        error.sqlite_errorcode = sqlite_code
+        raise error
+    monkeypatch.setattr(sqlite3, "connect", fail)
+    assert cli.main(["init", "--data-dir", str(data)]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err)["code"] == expected
+    assert not (data / "runtime-contract.sqlite3").exists()
+    assert not list(data.glob(".runtime-contract-*.tmp"))
+
+
+def test_preflight_io_failure_preserves_contract_and_releases_exclusion(package, tmp_path, monkeypatch, capsys):
+    from tools import prepare_runtime as cli
+    monkeypatch.setattr(cli, "ROOT", package)
+    first = write_release_manifest(package, revision="a" * 40)
+    data = tmp_path / "data"
+    assert cli.main(["init", "--data-dir", str(data)]) == 0
+    capsys.readouterr()
+    (package / "src" / "revision.py").write_text("revision=2\n")
+    write_release_manifest(package, revision="b" * 40)
+    command = ["activate", "--data-dir", str(data), "--expected-source", first["source_sha256"], "--writers-stopped"]
+    contract = RuntimeContract(data, first["source_sha256"])
+    snapshot = contract.inspect()
+
+    def fail(*args):
+        raise PermissionError("synthetic unavailable storage")
+    with monkeypatch.context() as context:
+        context.setattr(cli, "preflight_stores", fail)
+        assert cli.main(command) == 2
+    assert json.loads(capsys.readouterr().err)["code"] == "preparation_failed"
+    assert contract.inspect() == snapshot
+    assert cli.main(command) == 0
+    assert json.loads(capsys.readouterr().out)["runtime"]["epoch"] == 2

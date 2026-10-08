@@ -71,3 +71,9 @@ aceite. Reproduzido com `Path.resolve` simulado, sem rede; agora verifica també
 o destino resolvido. Teste adicional cobre stores marcados existentes, contrato
 de outra release, SHA esperado malformado e store ocupado. `BEGIN IMMEDIATE`
 permite leitura em modo DELETE; o ensaio de recusa usa `BEGIN EXCLUSIVE`.
+
+Resposta à segunda revisão: falhas SQLite na criação inicial não eram convertidas
+em erros do contrato. Agora BUSY/LOCKED devolvem `state_contract_busy`; os outros
+erros SQLite devolvem `state_contract_invalid`, sem traceback no CLI. Ensaios
+injetam falha de disco/ocupação e confirmam ausência de base parcial/temporário.
+O teste de falha de I/O no preflight confirma rollback e libertação da exclusão.

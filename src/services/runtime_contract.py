@@ -82,6 +82,10 @@ class RuntimeContract:
                     temporary.unlink(missing_ok=True)
         except FileMutexBusy as exc:
             raise ContractBusy("A preparação dos dados já está em curso.") from exc
+        except sqlite3.Error as exc:
+            if (getattr(exc, "sqlite_errorcode", 0) & 255) in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                raise ContractBusy("A preparação está temporariamente bloqueada; inspecionar antes de repetir.") from exc
+            raise ContractError("Não foi possível confirmar a preparação; inspecionar o armazenamento antes de repetir.") from exc
         return self.inspect()
 
     def _read(self, connection) -> dict:
