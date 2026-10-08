@@ -13,7 +13,7 @@ class StorageFormatError(ContractError):
 
 
 IDENTITIES = {"editing": 0x46534544, "queue": 0x46535155}
-VERSION = 1
+VERSIONS = {"editing": 1, "queue": 2}
 SCHEMAS = {
     "editing": (
         """CREATE TABLE editing_states (
@@ -31,6 +31,11 @@ SCHEMAS = {
             max_attempts INTEGER, last_error TEXT, result_json TEXT,
             created_at REAL NOT NULL, updated_at REAL NOT NULL,
             attempt_token TEXT NOT NULL DEFAULT '')""",
+        """CREATE TABLE graph_mail_messages (
+            job_id TEXT PRIMARY KEY, payload BLOB, sender TEXT NOT NULL,
+            tenant_id TEXT NOT NULL, test_recipient TEXT NOT NULL,
+            sha256 TEXT NOT NULL, byte_count INTEGER NOT NULL,
+            created_attempt TEXT NOT NULL, retired_at REAL)""",
     ),
 }
 
@@ -49,7 +54,7 @@ def _shape(connection):
     ).fetchall()
     result = {}
     for object_type, name, sql in objects:
-        if object_type != "table" or name not in {"editing_states", "admin_actions", "graph_sync_jobs"}:
+        if object_type != "table" or name not in {"editing_states", "admin_actions", "graph_sync_jobs", "graph_mail_messages"}:
             raise StorageFormatError("Estrutura SQLite desconhecida; requer preparação explícita.")
         # Names above are a fixed allowlist, never user SQL. Include defaults,
         # nullability, primary/foreign keys and generated/hidden columns.
@@ -77,7 +82,7 @@ def validate_store(connection, kind, *, allow_empty=False):
         shape = _shape(connection)
         if allow_empty and identity == 0 and version == 0 and not shape:
             return False
-        if identity != IDENTITIES[kind] or version != VERSION or shape != _expected_shape(kind):
+        if identity != IDENTITIES[kind] or version != VERSIONS[kind] or shape != _expected_shape(kind):
             raise StorageFormatError(f"Formato SQLite de {kind} incompatível ou não preparado; requer migração explícita.")
         return True
     except sqlite3.Error as exc:
@@ -94,7 +99,7 @@ def initialize_store(connection, kind, *, allow_new=True):
             for statement in SCHEMAS[kind]:
                 connection.execute(statement)
             connection.execute(f"PRAGMA application_id={IDENTITIES[kind]}")
-            connection.execute(f"PRAGMA user_version={VERSION}")
+            connection.execute(f"PRAGMA user_version={VERSIONS[kind]}")
             validate_store(connection, kind)
         connection.commit()
     except sqlite3.Error as exc:

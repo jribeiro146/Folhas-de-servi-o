@@ -90,12 +90,17 @@ def test_archive_and_mail_wait_for_commit_and_are_not_duplicated(tmp_path):
             calls.append(("remove", name))
             return True
 
-    class Mail:
-        def send_prepared(self, prepared, attachment_path, *, operation_id):
-            assert prepared == {"to": "recipient@example.invalid", "cc": [], "bcc": [], "subject": "[TESTE] Fictício"}
-            assert attachment_path == archive.with_suffix(".pdf")
-            assert attachment_path.read_bytes().startswith(b"%PDF-")
-            calls.append(("mail", operation_id))
+    from tests.fixed_mail_fake import FixedMailFake
+    import base64
+    class Mail(FixedMailFake):
+        def send_delivery(self, delivery):
+            message = self.message(delivery)
+            assert message["toRecipients"] == [{"emailAddress": {"address": "recipient@example.invalid"}}]
+            assert not message.get("ccRecipients") and not message.get("bccRecipients")
+            assert message["subject"] == "[TESTE] Fictício"
+            assert message["attachments"][0]["name"] == archive.with_suffix(".pdf").name
+            assert base64.b64decode(message["attachments"][0]["contentBytes"]) == b"%PDF-1.4\nsynthetic service sheet"
+            calls.append(("mail", self.operation_id(delivery)))
             return {"accepted": True}
 
     queue = GraphSyncQueue(Graph(), tmp_path / "queue.sqlite3", mail_service=Mail(), auto_start=False)

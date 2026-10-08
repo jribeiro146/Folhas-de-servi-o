@@ -77,7 +77,8 @@ são recusadas. Não se depende da interpretação de JSON ambíguo pelo Graph.
 
 Pesquisa dos consumidores em `src`, `tools` e `tests`: fora do próprio serviço,
 nenhum consumidor operacional chama `_graph_bytes` ou `_request_bytes` de
-**GraphMailService**. Web usa prepare/test_connection e a fila usa send_prepared.
+**GraphMailService**. Web usa prepare/test_connection; a fila usa agora a API de
+mensagem fixa descrita abaixo (antes usava send_prepared).
 Os serviços Graph de armazenamento/pastas têm os seus próprios métodos homónimos,
 não afetados. Os únicos acessos diretos do mail são testes de fronteira/envelope
 e um teste de falha de token, ajustado para o endpoint sintético do tenant da
@@ -87,7 +88,7 @@ configuração (continua transporte simulado, sem rede). Outros testes substitue
 O Claude recomendou, para o passo de preflight, bytes imutáveis e um checkpoint
 durável com hash/tamanho antes de remover o ativo; revalidar contra a configuração
 no envio e reter se faltar/divergir, sem reconstruir mail aceite/incerto. Essa
-refatoração, formatos persistentes e respetivos testes ainda não foram implementados.
+refatoração foi implementada na etapa de mensagem durável descrita abaixo.
 
 ## Mensagem fixa em memória (08/10/2026)
 
@@ -124,10 +125,8 @@ mensagens incompletas/corrompidas. Os testes antigos que observam o payload por
 `_graph_bytes` passam agora uma dependência de transporte explícita para não
 contornarem implicitamente a validação antecipada de política.
 
-Esta API ainda não persiste mensagens nem muda a ordem da fila. O próximo passo
-tem de guardar e verificar o snapshot antes da remoção remota, contemplando
-interrupções, formatos persistentes e restauro. A assinatura institucional opcional
-também ainda não foi implementada.
+Esta API, isoladamente, não persiste mensagens. A integração durável da fila está
+descrita abaixo. A assinatura institucional opcional continua por implementar.
 
 ### Resposta à primeira revisão da mensagem fixa
 
@@ -138,11 +137,11 @@ após strip usa o texto por omissão. Mantém-se corpo HTML vazio por compatibil
 agora explicitado acima. Troca de caixa A por B continua recusada; diferenças
 apenas de maiúsculas/espaços na configuração e rotação do secret são permitidas.
 
-Pesquisa de consumidores em todos os ficheiros Python de src e tools: a única
-chamada operacional a GraphMailService.send_prepared é em
-GraphSyncQueue._send_mail_once. Web prepara os dados com prepare_service_email
-e testa ligação; não faz envio direto. O método homónimo do Teams é independente.
-prepare_delivery/send_delivery são por enquanto usados pelo wrapper e pelos testes.
+Na revisão da API, o único consumidor operacional de GraphMailService.send_prepared
+era GraphSyncQueue._send_mail_once. Na integração durável, a fila passou a
+prepare_delivery/validate_delivery/send_delivery. Web prepara os dados com
+prepare_service_email e testa ligação; não faz envio direto. O método homónimo
+do Teams é independente.
 
 Não existe tests/test_graph_sync_queue*.py nesta árvore. Os testes de fila estão
 em test_graph_mail_service.py, test_graph_finalization_queue.py,
@@ -157,8 +156,8 @@ Preservam-se testes de resultado ambíguo depois do POST e de falha anterior no 
 O Claude considerou adequado o desenho seguinte com BLOB/checkpoint na mesma
 SQLite, sob condição de identidade/hash/tamanho, transação por tentativa, FULL
 em cada conexão, formato queue=2, checkpoint de remoção, migração explícita e
-retenção/restauro. Esse parecer é sobre o desenho; persistência e mudança da ordem
-ainda não foram implementadas nesta alteração.
+retenção/restauro. Esse parecer aprovou apenas o desenho; a implementação durável
+abaixo exige testes e revisão próprios.
 
 ### Resposta à segunda revisão da mensagem fixa
 
@@ -169,9 +168,9 @@ O caso de teste com marcador removido falhou antes da correção; dois controlos
 positivos confirmam os bytes inalterados no modo normal.
 
 Acrescentado também o cenário Graph com PDF ilegível: mail_rejected conhecido,
-sem reconciliação nem transporte mail. O teste expõe a limitação ainda existente:
-o ativo foi removido antes dessa recusa. Será alterado quando a preparação durável
-for integrada no fluxo, na próxima mudança, sem alegar resolução antecipada.
+sem reconciliação nem transporte mail. Na revisão da API isolada, o ativo ainda
+era removido antes dessa recusa. O teste foi posteriormente alterado e falhou
+para reproduzir essa ordem; a integração durável abaixo corrige-a.
 
 O pedido de executar `tools/validate_migration.py` refere uma ferramenta do pacote
 demo exterior, `App_Folhas_Checklists/aplicacao/tools/validate_migration.py`.
@@ -180,11 +179,60 @@ não validaria este SHA; não foi copiado nem apresentado como teste da produç�
 A bateria pytest completa da árvore canónica é a verificação aplicável, complementada
 pelos ensaios de migração explícita ainda previstos no plano.
 
+## Mensagem durável antes da remoção (08/10/2026)
+
+Nos trabalhos com email, a fila prepara a mensagem após obter o PDF e antes de
+remover o ativo. Guarda os bytes finais em `graph_mail_messages` na própria base
+da fila, juntamente com remetente, tenant, caixa de teste, tentativa criadora,
+tamanho e SHA-256. O digest vincula estes campos, ID do trabalho e bytes; não é
+uma assinatura criptográfica contra alguém com acesso de escrita à base.
+A inserção e o checkpoint `message_ready` confirmam na mesma transação IMMEDIATE,
+condicionada ao `attempt_token`. Cada ligação usa synchronous=FULL. Nenhum token
+de acesso ou secret é guardado no snapshot.
+
+Uma retoma usa essa mensagem sem novo upload, exportação ou leitura do PDF. Verifica
+tipo/tamanho antes de carregar o BLOB, metadados/digest e identidade/política atual
+antes de qualquer remoção ou envio. Estado em falta, divergente ou já retirado sem
+recibo fica `invalid_state`, sem reconstrução ou retry manual genérico. Mudanças
+de configuração incompatíveis recusam o envio e preservam os bytes para diagnóstico.
+
+`removing_active` é confirmado antes de pedir a remoção. Se a tentativa for
+interrompida antes da confirmação, só pode repetir essa verificação com o eTag
+guardado; sem eTag fica `removal_unknown`/`invalid_state` para reconciliação.
+`active_removed=true` confirma o passo mesmo quando o serviço devolve ausência
+do ativo. As repetições seguintes não voltam a apagar por nome, protegendo uma
+folha homónima criada depois. Não há promessa de transação distribuída com Graph:
+sem resposta suficiente, a operação continua retida.
+
+Antes de POST, `sending_mail` mantém a regra de resultado incerto. Recusas conhecidas
+podem repetir segundo a política existente, com os mesmos bytes e correlação.
+Após aceitação, recibo e `payload=NULL, retired_at=...` confirmam na mesma transação.
+Retêm-se digest, tamanho e identidade para auditoria; o BLOB de mensagem aceite
+deixa de ocupar a tabela viva. Mensagens pendentes, recusadas ou incertas conservam
+os bytes. Não se promete apagamento seguro de WAL, páginas livres ou backups.
+Uma falha na transação do recibo mantém `sending_mail` e os bytes: reconciliação,
+nunca repetição automática. Um recibo aceite tem precedência sobre PDF ausente,
+snapshot retirado e alteração de configuração; não reenvia.
+
+Impacto de instalação: a fila passa a **formato 2**, também no contrato global;
+editing permanece 1. O formato 1 é recusado explicitamente e o validador anterior
+recusa o novo. A migração offline e o restauro consistente continuam por implementar;
+este checkpoint não se instala sobre uma fila antiga. Backup tem de usar o SQLite
+de forma consistente, incluindo a tabela de mensagens e recibos, dentro do futuro
+procedimento que coordena todos os stores e ficheiros privados. Copiar só o ficheiro
+principal com WAL ativo não constitui um backup aprovado. Os blobs acrescentam até
+4 000 000 bytes por mensagem não aceite, mais overhead e histórico SQLite.
+
+Ensaios sintéticos: interrupção real de subprocesso após remoção simulada, recuperação
+sem PDF, ausência de eTag, corrupção/oversize/metadados, rollback de snapshot e de
+recibo, perda da resposta, repetição de recusa conhecida e tentativa antiga impedida
+de guardar/enviar. Os testes de orquestração usam preparação/validação reais e
+substituem apenas o envio. A bateria completa e a revisão independente ficam
+registadas no índice da colaboração com os respetivos commits.
+
 ## Próximas etapas, ainda não implementadas
 
-Antecipar a validação no fluxo Graph antes da remoção do ativo: neste ponto,
-`archive_and_remove` ainda remove antes de chamar `send_prepared`; não se dá a
-etapa de fluxo como concluída. Só se validou a fronteira do mail. Acrescentar
-assinatura institucional opcional privada; recuperar notificações Teams de forma
-durável e distinguir o seu resultado incerto; sanitizar diagnóstico. Esta alteração
-não aprova essas funcionalidades, a instalação ou o candidato completo.
+Assinatura institucional opcional privada; recuperar notificações Teams de forma
+durável e distinguir o seu resultado incerto; sanitizar diagnóstico; migração,
+backup/restauro e pacote final. Esta alteração não aprova essas funcionalidades,
+a instalação ou o candidato completo.

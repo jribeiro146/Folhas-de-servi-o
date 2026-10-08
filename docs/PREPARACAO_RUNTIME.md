@@ -26,6 +26,11 @@ worker e não usa credenciais/transportes.
 
 ## Mudança entre versões compatíveis
 
+A mensagem durável exige fila de formato 2 (editing continua 1). `activate` não
+converte uma fila de formato 1: recusa-a. Esta transição exige a ferramenta de
+migração offline ainda prevista no plano; não mudar marcadores manualmente nem
+apagar a fila para contornar a recusa. Não instalar este checkpoint em produção.
+
 1. Parar todos os escritores: web, workers, agendadores e ferramentas antigas.
    A confirmação `--writers-stopped` declara este passo; não prova que aconteceu.
 2. Consultar `inspect` e registar o `runtime.source_sha256` atual.

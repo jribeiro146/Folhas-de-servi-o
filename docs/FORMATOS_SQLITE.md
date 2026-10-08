@@ -5,7 +5,14 @@ Esta alteração acrescenta identidade e versão às bases de edição e fila. N
 | Base | application_id | user_version | Estrutura suportada |
 |---|---|---|---|
 | editing-state/editing-state.sqlite3 | 0x46534544 | 1 | editing_states, admin_actions |
-| graph-sync.sqlite3 | 0x46535155 | 1 | graph_sync_jobs, incluindo attempt_token |
+| graph-sync.sqlite3 | 0x46535155 | 2 | graph_sync_jobs e graph_mail_messages |
+
+Na etapa de mensagem durável, a fila passou a 2 para impedir workers da versão 1
+de reconstruírem emails após a remoção do ativo. O contrato global também declara
+queue=2; editing permanece 1. O validador congelado do commit aa671c0 em
+`tests/legacy_sqlite_format_v1.py` prova a recusa nos dois sentidos. Não há conversão
+implícita nem atualização manual de PRAGMA. A migração offline continua pendente.
+Ver [mensagem durável](TRANSPORTES_EXTERNOS.md) para transações, retenção e impacto.
 
 `sqlite_storage_format.py` mantém o DDL canónico e compara tabelas, colunas (incluindo ocultas/geradas), tipos, nulabilidade, defaults, chaves primárias/estrangeiras e índices únicos. Também compara o SQL canónico das tabelas, normalizando apenas whitespace e maiúsculas fora de literais/citações; isto deteta CHECK, collations e outras restrições que PRAGMA table_xinfo não revela. Outras grafias/ordenações de DDL exigem preparação explícita. Recusa vistas, triggers, tabelas adicionais, identificadores/versões desconhecidos e estruturas divergentes. Índices adicionais não únicos não alteram o contrato. A validação estrutural não valida todos os valores JSON, fórmulas ou conteúdos de ficheiros, nem equivale a uma análise completa de integridade SQLite. A preparação/ensaio de migração deve tratar os payloads e o conjunto dos dados separadamente.
 

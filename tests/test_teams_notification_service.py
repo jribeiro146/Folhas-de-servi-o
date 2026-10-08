@@ -88,11 +88,11 @@ def test_queue_notifies_teams_in_a_separate_job_after_mail(tmp_path):
             pdf_path.write_bytes(b"%PDF-1.7\nqueue")
             return pdf_path
 
-    class FakeMail:
-        @staticmethod
-        def send_prepared(prepared, attachment_path, *, operation_id):
+    from tests.fixed_mail_fake import FixedMailFake
+    class FakeMail(FixedMailFake):
+        def send_delivery(self, delivery):
             events.append("mail")
-            return {"accepted": True, "to": prepared["to"]}
+            return {"accepted": True, "to": self.message(delivery)["toRecipients"][0]["emailAddress"]["address"]}
 
     class FakeTeams:
         @staticmethod

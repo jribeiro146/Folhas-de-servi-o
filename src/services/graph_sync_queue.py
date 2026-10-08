@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Any
 
 from src.logging_config import log_event
-from src.services.graph_mail_service import GraphMailService, GraphMailError, GraphMailUnknownResultError
+from src.services.graph_mail_service import (
+    GraphMailService, GraphMailDelivery, GraphMailError, GraphMailUnknownResultError,
+    MAX_SIMPLE_REQUEST_BYTES,
+)
 from src.services.graph_storage_service import GraphStorageService
 from src.services.local_pdf_service import LocalPdfService
 from src.services.teams_notification_service import TeamsNotificationService
@@ -25,7 +28,7 @@ from src.services.file_mutex import file_mutex, FileMutexBusy
 from src.services.atomic_files import replace_local
 from src.services.runtime_admission import admitted, operation_for
 from src.services.runtime_contract import ContractError, ContractBusy
-from src.services.sqlite_storage_format import initialize_store, validate_store
+from src.services.sqlite_storage_format import initialize_store, validate_store, StorageFormatError
 
 
 LOGGER = logging.getLogger(__name__)
@@ -35,6 +38,10 @@ class GraphJobNoLongerActiveError(RuntimeError):
     """Impede que um worker órfão continue até um envio externo."""
 
     retryable = False
+
+
+class MailSnapshotError(GraphMailError):
+    """A persisted message cannot be reconstructed or replayed safely."""
 
 
 class GraphSyncQueue:
@@ -89,14 +96,20 @@ class GraphSyncQueue:
             timeout=self.busy_timeout_ms / 1000,
             isolation_level=None,
         )
-        connection.row_factory = sqlite3.Row
-        connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
-        if check_format:
-            try:
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
+            connection.execute("PRAGMA synchronous = FULL")
+            if check_format:
                 validate_store(connection, "queue")
-            except BaseException:
-                connection.close()
+        except sqlite3.Error as exc:
+            connection.close()
+            if (getattr(exc, "sqlite_errorcode", 0) & 255) in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
                 raise
+            raise StorageFormatError("Base SQLite de queue ilegível; requer diagnóstico.") from exc
+        except BaseException:
+            connection.close()
+            raise
         return connection
 
     @admitted
@@ -108,7 +121,6 @@ class GraphSyncQueue:
                 with self._connect(check_format=False) as connection:
                     initialize_store(connection, "queue")
                     connection.execute("PRAGMA journal_mode = WAL")
-                    connection.execute("PRAGMA synchronous = NORMAL")
                     connection.execute("BEGIN IMMEDIATE")
                     self._quarantine_invalid_jobs(connection)
                 self.asset_root.mkdir(parents=True, exist_ok=True)
@@ -588,11 +600,20 @@ class GraphSyncQueue:
         prior_result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._assert_job_running(job_id)
+        prior_result = dict(prior_result or {})
         if (prior_result or {}).get("phase") in {"sending_mail", "mail_unknown"} and not (
             (prior_result or {}).get("mail") or {}
         ).get("accepted"):
             # Do not erase uncertainty with PDF/upload checkpoints on recovery.
             raise GraphMailUnknownResultError("Envio anterior sem resultado confirmado; requer reconciliação.")
+        if kind in {"archive_and_remove", "archive_and_mail_local"} and (
+            prior_result.get("mail") or {}
+        ).get("accepted"):
+            # Receipts take precedence over missing/retired message bytes and
+            # changed configuration. Never rebuild or repeat accepted mail.
+            prior_result["teams_job"] = self._enqueue_teams_notification(
+                payload.get("teams"), parent_job_id=job_id)
+            return prior_result
         if kind == "upload_active":
             if self.graph_service is None:
                 raise RuntimeError("O armazenamento Microsoft Graph não está ativo.")
@@ -615,37 +636,54 @@ class GraphSyncQueue:
             if self.graph_service is None:
                 raise RuntimeError("O armazenamento Microsoft Graph não está ativo.")
             archived_path = Path(payload["archived_path"])
-            uploaded = self.graph_service.upload_archive_bundle(archived_path)
-            pdf_path = None
             mail_payload = payload.get("mail")
-            if mail_payload:
-                if self.mail_service is None:
-                    raise RuntimeError("O serviço de e-mail não está disponível para este trabalho.")
-                self._checkpoint_result(job_id, {"phase": "generating_pdf"})
-                pdf_path, remote_pdf = self.graph_service.export_archive_pdf(archived_path)
-                self._checkpoint_result(
-                    job_id,
-                    {"phase": "pdf_ready", "local_pdf": str(pdf_path)},
-                )
-                uploaded.append(remote_pdf)
+            if mail_payload and self.mail_service is None:
+                raise GraphMailError("O serviço de e-mail não está disponível para este trabalho.")
+            delivery = self._load_mail_delivery(job_id, prior_result) if mail_payload else None
+            if delivery is None:
+                uploaded = self.graph_service.upload_archive_bundle(archived_path)
+                if mail_payload:
+                    self._checkpoint_result(job_id, {"phase": "generating_pdf"})
+                    pdf_path, remote_pdf = self.graph_service.export_archive_pdf(archived_path)
+                    self._checkpoint_result(job_id, {"phase": "pdf_ready", "local_pdf": str(pdf_path)})
+                    uploaded.append(remote_pdf)
+                    delivery = self._prepare_mail_delivery(dict(mail_payload), pdf_path, job_id=job_id)
+                    prior_result = self._save_mail_delivery(job_id, delivery,
+                        {"uploaded_files": uploaded, "local_pdf": str(pdf_path)})
+            else:
+                uploaded = prior_result.get("uploaded_files", [])
+            if delivery is not None:
+                self._validate_fixed_mail(job_id, delivery)
             self._assert_job_running(job_id)
-            removed = self.graph_service.remove_active_name(
-                str(payload["source_name"]),
-                expected_etag=payload.get("expected_etag"),
-            )
+            if prior_result.get("active_removed") is True:
+                removed = prior_result["removed_active"]
+            else:
+                etag = payload.get("expected_etag")
+                if prior_result.get("removal_started") and not (isinstance(etag, str) and etag.strip()):
+                    self._checkpoint_result(job_id, {"phase": "removal_unknown", "invalid_state": True})
+                    raise GraphMailError("Remoção anterior sem confirmação e sem eTag; requer reconciliação.")
+                prior_result.update(phase="removing_active", removal_started=True)
+                self._checkpoint_result(job_id, prior_result)
+                removed = self.graph_service.remove_active_name(
+                    str(payload["source_name"]), expected_etag=etag)
+                if type(removed) is not bool:
+                    raise GraphMailError("Resposta inválida ao confirmar a remoção do ativo.")
+                prior_result.update(phase="active_removed", active_removed=True, removed_active=removed)
+                self._checkpoint_result(job_id, prior_result)
             mail_result = None
-            if mail_payload and pdf_path is not None:
+            if delivery is not None:
                 mail_result = self._send_mail_once(
-                    dict(mail_payload),
-                    pdf_path,
+                    delivery,
                     job_id=job_id,
                     prior_result=prior_result,
                 )
+                prior_result["phase"] = "mail_accepted"
             teams_job = self._enqueue_teams_notification(
                 payload.get("teams"),
                 parent_job_id=job_id,
             )
             return {
+                **prior_result,
                 "uploaded_files": uploaded,
                 "removed_active": removed,
                 "mail": mail_result,
@@ -653,33 +691,37 @@ class GraphSyncQueue:
             }
         if kind == "archive_and_mail_local":
             if self.mail_service is None:
-                raise RuntimeError("O serviço de e-mail não está disponível para este trabalho.")
-            if self.local_pdf_service is None:
-                raise RuntimeError("O conversor local de PDF não está disponível.")
+                raise GraphMailError("O serviço de e-mail não está disponível para este trabalho.")
             archived_path = Path(payload["archived_path"])
             mail_payload = dict(payload.get("mail") or {})
             if not mail_payload:
                 raise RuntimeError("Os destinatários do e-mail não foram guardados no trabalho.")
-            self._checkpoint_result(job_id, {"phase": "generating_pdf"})
-            pdf_path = self.local_pdf_service.export_archive_pdf(archived_path)
-            self._checkpoint_result(
-                job_id,
-                {"phase": "pdf_ready", "local_pdf": str(pdf_path)},
-            )
+            delivery = self._load_mail_delivery(job_id, prior_result)
+            if delivery is None:
+                if self.local_pdf_service is None:
+                    raise GraphMailError("O conversor local de PDF não está disponível.")
+                self._checkpoint_result(job_id, {"phase": "generating_pdf"})
+                pdf_path = self.local_pdf_service.export_archive_pdf(archived_path)
+                self._checkpoint_result(job_id, {"phase": "pdf_ready", "local_pdf": str(pdf_path)})
+                delivery = self._prepare_mail_delivery(mail_payload, pdf_path, job_id=job_id)
+                prior_result = self._save_mail_delivery(job_id, delivery,
+                    {"uploaded_files": [], "local_pdf": str(pdf_path)})
+            self._validate_fixed_mail(job_id, delivery)
             mail_result = self._send_mail_once(
-                mail_payload,
-                pdf_path,
+                delivery,
                 job_id=job_id,
                 prior_result=prior_result,
             )
+            prior_result["phase"] = "mail_accepted"
             teams_job = self._enqueue_teams_notification(
                 payload.get("teams"),
                 parent_job_id=job_id,
             )
             return {
+                **prior_result,
                 "uploaded_files": [],
                 "removed_active": False,
-                "local_pdf": str(pdf_path),
+                "local_pdf": prior_result.get("local_pdf"),
                 "mail": mail_result,
                 "teams_job": teams_job,
             }
@@ -703,10 +745,102 @@ class GraphSyncQueue:
             return {"removed_active": removed}
         raise ValueError(f"Tipo de sincronização desconhecido: {kind}")
 
+    @staticmethod
+    def _mail_digest(job_id, delivery, created_attempt):
+        metadata = json.dumps([1, job_id, delivery.sender, delivery.tenant_id,
+                               delivery.test_recipient, created_attempt],
+                              ensure_ascii=True, separators=(",", ":")).encode("ascii")
+        return hashlib.sha256(metadata + b"\n" + delivery.payload).hexdigest()
+
+    def _save_mail_delivery(self, job_id, delivery, progress):
+        self._assert_job_running(job_id)
+        self._validate_fixed_mail(job_id, delivery)
+        token = self._attempt_context.job["attempt_token"]
+        digest = self._mail_digest(job_id, delivery, token)
+        marker = {"format": 1, "sha256": digest, "size": len(delivery.payload)}
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT result_json FROM graph_sync_jobs "
+                "WHERE id=? AND status='running' AND attempt_token=?", (job_id, token)).fetchone()
+            if row is None:
+                raise GraphJobNoLongerActiveError("A tentativa do worker já não está ativa.")
+            current = self._json_object(row["result_json"])
+            if (current.get("mail_snapshot") or (current.get("mail") or {}).get("accepted")
+                    or current.get("phase") in {"sending_mail", "mail_unknown"}
+                    or connection.execute("SELECT 1 FROM graph_mail_messages WHERE job_id=?", (job_id,)).fetchone()):
+                raise MailSnapshotError("Já existe uma mensagem ou resultado fixado; requer revisão.")
+            connection.execute("INSERT INTO graph_mail_messages "
+                "(job_id,payload,sender,tenant_id,test_recipient,sha256,byte_count,created_attempt) "
+                "VALUES (?,?,?,?,?,?,?,?)", (job_id, delivery.payload, delivery.sender, delivery.tenant_id,
+                delivery.test_recipient, digest, len(delivery.payload), token))
+            current.update(progress)
+            current.update(phase="message_ready", mail_snapshot=marker)
+            connection.execute("UPDATE graph_sync_jobs SET result_json=?, updated_at=? "
+                "WHERE id=? AND status='running' AND attempt_token=?",
+                (json.dumps(current, ensure_ascii=False), time.time(), job_id, token))
+        return current
+
+    def _load_mail_delivery(self, job_id, previous):
+        self._assert_job_running(job_id)
+        expected = previous.get("mail_snapshot")
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN")
+                row = connection.execute("SELECT sender,tenant_id,test_recipient,sha256,byte_count,"
+                    "created_attempt,retired_at,length(payload) AS actual_bytes,typeof(payload) AS payload_type "
+                    "FROM graph_mail_messages WHERE job_id=?", (job_id,)).fetchone()
+                if row is None:
+                    if (expected is not None or previous.get("active_removed") is not None
+                            or previous.get("removal_started") is not None
+                            or previous.get("phase") in {"message_ready", "removing_active", "active_removed"}):
+                        raise MailSnapshotError("Mensagem preparada em falta; requer revisão sem reconstrução.")
+                    return None
+                if (not isinstance(expected, dict) or type(expected.get("format")) is not int
+                        or expected["format"] != 1 or type(expected.get("size")) is not int
+                        or row["payload_type"] != "blob" or row["retired_at"] is not None
+                        or type(row["actual_bytes"]) is not int or not 0 < row["actual_bytes"] <= MAX_SIMPLE_REQUEST_BYTES
+                        or row["byte_count"] != row["actual_bytes"] or expected["size"] != row["actual_bytes"]
+                        or not isinstance(row["sha256"], str) or len(row["sha256"]) != 64
+                        or expected.get("sha256") != row["sha256"]
+                        or any(not isinstance(row[key], str) for key in
+                               ("sender", "tenant_id", "test_recipient", "created_attempt"))):
+                    raise MailSnapshotError("Metadados da mensagem preparada inválidos; requer revisão.")
+                payload = connection.execute("SELECT payload FROM graph_mail_messages WHERE job_id=?", (job_id,)).fetchone()[0]
+                delivery = GraphMailDelivery(payload, row["sender"], row["tenant_id"], row["test_recipient"])
+                if self._mail_digest(job_id, delivery, row["created_attempt"]) != row["sha256"]:
+                    raise MailSnapshotError("Mensagem preparada alterada; requer revisão sem reconstrução.")
+                if ("active_removed" in previous and type(previous["active_removed"]) is not bool
+                        or "removal_started" in previous and type(previous["removal_started"]) is not bool
+                        or previous.get("active_removed") is True and type(previous.get("removed_active")) is not bool):
+                    raise MailSnapshotError("Confirmação de remoção inválida; requer revisão.")
+            return delivery
+        except MailSnapshotError:
+            self._checkpoint_result(job_id, {"phase": "mail_snapshot_invalid", "invalid_state": True})
+            raise
+
+    def _validate_fixed_mail(self, job_id, delivery):
+        try:
+            self.mail_service.validate_delivery(delivery)
+        except GraphMailError:
+            self._checkpoint_result(job_id, {"phase": "mail_rejected"})
+            raise
+
+    def _prepare_mail_delivery(
+        self, mail_payload: dict[str, Any], pdf_path: Path, *, job_id: str,
+    ) -> GraphMailDelivery:
+        self._assert_job_running(job_id)
+        try:
+            return self.mail_service.prepare_delivery(mail_payload, pdf_path, operation_id=job_id)
+        except GraphMailError:
+            self._checkpoint_result(job_id, {"phase": "mail_rejected"})
+            raise
+        except Exception as exc:
+            self._checkpoint_result(job_id, {"phase": "mail_rejected"})
+            raise GraphMailError("Não foi possível preparar a mensagem; nenhum envio foi tentado.") from exc
+
     def _send_mail_once(
         self,
-        mail_payload: dict[str, Any],
-        pdf_path: Path,
+        delivery: GraphMailDelivery,
         *,
         job_id: str,
         prior_result: dict[str, Any] | None,
@@ -719,9 +853,10 @@ class GraphSyncQueue:
         if self.mail_service is None:
             raise RuntimeError("O serviço de e-mail não está disponível para este trabalho.")
         self._assert_job_running(job_id)
+        self._validate_fixed_mail(job_id, delivery)
         self._checkpoint_result(job_id, {"phase": "sending_mail"})
         try:
-            mail_result = self.mail_service.send_prepared(mail_payload, pdf_path, operation_id=job_id)
+            mail_result = self.mail_service.send_delivery(delivery)
         except GraphMailUnknownResultError:
             self._checkpoint_result(job_id, {"phase": "mail_unknown"})
             raise
@@ -788,6 +923,11 @@ class GraphSyncQueue:
                 "UPDATE graph_sync_jobs SET result_json = ?, updated_at = ? WHERE id = ? AND status='running' AND attempt_token=?",
                 (json.dumps(current, ensure_ascii=False), now, job_id, job["attempt_token"]),
             )
+            if (current.get("mail") or {}).get("accepted") is True:
+                # The receipt and retirement commit together. Ambiguous sends
+                # retain the exact bytes for reconciliation, never automatic replay.
+                connection.execute("UPDATE graph_mail_messages SET payload=NULL, retired_at=? "
+                                   "WHERE job_id=? AND retired_at IS NULL", (now, job_id))
 
     def _mark_complete(self, job: dict[str, Any], result: dict[str, Any]) -> None:
         now = time.time()

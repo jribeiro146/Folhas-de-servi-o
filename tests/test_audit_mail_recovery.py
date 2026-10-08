@@ -47,6 +47,9 @@ def test_accepted_send_with_lost_response_never_repeats(tmp_path, monkeypatch, f
     restarted.run_until_idle()
     assert restarted.status(job["id"])["reconciliation_required"]
     assert len(accepted) == 1
+    with queue._connect() as db:
+        stored = db.execute("SELECT payload,retired_at FROM graph_mail_messages WHERE job_id=?", (job["id"],)).fetchone()
+    assert json.loads(stored["payload"]) == accepted[0] and stored["retired_at"] is None
 
 
 def test_explicit_throttling_can_retry_without_uncertainty(tmp_path, monkeypatch):
@@ -128,7 +131,7 @@ def test_pdf_read_failure_before_send_is_a_known_terminal_refusal(tmp_path, monk
     assert calls == []
 
 
-def test_graph_queue_pdf_read_failure_has_known_mail_result_even_after_removal(tmp_path, monkeypatch):
+def test_graph_queue_pdf_read_failure_is_refused_before_removal(tmp_path, monkeypatch):
     pdf = tmp_path / "synthetic.pdf"
     pdf.write_bytes(b"%PDF-synthetic")
     events = []
@@ -162,6 +165,4 @@ def test_graph_queue_pdf_read_failure_has_known_mail_result_even_after_removal(t
     assert state["status"] == "failed"
     assert state["result"]["phase"] == "mail_rejected"
     assert not state["reconciliation_required"] and not state["will_retry"]
-    # Current, explicitly pending workflow limitation; durable preflight must
-    # move validation ahead of this remove in the next functional change.
-    assert events == ["upload", "pdf", "remove"]
+    assert events == ["upload", "pdf"]

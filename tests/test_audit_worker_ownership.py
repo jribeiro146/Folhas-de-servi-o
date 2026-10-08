@@ -22,13 +22,13 @@ def reclaimed(tmp_path):
     return queue, old, new
 
 
-@pytest.mark.parametrize("action", ["complete", "fail", "checkpoint", "send", "execute"])
+@pytest.mark.parametrize("action", ["complete", "fail", "checkpoint", "send", "execute", "persist"])
 def test_old_attempt_cannot_overwrite_new_attempt_or_send(tmp_path, action):
     queue, old, new = reclaimed(tmp_path)
     before = queue.status(new["id"])
     calls = []
     class Mail:
-        def send_prepared(self, *args, **kwargs):
+        def send_delivery(self, *args, **kwargs):
             calls.append("send")
     queue.mail_service = Mail()
     with pytest.raises(GraphJobNoLongerActiveError):
@@ -39,11 +39,15 @@ def test_old_attempt_cannot_overwrite_new_attempt_or_send(tmp_path, action):
         elif action == "checkpoint":
             queue._checkpoint_result(old["id"], {"phase": "old"})
         elif action == "send":
-            queue._send_mail_once({}, tmp_path / "unused.pdf", job_id=old["id"], prior_result={})
+            queue._send_mail_once(None, job_id=old["id"], prior_result={})
+        elif action == "persist":
+            queue._save_mail_delivery(old["id"], None, {})
         else:
             queue._execute(old["kind"], old["payload"], job_id=old["id"])
     assert queue.status(new["id"]) == before
     assert calls == []
+    with queue._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM graph_mail_messages").fetchone()[0] == 0
     assert not queue._heartbeat(old)
 
 

@@ -585,7 +585,7 @@ def test_archive_conflict_never_sends_mail_or_removes_active_file(tmp_path):
             pytest.fail("Active source must be preserved")
 
     class Mail:
-        def send_prepared(self, *args, **kwargs):
+        def send_delivery(self, *args, **kwargs):
             pytest.fail("No mail before confirmed archive")
 
     queue = GraphSyncQueue(Graph(), tmp_path / "queue.sqlite3", mail_service=Mail(), auto_start=False)
@@ -614,8 +614,10 @@ def test_held_expiration_preserves_mail_receipt_and_recovery_never_resends(tmp_p
         def remove_active_name(self, *args, **kwargs):
             return True
 
-    class Mail:
-        def send_prepared(self, *args, **kwargs):
+    from tests.fixed_mail_fake import FixedMailFake
+    class Mail(FixedMailFake):
+        def send_delivery(self, delivery):
+            self.validate_delivery(delivery)
             calls.append("mail")
             return {"accepted": True}
 

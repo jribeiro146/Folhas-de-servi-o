@@ -536,9 +536,12 @@ def test_archive_queue_converts_remote_html_and_sends_same_pdf_once(tmp_path):
             events.append(("remove", name, expected_etag))
             return True
 
-    class FakeMail:
-        def send_prepared(self, prepared, attachment_path, *, operation_id):
-            events.append(("mail", prepared["to"], Path(attachment_path), operation_id))
+    from tests.fixed_mail_fake import FixedMailFake
+    class FakeMail(FixedMailFake):
+        def send_delivery(self, delivery):
+            message = self.message(delivery)
+            events.append(("mail", message["toRecipients"][0]["emailAddress"]["address"],
+                           base64.b64decode(message["attachments"][0]["contentBytes"]), self.operation_id(delivery)))
             return {"accepted": True}
 
     queue = GraphSyncQueue(
@@ -561,7 +564,7 @@ def test_archive_queue_converts_remote_html_and_sends_same_pdf_once(tmp_path):
     assert replay["status"] == "complete"
     assert [event[0] for event in events] == ["upload", "graph_html_pdf", "remove", "mail"]
     assert events[-1][3] == "send:FS-123:stable"
-    assert events[-1][2].read_bytes() == b"%PDF-1.7\nqueue-html"
+    assert events[-1][2] == b"%PDF-1.7\nqueue-html"
 
 
 def test_local_archive_queue_generates_pdf_and_sends_without_graph_storage(tmp_path):
@@ -578,9 +581,13 @@ def test_local_archive_queue_generates_pdf_and_sends_without_graph_storage(tmp_p
             pdf.write_bytes(b"%PDF-1.7\nlocal")
             return pdf
 
-    class FakeMail:
-        def send_prepared(self, prepared, attachment_path, *, operation_id):
-            events.append(("mail", prepared["to"], Path(attachment_path), operation_id))
+    from tests.fixed_mail_fake import FixedMailFake
+    class FakeMail(FixedMailFake):
+        def send_delivery(self, delivery):
+            message = self.message(delivery)
+            events.append(("mail", message["toRecipients"][0]["emailAddress"]["address"],
+                           message["attachments"][0]["name"], self.operation_id(delivery)))
+            assert base64.b64decode(message["attachments"][0]["contentBytes"]) == b"%PDF-1.7\nlocal"
             return {"accepted": True}
 
     queue = GraphSyncQueue(
@@ -601,7 +608,7 @@ def test_local_archive_queue_generates_pdf_and_sends_without_graph_storage(tmp_p
     assert [event[0] for event in events] == ["local_pdf", "mail"]
     assert completed["result"]["uploaded_files"] == []
     assert completed["result"]["removed_active"] is False
-    assert events[-1][2].suffix == ".pdf"
+    assert Path(events[-1][2]).suffix == ".pdf"
 
 
 def test_stale_running_mail_job_is_held_for_manual_retry(
@@ -614,7 +621,7 @@ def test_stale_running_mail_job_is_held_for_manual_retry(
     class UnexpectedMail:
         calls = 0
 
-        def send_prepared(self, *_args, **_kwargs):
+        def send_delivery(self, *_args, **_kwargs):
             self.calls += 1
             raise AssertionError("Um trabalho stale não pode enviar automaticamente.")
 
@@ -729,9 +736,10 @@ def test_permanent_mail_failure_is_not_retried_automatically(tmp_path):
             pdf.write_bytes(b"%PDF-1.7\nlocal")
             return pdf
 
-    class RejectedMail:
-        def send_prepared(self, prepared, attachment_path, *, operation_id):
-            calls.append(operation_id)
+    from tests.fixed_mail_fake import FixedMailFake
+    class RejectedMail(FixedMailFake):
+        def send_delivery(self, delivery):
+            calls.append(self.operation_id(delivery))
             raise GraphMailError("A autenticação do serviço de e-mail foi rejeitada.")
 
     queue = GraphSyncQueue(
@@ -774,9 +782,10 @@ def test_transient_mail_failure_stops_after_configured_attempt_limit(
             pdf.write_bytes(b"%PDF-1.7\nlocal")
             return pdf
 
-    class UnavailableMail:
-        def send_prepared(self, prepared, attachment_path, *, operation_id):
-            calls.append(operation_id)
+    from tests.fixed_mail_fake import FixedMailFake
+    class UnavailableMail(FixedMailFake):
+        def send_delivery(self, delivery):
+            calls.append(self.operation_id(delivery))
             raise GraphMailTransientError("O serviço de e-mail está temporariamente indisponível.")
 
     queue = GraphSyncQueue(
@@ -820,11 +829,13 @@ def test_terminal_mail_failure_only_runs_again_after_explicit_retry(tmp_path):
             pdf.write_bytes(b"%PDF-1.7\nlocal")
             return pdf
 
-    class RecoveringMail:
+    from tests.fixed_mail_fake import FixedMailFake
+    class RecoveringMail(FixedMailFake):
         available = False
         calls = 0
 
-        def send_prepared(self, prepared, attachment_path, *, operation_id):
+        def send_delivery(self, delivery):
+            self.validate_delivery(delivery)
             self.calls += 1
             if not self.available:
                 raise GraphMailError("A autenticação do serviço de e-mail foi rejeitada.")
@@ -907,7 +918,7 @@ def test_legacy_pending_mail_requires_explicit_preparation_without_mutation(tmp_
     class UnexpectedMail:
         calls = 0
 
-        def send_prepared(self, prepared, attachment_path, *, operation_id):
+        def send_delivery(self, delivery):
             self.calls += 1
             return {"accepted": True}
 

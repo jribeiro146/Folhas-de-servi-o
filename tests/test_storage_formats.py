@@ -22,7 +22,7 @@ def test_new_store_gets_distinct_identity_and_version_and_reopens(tmp_path, kind
     factory(kind, database)
     with closing(sqlite3.connect(database)) as db:
         assert db.execute("PRAGMA application_id").fetchone()[0] != 0
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert db.execute("PRAGMA user_version").fetchone()[0] == (1 if kind == "editing" else 2)
     factory(kind, database)
 
 

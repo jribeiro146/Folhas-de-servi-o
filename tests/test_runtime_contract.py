@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 import json
 
-FORMATS = {"editing": 1, "queue": 1, "bundle": 1, "sadi": 1, "inventory": 1}
+FORMATS = {"editing": 1, "queue": 2, "bundle": 1, "sadi": 1, "inventory": 1}
 
 
 def test_only_the_active_release_can_enter_an_operation(tmp_path):
