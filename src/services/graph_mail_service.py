@@ -19,7 +19,9 @@ from src.config import (
     GRAPH_TENANT_ID,
     MAIL_SENDER,
     MAIL_TEST_RECIPIENT,
+    MAIL_ENABLED,
 )
+from src.services.runtime_safety import require_live_delivery
 
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
@@ -84,8 +86,9 @@ class GraphMailConfig:
 class GraphMailService:
     """Prepara e envia uma folha final em PDF usando ``/users/{sender}/sendMail``."""
 
-    def __init__(self, config: GraphMailConfig | None = None):
+    def __init__(self, config: GraphMailConfig | None = None, *, transport=None):
         self.config = config or GraphMailConfig.from_env()
+        self._transport = transport
         self._access_token: str | None = None
         self._access_token_expires_at = 0.0
 
@@ -368,13 +371,20 @@ class GraphMailService:
         headers: dict[str, str] | None = None,
         authenticated: bool = True,
     ) -> bytes:
+        transport = self._transport
+        if transport is None:
+            try:
+                require_live_delivery(MAIL_ENABLED)
+            except ValueError as exc:
+                raise GraphMailConfigurationError(str(exc)) from exc
+            transport = request.urlopen
         is_send = method.upper() == "POST" and parse.urlsplit(url).path.endswith("/sendMail")
         request_headers = dict(headers or {})
         if authenticated:
             request_headers["Authorization"] = f"Bearer {self._access_token_value()}"
         req = request.Request(url, data=data, headers=request_headers, method=method)
         try:
-            with request.urlopen(req, timeout=60) as response:
+            with transport(req, timeout=60) as response:
                 return response.read()
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")

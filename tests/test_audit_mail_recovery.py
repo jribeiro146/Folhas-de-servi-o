@@ -18,9 +18,9 @@ def queue_with_mail(tmp_path, monkeypatch, transport):
     class PDF:
         def export_archive_pdf(self, _):
             return pdf
-    mail = GraphMailService(GraphMailConfig("synthetic", "synthetic", "synthetic", "sender@example.invalid"))
+    mail = GraphMailService(GraphMailConfig("synthetic", "synthetic", "synthetic", "sender@example.invalid"),
+                            transport=transport)
     monkeypatch.setattr(mail, "_access_token_value", lambda: "synthetic")
-    monkeypatch.setattr("src.services.graph_mail_service.request.urlopen", transport)
     queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", mail_service=mail,
                            local_pdf_service=PDF(), auto_start=False)
     job = queue.enqueue("archive_and_mail_local", {"archived_path": str(tmp_path / "synthetic.xlsx"),
@@ -83,10 +83,10 @@ def test_recovery_does_not_erase_uncertainty_with_pdf_checkpoint(tmp_path, monke
 
 
 def test_token_failure_is_safe_to_retry_before_send(monkeypatch):
-    service = GraphMailService(GraphMailConfig("synthetic", "synthetic", "synthetic", "sender@example.invalid"))
     def unavailable(*_, **__):
         raise URLError("token service unavailable")
-    monkeypatch.setattr("src.services.graph_mail_service.request.urlopen", unavailable)
+    service = GraphMailService(GraphMailConfig("synthetic", "synthetic", "synthetic", "sender@example.invalid"),
+                               transport=unavailable)
     with pytest.raises(GraphMailTransientError):
         service._request_bytes("https://synthetic.invalid/token", method="POST", authenticated=False)
 

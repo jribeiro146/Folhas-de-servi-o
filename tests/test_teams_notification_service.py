@@ -57,7 +57,9 @@ def test_teams_notification_posts_an_adaptive_card(monkeypatch):
         captured["payload"] = json.loads(req.data.decode("utf-8"))
         return FakeResponse()
 
-    monkeypatch.setattr(teams_module.request, "urlopen", fake_urlopen)
+    service = TeamsNotificationService(
+        TeamsNotificationConfig(webhook_url="https://example.test/teams-workflow"), transport=fake_urlopen,
+    )
 
     result = service.send_prepared(prepared, operation_id="teams:send:FS-123")
 

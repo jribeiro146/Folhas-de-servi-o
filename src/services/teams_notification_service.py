@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib import error, parse, request
 
-from src.config import TEAMS_WEBHOOK_URL
+from src.config import TEAMS_WEBHOOK_URL, TEAMS_NOTIFICATIONS_ENABLED
+from src.services.runtime_safety import require_live_delivery
 
 
 class TeamsNotificationError(Exception):
@@ -31,8 +32,9 @@ class TeamsNotificationConfig:
 class TeamsNotificationService:
     """Publica um Adaptive Card num canal ou chat escolhido no Teams Workflow."""
 
-    def __init__(self, config: TeamsNotificationConfig | None = None):
+    def __init__(self, config: TeamsNotificationConfig | None = None, *, transport=None):
         self.config = config or TeamsNotificationConfig.from_env()
+        self._transport = transport
 
     def validate_config(self) -> None:
         value = self.config.webhook_url.strip()
@@ -89,6 +91,13 @@ class TeamsNotificationService:
 
     def send_prepared(self, prepared: dict[str, Any], *, operation_id: str) -> dict[str, Any]:
         self.validate_config()
+        transport = self._transport
+        if transport is None:
+            try:
+                require_live_delivery(TEAMS_NOTIFICATIONS_ENABLED)
+            except ValueError as exc:
+                raise TeamsNotificationConfigurationError(str(exc)) from exc
+            transport = request.urlopen
         payload = dict(prepared.get("payload") or {})
         if payload.get("type") != "message" or not payload.get("attachments"):
             raise TeamsNotificationError("A notificação Teams preparada não é válida.")
@@ -105,7 +114,7 @@ class TeamsNotificationService:
             method="POST",
         )
         try:
-            with request.urlopen(req, timeout=30) as response:
+            with transport(req, timeout=30) as response:
                 response.read()
                 status_code = int(response.status)
         except error.HTTPError as exc:

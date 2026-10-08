@@ -83,8 +83,7 @@ def test_connection_validates_mail_send_permission_without_sending(monkeypatch):
         requested_urls.append(req.full_url)
         return FakeResponse()
 
-    monkeypatch.setattr("src.services.graph_mail_service.request.urlopen", fake_urlopen)
-    service = GraphMailService(mail_config())
+    service = GraphMailService(mail_config(), transport=fake_urlopen)
 
     result = service.test_connection()
 
@@ -117,8 +116,7 @@ def test_connection_reports_an_invalid_secret_as_configuration_error(monkeypatch
             ),
         )
 
-    monkeypatch.setattr("src.services.graph_mail_service.request.urlopen", rejected_urlopen)
-    service = GraphMailService(mail_config())
+    service = GraphMailService(mail_config(), transport=rejected_urlopen)
 
     with pytest.raises(GraphMailConfigurationError, match="secret"):
         service.test_connection()
@@ -271,7 +269,7 @@ def test_graph_503_after_send_requires_reconciliation(tmp_path, monkeypatch):
             io.BytesIO(b'{"error":{"code":"serviceNotAvailable"}}'),
         )
 
-    monkeypatch.setattr("src.services.graph_mail_service.request.urlopen", fake_urlopen)
+    service = GraphMailService(mail_config(), transport=fake_urlopen)
 
     with pytest.raises(GraphMailUnknownResultError):
         service.send_prepared(prepared, pdf_path, operation_id="send:503")
@@ -288,13 +286,12 @@ def test_graph_network_outage_during_send_requires_reconciliation(tmp_path, monk
         customer_name="Cliente",
         service_number="FS-NET",
     )
-    service._access_token = "cached-token"
-    service._access_token_expires_at = time.time() + 300
-
     def unavailable_urlopen(req, timeout):
         raise urlerror.URLError("sem ligação")
 
-    monkeypatch.setattr("src.services.graph_mail_service.request.urlopen", unavailable_urlopen)
+    service = GraphMailService(mail_config(), transport=unavailable_urlopen)
+    service._access_token = "cached-token"
+    service._access_token_expires_at = time.time() + 300
 
     with pytest.raises(GraphMailUnknownResultError, match="desconhecido"):
         service.send_prepared(prepared, pdf_path, operation_id="send:network")

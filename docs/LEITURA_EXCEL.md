@@ -1,4 +1,9 @@
-# Leitura Excel consolidada — 08/10/2026
+# Leitura interna das Folhas de Serviço — 08/10/2026
+
+**Âmbito confirmado pelo utilizador em 08/10:** apenas o leitor dos ficheiros
+XLSX das Folhas de Serviço usado na aplicação web. O Excel de backoffice é um
+desenvolvimento separado, excluído deste trabalho, tal como faturação e fórmulas
+comerciais. Esta alteração não implementa nem modifica esse backoffice.
 
 Transportada apenas a melhoria de leitura da referência do pacote para a base
 de produção, preservando o restante serviço. `read_link` esgota um iterador
