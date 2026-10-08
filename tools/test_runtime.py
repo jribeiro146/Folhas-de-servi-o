@@ -23,6 +23,10 @@ def configure():
         "FS_NO_BROWSER": "1", "FS_LOG_ENABLED": "false", "FS_LOG_REQUESTS": "false",
         "FS_TEST_SYNTHETIC": "true", "PYTHONDONTWRITEBYTECODE": "1",
     })
+    # Prepare only this newly created synthetic store, before app imports.
+    from src.services.release_identity import get_release_info
+    from src.services.runtime_contract import RuntimeContract
+    RuntimeContract(root / "data", get_release_info()["source_sha256"]).initialize_empty()
     return root
 
 

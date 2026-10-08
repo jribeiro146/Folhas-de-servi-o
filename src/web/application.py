@@ -19,6 +19,11 @@ from flask import Flask, g, jsonify, redirect, render_template, request, send_fr
 
 from src.config import (
     APP_DATA_DIR,
+    GRAPH_CACHE_DIR,
+    LOG_DIR,
+    EXCEL_ACTIVAS_DIR,
+    EXCEL_ARQUIVADAS_DIR,
+    EXCEL_CANCELADAS_DIR,
     AUTH_PROVIDER,
     GRAPH_QUEUE_IN_WEB,
     GRAPH_SHAREPOINT_HOSTNAME,
@@ -61,7 +66,8 @@ from src.services.maintenance_access import can_access_maintenance
 from src.services.maintenance_private_service import MaintenancePrivateService
 from src.services.document_style_service import load_document_assets
 from src.services.runtime_safety import runtime_mode
-from src.services.release_identity import get_release_info
+from src.services.runtime_admission import resolve_runtime
+from src.services.runtime_contract import ContractError
 from src.services.local_changes import bundle_guard, mark_dirty
 from src.services.file_mutex import FileMutexBusy
 from src.services.document_artifact_service import DocumentArtifactService
@@ -145,10 +151,50 @@ def create_app(
     work_folder_service: WorkFolderService | None = None,
     test_editor_identity: EditorIdentity | None = None,
     release_root: Path | None = None,
+    runtime_contract=None,
+) -> Flask:
+    """Validate and hold state admission throughout service construction."""
+    info, contract = resolve_runtime(
+        APP_DATA_DIR, release_root=release_root, runtime_contract=runtime_contract,
+        storage_paths=(GRAPH_CACHE_DIR, LOG_DIR, EXCEL_ACTIVAS_DIR, EXCEL_ARQUIVADAS_DIR, EXCEL_CANCELADAS_DIR),
+    )
+    with contract.operation():
+        return _create_app(
+            file_service=file_service,
+            archive_service=archive_service,
+            graph_service=graph_service,
+            mail_service=mail_service,
+            microsoft_auth_service=microsoft_auth_service,
+            editing_state_service=editing_state_service,
+            graph_refresh_coordinator=graph_refresh_coordinator,
+            graph_sync_queue=graph_sync_queue,
+            local_pdf_service=local_pdf_service,
+            teams_notification_service=teams_notification_service,
+            work_folder_service=work_folder_service,
+            test_editor_identity=test_editor_identity,
+            release_info=info, runtime_contract=contract,
+        )
+
+
+def _create_app(
+    file_service: FileService | None = None,
+    archive_service: ArchiveService | None = None,
+    graph_service: GraphStorageService | None = None,
+    mail_service: GraphMailService | None = None,
+    microsoft_auth_service: MicrosoftAuthService | None = None,
+    editing_state_service: EditingStateService | None = None,
+    graph_refresh_coordinator: GraphRefreshCoordinator | None = None,
+    graph_sync_queue: GraphSyncQueue | None = None,
+    local_pdf_service: LocalPdfService | None = None,
+    teams_notification_service: TeamsNotificationService | None = None,
+    work_folder_service: WorkFolderService | None = None,
+    test_editor_identity: EditorIdentity | None = None,
+    *, release_info: dict, runtime_contract,
 ) -> Flask:
     """Cria a aplicação Flask com dependências injetáveis para testes."""
     app = Flask(__name__, template_folder="templates", static_folder="static")
-    app.config["RELEASE_INFO"] = get_release_info(release_root)
+    app.config["RELEASE_INFO"] = release_info
+    app.config["RUNTIME_CONTRACT"] = runtime_contract
     app.config["ASSET_VERSION"] = app.config["RELEASE_INFO"]["source_sha256"][:16]
     app.config["SYNTHETIC_TEST_VERSION"] = runtime_mode() == "test" and os.environ.get("FS_TEST_SYNTHETIC") == "true"
     # Demo only: no operational queues or transports may be attached to this feature.
@@ -216,6 +262,7 @@ def create_app(
             graph_service,
             file_service.directory,
             on_complete=file_service.invalidate_cache,
+            runtime_contract=runtime_contract,
         )
         if graph_service is not None else None
     )
@@ -227,6 +274,7 @@ def create_app(
             local_pdf_service=local_pdf_service,
             teams_notification_service=teams_notification_service,
             auto_start=GRAPH_QUEUE_IN_WEB,
+            runtime_contract=runtime_contract,
         )
         if graph_service is not None or mail_service is not None else None
     )
@@ -246,6 +294,25 @@ def create_app(
             request.url_rule.rule if request.url_rule is not None else "<unmatched>",
         )
         g.request_id = request_id
+
+    @app.before_request
+    def admit_runtime_operation():
+        guard = runtime_contract.operation()
+        try:
+            guard.__enter__()
+        except ContractError as exc:
+            response = jsonify({"success": False, "error": str(exc), "code": exc.code})
+            response.status_code = 503
+            response.headers["Retry-After"] = "2"
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        g.runtime_guard = guard
+
+    @app.teardown_request
+    def release_runtime_operation(_error):
+        guard = g.pop("runtime_guard", None)
+        if guard is not None:
+            guard.__exit__(None, None, None)
 
     @app.after_request
     def complete_request_logging(response):

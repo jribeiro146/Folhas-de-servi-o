@@ -404,6 +404,9 @@ def demo(monkeypatch):
     monkeypatch.setattr(web, "MAIL_ENABLED", False)
     monkeypatch.setattr(web, "TEAMS_NOTIFICATIONS_ENABLED", False)
     monkeypatch.setattr(web, "APP_DATA_DIR", tmp_path / "data")
+    from src.services.runtime_contract import RuntimeContract
+    from src.services.release_identity import get_release_info
+    RuntimeContract(tmp_path / "data", get_release_info()["source_sha256"]).initialize_empty()
     monkeypatch.setattr(archive_module, "EXCEL_ARQUIVADAS_DIR", tmp_path / "archive")
     source = synthetic_workbook(tmp_path / "active" / "2026_9900.xlsx")
     files = FileService(source.parent)

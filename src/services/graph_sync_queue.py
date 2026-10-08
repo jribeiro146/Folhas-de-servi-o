@@ -23,6 +23,8 @@ from src.services.local_changes import DIRTY_MARKER, bundle_guard, dirty_version
 from src.services.bundle_removals import copy_confirmations, refresh_own_removal_versions
 from src.services.file_mutex import file_mutex, FileMutexBusy
 from src.services.atomic_files import replace_local
+from src.services.runtime_admission import admitted, operation_for
+from src.services.runtime_contract import ContractError
 
 
 LOGGER = logging.getLogger(__name__)
@@ -46,15 +48,15 @@ class GraphSyncQueue:
         local_pdf_service: LocalPdfService | None = None,
         teams_notification_service: TeamsNotificationService | None = None,
         auto_start: bool = True,
+        runtime_contract=None,
     ):
+        self.runtime_contract = runtime_contract
         self.graph_service = graph_service
         self.mail_service = mail_service
         self.local_pdf_service = local_pdf_service
         self.teams_notification_service = teams_notification_service
         self.database_path = Path(database_path)
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.asset_root = self.database_path.parent / "graph-sync-assets"
-        self.asset_root.mkdir(parents=True, exist_ok=True)
         self.busy_timeout_ms = max(int(os.environ.get("FS_STATE_DB_BUSY_MS", "10000")), 1000)
         self.mail_job_max_attempts = max(
             int(os.environ.get("FS_MAIL_JOB_MAX_ATTEMPTS", "3")),
@@ -90,7 +92,10 @@ class GraphSyncQueue:
         connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
         return connection
 
+    @admitted
     def _initialize(self) -> None:
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.asset_root.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + (self.busy_timeout_ms / 1000)
         while True:
             try:
@@ -187,6 +192,7 @@ class GraphSyncQueue:
                     job_kind=row["kind"],
                 )
 
+    @admitted
     def enqueue(
         self,
         kind: str,
@@ -286,6 +292,7 @@ class GraphSyncQueue:
             ).fetchone()
         return self._serialize(row) if row else None
 
+    @admitted
     def retry(self, job_id: str) -> dict[str, Any]:
         """Repete explicitamente um único trabalho que ficou terminalmente falhado."""
         now = time.time()
@@ -443,8 +450,14 @@ class GraphSyncQueue:
 
     def _worker(self, *, schedule_follow_up: bool = True) -> None:
         try:
-            with file_mutex(self._worker_mutex_path):
+            with operation_for(self), file_mutex(self._worker_mutex_path):
                 self._process_jobs()
+        except ContractError:
+            synchronous = not schedule_follow_up
+            schedule_follow_up = False
+            if synchronous:
+                raise
+            LOGGER.warning("Worker recusado pelo contrato de execução; reiniciar na versão ativa.")
         except FileMutexBusy:
             return
         finally:
@@ -511,6 +524,7 @@ class GraphSyncQueue:
                     "O worker terminou inesperadamente; o envio requer repetição manual.",
                 )
 
+    @admitted
     def _heartbeat(self, job: dict[str, Any]) -> bool:
         with self._connect() as connection:
             changed = connection.execute(
@@ -524,6 +538,8 @@ class GraphSyncQueue:
             try:
                 if not self._heartbeat(job):
                     return
+            except ContractError:
+                return
             except sqlite3.Error:
                 # The process lock still prevents overlapping external effects.
                 LOGGER.warning("Não foi possível atualizar a atividade do worker.")

@@ -18,6 +18,8 @@ from src.services.active_file_index import read_active_inventory
 from src.services.file_diagnostics import SYNC_ID
 from src.services.file_mutex import FileMutexBusy, file_mutex
 from src.services.graph_storage_service import GraphStorageService
+from src.services.runtime_admission import admitted, operation_for
+from src.services.runtime_contract import ContractError
 
 
 LOGGER = logging.getLogger(__name__)
@@ -39,7 +41,9 @@ class GraphRefreshCoordinator:
         *,
         on_complete: Callable[[], None] | None = None,
         refresh_seconds: int | None = None,
+        runtime_contract=None,
     ):
+        self.runtime_contract = runtime_contract
         self.graph_service = graph_service
         self.local_active_dir = Path(local_active_dir)
         self.on_complete = on_complete
@@ -66,6 +70,7 @@ class GraphRefreshCoordinator:
         finally:
             guard.__exit__(None, None, None)
 
+    @admitted
     def request_refresh(self, *, force: bool = False) -> dict[str, Any]:
         with self._state_guard():
             state = self._read_state()
@@ -104,6 +109,7 @@ class GraphRefreshCoordinator:
                 if not accepted:
                     run_guard.__exit__(None, None, None)
 
+    @admitted
     def status(self) -> dict[str, Any]:
         with self._state_guard():
             state = self._read_state()
@@ -196,6 +202,19 @@ class GraphRefreshCoordinator:
         return result
 
     def _run(self, refresh_id: str, run_guard) -> None:
+        admission = operation_for(self)
+        try:
+            admission.__enter__()
+        except ContractError:
+            run_guard.__exit__(None, None, None)
+            LOGGER.warning("Atualização recusada pelo contrato de execução; reiniciar na versão ativa.")
+            return
+        try:
+            self._run_admitted(refresh_id, run_guard)
+        finally:
+            admission.__exit__(None, None, None)
+
+    def _run_admitted(self, refresh_id: str, run_guard) -> None:
         started_at = time.perf_counter()
         error: str | None = None
         synced_files: list[str] = []

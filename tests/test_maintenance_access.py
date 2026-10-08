@@ -36,6 +36,9 @@ def production_sadi(tmp_path, monkeypatch, request):
     monkeypatch.setattr(web, "ACTIVE_AUTH_PROVIDER", "microsoft" if authenticated else "none")
     monkeypatch.setattr(web, "STORAGE_BACKEND", settings.get("backend", "graph"))
     monkeypatch.setattr(web, "APP_DATA_DIR", tmp_path / "private")
+    from src.services.runtime_contract import RuntimeContract
+    from src.services.release_identity import get_release_info
+    RuntimeContract(tmp_path / "private", get_release_info()["source_sha256"]).initialize_empty()
     monkeypatch.setattr(archive_module, "EXCEL_ARQUIVADAS_DIR", tmp_path / "archive")
     source = synthetic_workbook(tmp_path / "active" / "2026_9900.xlsx")
     files = FileService(source.parent)

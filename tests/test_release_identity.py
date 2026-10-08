@@ -84,9 +84,13 @@ def test_rendered_asset_urls_use_the_content_identity(tmp_path):
     source = tmp_path / "src" / "entry.py"
     source.parent.mkdir()
     source.write_text("value = 1\n", encoding="utf-8")
-    expected = get_release_info(tmp_path)["source_sha256"][:16]
+    from src.services.runtime_contract import RuntimeContract
+    identity = get_release_info(tmp_path)["source_sha256"]
+    contract = RuntimeContract(tmp_path / "data", identity)
+    contract.initialize_empty()
+    expected = identity[:16]
     for _ in range(2):
-        response = create_app(release_root=tmp_path).test_client().get("/")
+        response = create_app(release_root=tmp_path, runtime_contract=contract).test_client().get("/")
         assert response.status_code == 200
         assert ("v=" + expected).encode() in response.data
 

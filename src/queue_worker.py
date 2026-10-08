@@ -9,6 +9,11 @@ from pathlib import Path
 
 from src.config import (
     APP_DATA_DIR,
+    GRAPH_CACHE_DIR,
+    LOG_DIR,
+    EXCEL_ACTIVAS_DIR,
+    EXCEL_ARQUIVADAS_DIR,
+    EXCEL_CANCELADAS_DIR,
     MAIL_ENABLED,
     STORAGE_BACKEND,
     TEAMS_NOTIFICATIONS_ENABLED,
@@ -19,15 +24,23 @@ from src.services.graph_storage_service import GraphStorageService
 from src.services.graph_sync_queue import GraphSyncQueue
 from src.services.local_pdf_service import LocalPdfService
 from src.services.teams_notification_service import TeamsNotificationService
-from src.services.release_identity import get_release_info
+from src.services.runtime_admission import resolve_runtime, operation_for
 
 
 LOGGER = logging.getLogger(__name__)
 
 
-def build_queue(*, release_root: Path | None = None) -> GraphSyncQueue:
+def build_queue(*, release_root: Path | None = None, runtime_contract=None) -> GraphSyncQueue:
     """Cria a mesma fila da webapp sem arrancar threads dentro do WSGI."""
-    release_info = get_release_info(release_root)
+    release_info, contract = resolve_runtime(
+        APP_DATA_DIR, release_root=release_root, runtime_contract=runtime_contract,
+        storage_paths=(GRAPH_CACHE_DIR, LOG_DIR, EXCEL_ACTIVAS_DIR, EXCEL_ARQUIVADAS_DIR, EXCEL_CANCELADAS_DIR),
+    )
+    with contract.operation():
+        return _build_admitted_queue(release_info, contract)
+
+
+def _build_admitted_queue(release_info, contract):
     graph_service = GraphStorageService() if STORAGE_BACKEND == "graph" else None
     mail_service = GraphMailService() if MAIL_ENABLED else None
     local_pdf_service = (
@@ -45,6 +58,7 @@ def build_queue(*, release_root: Path | None = None) -> GraphSyncQueue:
         local_pdf_service=local_pdf_service,
         teams_notification_service=teams_notification_service,
         auto_start=False,
+        runtime_contract=contract,
     )
     queue.release_info = release_info
     return queue
@@ -53,14 +67,15 @@ def build_queue(*, release_root: Path | None = None) -> GraphSyncQueue:
 def process_once(queue: GraphSyncQueue | None = None) -> dict[str, object]:
     """Executa os trabalhos atualmente prontos e devolve um resumo observavel."""
     active_queue = queue or build_queue()
-    before = active_queue.summary()
-    acquired = active_queue.run_until_idle()
-    return {
-        "release": getattr(active_queue, "release_info", None),
-        "worker_acquired": acquired,
-        "before": before,
-        "after": active_queue.summary(),
-    }
+    with operation_for(active_queue):
+        before = active_queue.summary()
+        acquired = active_queue.run_until_idle()
+        return {
+            "release": getattr(active_queue, "release_info", None),
+            "worker_acquired": acquired,
+            "before": before,
+            "after": active_queue.summary(),
+        }
 
 
 def main(argv: list[str] | None = None, *, release_root: Path | None = None) -> int:
