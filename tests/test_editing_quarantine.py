@@ -119,6 +119,28 @@ def test_rejected_new_write_is_not_reported_as_corrupt_stored_evidence(tmp_path)
     assert stored_evidence(service, lease["document_id"]) == before
 
 
+@pytest.mark.parametrize("route", ["autosave", "editing/close", "autosave/discard"])
+@pytest.mark.parametrize("key_form", ["omitted", "null", "empty"])
+def test_optional_idempotency_preserves_client_compatibility(quarantine_app, route, key_form):
+    app, service, document_id, path = quarantine_app
+    replace_stored_state(service, document_id, app.config["SYNTHETIC_INITIAL_STATE"])
+    state = json.loads(app.config["SYNTHETIC_INITIAL_STATE"])
+    metadata = {"document_id": document_id, "client_id": "tab-1",
+                "lease_token": next(iter(state["sessions"])), "base_revision": state["revision"]}
+    if key_form != "omitted":
+        metadata["idempotency_key"] = None if key_form == "null" else ""
+    response = app.test_client().post(f"/api/file/{path.stem}/{route}", json={
+        "_edit": metadata, "document": {"intervention_report": "Synthetic final autosave"}})
+    assert response.status_code == 200, response.json
+    stored = json.loads(stored_evidence(service, document_id)[0])
+    if route != "autosave/discard":
+        assert stored["autosave"]["document"]["intervention_report"] == "Synthetic final autosave"
+        assert stored["autosave"]["idempotency_key"].strip()
+    if route == "editing/close":
+        assert response.json["released"] is True
+        assert stored["sessions"] == {} and stored["lease"] is None
+
+
 def test_admin_lists_corrupt_document_as_requiring_recovery(quarantine_app):
     _, service, document_id, _ = quarantine_app
     before = stored_evidence(service, document_id)
@@ -129,6 +151,21 @@ def test_admin_lists_corrupt_document_as_requiring_recovery(quarantine_app):
     assert records[0]["code"] == "editing_state_quarantined"
     assert "lock_version" not in records[0]
     assert stored_evidence(service, document_id) == before
+
+
+@pytest.mark.parametrize("key", [None, "", " "])
+def test_required_operation_key_still_rejects_empty_values(quarantine_app, key):
+    app, service, document_id, path = quarantine_app
+    replace_stored_state(service, document_id, app.config["SYNTHETIC_INITIAL_STATE"])
+    state = json.loads(app.config["SYNTHETIC_INITIAL_STATE"])
+    before = stored_evidence(service, document_id)
+    response = app.test_client().post(f"/api/file/{path.stem}/cancel", json={"_edit": {
+        "document_id": document_id, "client_id": "tab-1", "lease_token": next(iter(state["sessions"])),
+        "base_revision": state["revision"], "idempotency_key": key}})
+    assert response.status_code == 409 and response.json["code"] == "editing_session_required"
+    # The exclusive-operation guard reads valid state and touches updated_at.
+    assert stored_evidence(service, document_id)[0] == before[0]
+    assert path.exists()
 
 
 @pytest.mark.parametrize("changes", [

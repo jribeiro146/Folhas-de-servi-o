@@ -23,10 +23,15 @@ agregado à persistência, na entrada e antes do commit.
   segura. Não devolve o estado bruto.
 - Uma mutação inválida criada depois de ler estado válido faz rollback e recebe
   `editing_state_write_invalid` (409), sem alegar corrupção do estado anterior.
-  Metadados de sessão vazios são recusados antes da transação; texto é normalizado.
+  Metadados de sessão obrigatórios vazios são recusados antes da transação; texto é
+  normalizado. Onde a chave de idempotência é opcional, ausência, `null` e `""`
+  mantêm a compatibilidade anterior: o servidor gera a chave quando a operação a
+  usa. Uma chave composta apenas por espaços é recusada. Nos envios, gravações de
+  rascunho e cancelamentos a chave continua obrigatória.
 - A recuperação de finalizações e o logout isolam o documento afetado, deixando
   os restantes disponíveis. Os registos de diagnóstico usam uma referência hash,
-  nunca o JSON ou nomes de clientes.
+  nunca o JSON ou nomes de clientes. A deteção é registada em cada passagem pelo
+  leitor; folhas pendentes podem gerar avisos repetidos até serem recuperadas.
 - O painel do administrador apresenta a referência e a necessidade de recuperação,
   sem oferecer expulsão ou reposição de acesso nessa linha. Um pedido direto também
   é recusado e não cria uma intervenção administrativa bem-sucedida.

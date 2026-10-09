@@ -115,6 +115,28 @@ def lease(client, draft, client_id):
             "idempotency_key": uuid.uuid4().hex}
 
 
+@pytest.mark.parametrize("key_form", ["omitted", "null", "empty"])
+def test_sadi_sign_accepts_optional_idempotency(production_sadi, key_form):
+    from tests.test_maintenance import signature_image
+    from src import maintenance_schema as maintenance
+    app, client, draft, _edits, _root = production_sadi
+    login(client, "jribeiro@sensorpoint.pt")
+    metadata = lease(client, draft, "synthetic-sign")
+    metadata.pop("idempotency_key")
+    if key_form != "omitted":
+        metadata["idempotency_key"] = None if key_form == "null" else ""
+    document = complete_document()
+    site = document["maintenance_checklists"][0]
+    response = client.post(f"/api/file/{draft.stem}/maintenance/sign", json={
+        "_edit": metadata, "document": document, "site_id": site["id"], "role": "technician",
+        "name": "Pessoa fictícia", "date": "2026-09-17", "image": signature_image()})
+    assert response.status_code == 200, response.json
+    site["signatures"]["technician"] = response.json["signature"]
+    # The endpoint fixes the service number from the source name before signing.
+    document["service_number"] = FileService.service_number_from_name(draft)
+    assert maintenance.signature_valid(app.secret_key, document, site, "technician")
+
+
 @pytest.mark.parametrize("production_sadi,enabled", [
     ({}, True),
     ({"flag": "true"}, True),

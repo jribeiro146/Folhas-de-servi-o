@@ -17,7 +17,7 @@ const bootstrap = (token = "old-session") => response({
     editing: { document_id: "synthetic-document", revision: 1, lease: { token } },
 });
 
-async function coordinator(fetch) {
+async function coordinator(fetch, { sendBeacon = () => true } = {}) {
     const elements = new Map();
     const timers = new Map();
     const intervals = new Map();
@@ -53,18 +53,44 @@ async function coordinator(fetch) {
         addEventListener: (name, handler) => windowEvents.set(name, handler), location: {},
     };
     const context = vm.createContext({
-        window, document, fetch, navigator: { onLine: true, sendBeacon: () => true }, Blob,
+        window, document, fetch, navigator: { onLine: true, sendBeacon }, Blob,
         sessionStorage: { getItem: () => "synthetic-client", setItem() {} },
     });
     vm.runInContext(source, context);
     await settle();
     return {
-        api: window.__EDITING_COORDINATOR__, element, input, documentEvents,
+        api: window.__EDITING_COORDINATOR__, element, input, documentEvents, windowEvents,
         edit: value => { payload = value; window.__EDITING_COORDINATOR__.markDirty(); },
         autosave: () => [...timers.values()].find(timer => timer.delay === 750).fn(),
         heartbeat: () => intervals.get(15000)(),
     };
 }
+
+test("autosave and pagehide send usable idempotency keys with the current session", async () => {
+    const requests = [];
+    const beacons = [];
+    const view = await coordinator((url, options) => {
+        if (options?.body) requests.push({ url, payload: JSON.parse(options.body) });
+        return bootstrap();
+    }, { sendBeacon: (url, body) => { beacons.push({ url, body }); return true; } });
+    view.edit({ customer_name: "Autosave fictício" });
+    await view.autosave();
+    const autosave = requests.find(item => item.url.endsWith("/autosave"));
+    assert.ok(autosave);
+    view.edit({ customer_name: "Última alteração fictícia" });
+    view.windowEvents.get("pagehide")();
+    assert.equal(beacons.length, 1);
+    assert.ok(beacons[0].url.endsWith("/editing/close"));
+    const closing = JSON.parse(await beacons[0].body.text());
+    for (const payload of [autosave.payload, closing]) {
+        assert.equal(payload._edit.document_id, "synthetic-document");
+        assert.equal(payload._edit.lease_token, "old-session");
+        assert.equal(typeof payload._edit.idempotency_key, "string");
+        assert.ok(payload._edit.idempotency_key.trim());
+    }
+    assert.notEqual(closing._edit.idempotency_key, autosave.payload._edit.idempotency_key);
+    assert.equal(closing.document.customer_name, "Última alteração fictícia");
+});
 
 test("late autosave response cannot clear recovery or enable actions after administrator revocation", async () => {
     const pending = deferred();

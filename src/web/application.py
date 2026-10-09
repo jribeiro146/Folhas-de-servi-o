@@ -509,6 +509,9 @@ def _create_app(
     ) -> dict[str, object]:
         raw = payload.pop("_edit", {})
         metadata = dict(raw) if isinstance(raw, dict) else {}
+        # Optional keys historically used null/empty as "generate on the server".
+        if not require_idempotency and metadata.get("idempotency_key") in (None, ""):
+            metadata.pop("idempotency_key", None)
         for key in ("document_id", "client_id", "lease_token", "idempotency_key"):
             if key in metadata:
                 metadata[key] = str(metadata[key] or "").strip()
