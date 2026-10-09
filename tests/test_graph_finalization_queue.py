@@ -71,7 +71,8 @@ def test_upload_lookup_supports_legacy_paths_and_ignores_archive_jobs(tmp_path):
 
 
 def test_archive_and_mail_wait_for_commit_and_are_not_duplicated(tmp_path):
-    editing = SqliteStateRepository(tmp_path / "editing.sqlite3")
+    from tests.editing_evidence import committed_editing_repository
+    editing = committed_editing_repository(tmp_path)
     archive = draft_file(tmp_path)
     calls = []
 
@@ -112,7 +113,7 @@ def test_archive_and_mail_wait_for_commit_and_are_not_duplicated(tmp_path):
     assert queue._next_retry_delay() is not None
     for status in (None, "pending", "failed"):
         with editing.transaction("document", lambda: {}) as state:
-            state["operations"] = {"finalize": {"status": status}}
+            state["operations"]["finalize"]["status"] = status
         queue.run_until_idle()
         assert calls == [] and queue.status(job["id"])["status"] == "held"
     with editing.transaction("document", lambda: {}) as state:

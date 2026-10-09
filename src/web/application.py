@@ -76,6 +76,7 @@ from src.services.document_data_service import DocumentDataService
 from src.services.editing_state_service import (
     EditingSessionRevokedError,
     EditingStateError,
+    EditingStateQuarantinedError,
     EditingSessionMetadataError,
     EditingStateService,
     EditorIdentity,
@@ -450,6 +451,8 @@ def _create_app(
         return EditorIdentity(id=f"local:{anonymous_id}", display_name="Técnico local")
 
     def editing_error_response(error: Exception):
+        if isinstance(error, EditingStateQuarantinedError):
+            return jsonify({"success": False, "error": str(error), "code": "editing_state_quarantined"}), 423
         if isinstance(error, EditingSessionMetadataError):
             log_event(
                 app.logger,
@@ -493,6 +496,8 @@ def _create_app(
                 "code": "operation_in_progress",
             }), 409
         return json_error(str(error), 400, code="editing_state_invalid")
+
+    app.register_error_handler(EditingStateQuarantinedError, editing_error_response)
 
     def extract_edit_metadata(
         payload: dict[str, object],

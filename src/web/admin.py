@@ -5,7 +5,7 @@ import time
 from urllib.parse import urlsplit
 from flask import Blueprint, g, jsonify, render_template, request, session
 from src.services.admin_access import can_administer
-from src.services.editing_state_service import EditingStateError
+from src.services.editing_state_service import EditingStateError, EditingStateQuarantinedError
 from src.services.graph_sync_queue import delivery_uncertain, teams_retry_deadline
 
 
@@ -121,6 +121,8 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
             result = editing.admin_change_access(document_id, g.current_user, data["reason"], version,
                                                   restore_user=restore_user)
             return jsonify(success=True, result=result)
+        except EditingStateQuarantinedError as exc:
+            return jsonify(success=False, error=str(exc), code="editing_state_quarantined"), 423
         except KeyError:
             return jsonify(success=False, error="Reserva não encontrada."), 404
         except (ValueError, EditingStateError) as exc:

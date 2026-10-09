@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
 from src.services.sqlite_storage_format import initialize_store, validate_store, StorageFormatError
+from src.services.editing_state_format import decode_state_object
 
 
 class SqliteStateRepository:
@@ -61,6 +62,7 @@ class SqliteStateRepository:
         document_id: str,
         factory: Callable[[], dict[str, Any]],
         *, audit: dict[str, Any] | None = None, must_exist: bool = False,
+        validator: Callable[[dict[str, Any], str], Any] | None = None,
     ) -> Iterator[dict[str, Any]]:
         connection = self._connect()
         try:
@@ -71,8 +73,12 @@ class SqliteStateRepository:
             ).fetchone()
             if row is None and must_exist:
                 raise KeyError(document_id)
-            state = self._decode(row["state_json"]) if row else factory()
+            state = decode_state_object(row["state_json"]) if row else factory()
+            if validator:
+                validator(state, document_id)
             yield state
+            if validator:
+                validator(state, document_id)
             connection.execute(
                 """
                 INSERT INTO editing_states (document_id, state_json, updated_at)
@@ -119,11 +125,3 @@ class SqliteStateRepository:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM admin_actions ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [{**dict(row), "details": json.loads(row["details_json"])} for row in rows]
-
-    @staticmethod
-    def _decode(value: str) -> dict[str, Any]:
-        try:
-            payload = json.loads(value)
-        except (TypeError, json.JSONDecodeError):
-            return {}
-        return payload if isinstance(payload, dict) else {}

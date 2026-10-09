@@ -33,6 +33,7 @@ from src.services.atomic_files import replace_local
 from src.services.runtime_admission import admitted, operation_for
 from src.services.runtime_contract import ContractError, ContractBusy
 from src.services.sqlite_storage_format import initialize_store, validate_store, StorageFormatError
+from src.services.editing_state_format import decode_editing_state
 
 
 LOGGER = logging.getLogger(__name__)
@@ -614,7 +615,7 @@ class GraphSyncQueue:
                         "SELECT state_json FROM editing_states WHERE document_id = ?",
                         (guard.get("document_id"),),
                     ).fetchone()
-                state = self._json_object(state_row[0]) if state_row else {}
+                state = decode_editing_state(state_row[0], guard.get("document_id")) if state_row else {}
                 operations = state.get("operations", {})
                 operation = operations.get(guard.get("operation_id"), {})
                 if operation.get("status") == "complete":

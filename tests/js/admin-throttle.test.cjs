@@ -7,7 +7,7 @@ const vm = require("node:vm");
 const source = fs.readFileSync(path.join(__dirname, "../../src/web/static/js/admin.js"), "utf8");
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-async function panel(job) {
+async function panel(job, { documents = [], section = "admin-jobs" } = {}) {
     const element = () => ({
         textContent: "", children: [], dataset: {}, disabled: false,
         classList: { add() {} }, addEventListener() {},
@@ -24,13 +24,13 @@ async function panel(job) {
         getElementById: get, createElement: element,
     };
     const fetch = async () => ({
-        ok: true, json: async () => ({ success: true, documents: [], jobs: [job], audit: [],
+        ok: true, json: async () => ({ success: true, documents, jobs: job ? [job] : [], audit: [],
             refresh: null, queue_summary: { pending: 0 } }),
     });
     vm.runInNewContext(source, { document, fetch, Date });
     await settle();
     const walk = node => [node.textContent, ...node.children.flatMap(walk)];
-    return walk(get("admin-jobs")).join("\n");
+    return walk(get(section)).join("\n");
 }
 
 const job = { id: "synthetic", kind: "notify_teams", status: "failed", attempts: 3 };
@@ -51,4 +51,13 @@ test("admin allows an eligible retry after the deadline without a stale warning"
     const text = await panel({ ...job, retry_not_before: Date.now() / 1000 - 3600, can_retry: true });
     assert.match(text, /Repetir trabalho/);
     assert.doesNotMatch(text, /bloqueada pelo Teams|prazo muito distante/);
+});
+
+test("admin explains quarantine without offering release or restore controls", async () => {
+    const text = await panel(null, { section: "admin-documents", documents: [
+        { document_id: "synthetic", name: "synthetic", quarantined: true, code: "editing_state_quarantined" },
+    ] });
+    assert.match(text, /requer recuperação/i);
+    assert.match(text, /preservad/);
+    assert.doesNotMatch(text, /Expulsar|Repor acesso|Proprietário:|Sessões: undefined/);
 });

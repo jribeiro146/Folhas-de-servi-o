@@ -156,6 +156,25 @@ def test_unknown_document_cannot_create_state_or_audit(admin_app):
     assert response.status_code == 404
     assert service.repository.document_ids() == before and not service.repository.admin_history()
 
+
+def test_admin_cannot_release_quarantined_state(admin_app):
+    import sqlite3
+    app, service, snapshot = admin_app
+    doc = snapshot["document_id"]
+    old_version = version(service)
+    with sqlite3.connect(service.repository.database_path) as db:
+        db.execute("UPDATE editing_states SET state_json=? WHERE document_id=?", ('{"invalid":', doc))
+    admin = login(app, ADMIN.email)
+    overview = admin.get("/api/admin/overview")
+    assert overview.status_code == 200 and overview.json["documents"][0]["quarantined"] is True
+    response = admin.post("/api/admin/documents/"+doc+"/release",
+                          json={"reason":"Desbloquear", "lock_version":old_version},
+                          headers={"X-Admin-CSRF":"synthetic-csrf"})
+    assert response.status_code == 423 and response.json["code"] == "editing_state_quarantined"
+    assert not service.repository.admin_history()
+    with sqlite3.connect(service.repository.database_path) as db:
+        assert db.execute("SELECT state_json FROM editing_states WHERE document_id=?", (doc,)).fetchone()[0] == '{"invalid":'
+
 def test_non_admin_service_cannot_revoke_even_with_matching_version(tmp_path):
     service, _, _, snapshot = document(tmp_path)
     actor = SimpleNamespace(id="other", email="acarvalho@sensorpoint.pt", role="special_admin")

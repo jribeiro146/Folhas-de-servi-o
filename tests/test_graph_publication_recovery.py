@@ -598,7 +598,8 @@ def test_archive_conflict_never_sends_mail_or_removes_active_file(tmp_path):
 
 
 def test_held_expiration_preserves_mail_receipt_and_recovery_never_resends(tmp_path):
-    editing = SqliteStateRepository(tmp_path / "editing.sqlite3")
+    from tests.editing_evidence import committed_editing_repository
+    editing = committed_editing_repository(tmp_path)
     source = draft(tmp_path)
     calls = []
 
@@ -633,8 +634,6 @@ def test_held_expiration_preserves_mail_receipt_and_recovery_never_resends(tmp_p
         return complete(job, result)
 
     queue._mark_complete = after_mail
-    with editing.transaction("document", lambda: {}) as state:
-        state["operations"] = {"finalize": {"status": "complete"}}
     job = queue.enqueue("archive_and_remove", {
         "archived_path": str(source), "source_name": source.parent.name,
         "mail": {"to": "recipient@example.invalid"},

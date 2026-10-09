@@ -45,6 +45,10 @@
         for (const doc of documents) {
             const card = node("article", "", root);
             node("h3", doc.name, card);
+            if (doc.quarantined) {
+                node("p", "Esta folha requer recuperação. Os dados guardados foram preservados; a edição e o desbloqueio estão suspensos.", card);
+                continue;
+            }
             node("p", "Proprietário: " + (doc.owner?.owner_name || "Sem proprietário") + " · Sessões: " + doc.session_count, card);
             node("p", "Última atividade: " + date(doc.last_seen_at) + " · Gravação automática: " + date(doc.autosaved_at), card);
             const controls = node("div", "", card);

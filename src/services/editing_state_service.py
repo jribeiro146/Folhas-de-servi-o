@@ -15,16 +15,15 @@ from typing import Any, Iterator
 
 from src.config import APP_DATA_DIR
 from src.services.editing_state_repository import SqliteStateRepository
+from src.services.editing_state_format import (
+    EditingStateError, EditingStateQuarantinedError, STATE_VERSION, validate_editing_state,
+    decode_editing_state, report_quarantined_state,
+)
 from src.services.file_mutex import FileMutexBusy, file_mutex
 from src.services.admin_access import can_administer
 
 
 EDIT_METADATA_NAME = ".fs_edit.json"
-STATE_VERSION = 2
-
-
-class EditingStateError(Exception):
-    """Base error for editing-state operations."""
 
 
 class EditingSessionMetadataError(EditingStateError):
@@ -295,16 +294,20 @@ class EditingStateService:
         """Release browser sessions without changing persistent draft ownership."""
         released = 0
         for document_id in self.repository.document_ids():
-            with self._state_transaction(document_id) as state:
-                self._normalize_sessions(state)
-                matching = [
-                    token
-                    for token, session in state.get("sessions", {}).items()
-                    if session.get("owner_id") == owner_id
-                ]
-                for token in matching:
-                    state["sessions"].pop(token, None)
-                released += len(matching)
+            try:
+                with self._state_transaction(document_id) as state:
+                    self._normalize_sessions(state)
+                    matching = [
+                        token
+                        for token, session in state.get("sessions", {}).items()
+                        if session.get("owner_id") == owner_id
+                    ]
+                    for token in matching:
+                        state["sessions"].pop(token, None)
+                    released += len(matching)
+            except EditingStateQuarantinedError:
+                report_quarantined_state(document_id)
+                continue
         return released
 
     @staticmethod
@@ -321,9 +324,7 @@ class EditingStateService:
         documents = []
         for row in rows:
             try:
-                state = json.loads(row["state_json"])
-                if not isinstance(state, dict) or not state.get("document_id"):
-                    continue
+                state = decode_editing_state(row["state_json"], row["document_id"])
                 self._normalize_sessions(state)
                 if state.get("closed_by_operation"):
                     continue
@@ -341,8 +342,10 @@ class EditingStateService:
                                       for key, value in (state.get("admin_blocked_users") or {}).items()],
                     "lock_version": self._admin_lock_version(state),
                 })
-            except (TypeError, ValueError, AttributeError):
-                continue
+            except EditingStateQuarantinedError:
+                report_quarantined_state(row["document_id"])
+                documents.append({"document_id": row["document_id"], "name": row["document_id"],
+                                  "quarantined": True, "code": "editing_state_quarantined"})
         return documents
 
     def admin_change_access(self, document_id, actor, reason, expected_version, *, restore_user=None):
@@ -536,7 +539,11 @@ class EditingStateService:
         with self.repository._connect() as connection:
             rows = connection.execute("SELECT document_id, state_json FROM editing_states").fetchall()
         for row in rows:
-            state = json.loads(row["state_json"])
+            try:
+                state = decode_editing_state(row["state_json"], row["document_id"])
+            except EditingStateQuarantinedError:
+                report_quarantined_state(row["document_id"])
+                continue
             for key, operation in state.get("operations", {}).items():
                 context = operation.get("context") or {}
                 if operation.get("kind") == "send" and operation.get("status") == "complete" and context.get("source_path") and not context.get("source_retired"):
@@ -631,7 +638,7 @@ class EditingStateService:
         with self.repository.transaction(
             document_id,
             lambda: self._new_state(document_id),
-            audit=audit, must_exist=must_exist,
+            audit=audit, must_exist=must_exist, validator=validate_editing_state,
         ) as state:
             self._normalize_state(state)
             if path is not None:
