@@ -390,6 +390,14 @@ O CLI é fornecido como contexto; não foi alterado nem migrada qualquer base re
 O contexto frontend desta revisão serve apenas a pergunta de desenho da etapa5;
 mail-job-monitor e document-editor continuam sem alterações desta funcionalidade.
 
+Resposta à segunda revisão Teams: reproduzidas três variantes de metadados antigos
+(429 seguido de 202, 503 ou timeout). O checkpoint sending_teams agora limpa
+http_status e retry_not_before da tentativa anterior. accepted não recebe null,
+pois o contrato exige booleano quando o campo existe; um aceite anterior continua
+a impedir novo POST. O resultado da tentativa atual deixa de aparentar uma
+rejeição 429 passada. Os testes Node do painel verificam prazo futuro bloqueado,
+prazo fora do intervalo de datas do navegador e prazo passado elegível.
+
 ### Etapas seguintes
 
 Sanitizar o diagnóstico restante; fluxos completos, identidade/admin, migração,

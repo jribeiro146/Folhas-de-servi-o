@@ -300,3 +300,33 @@ def test_failed_post_result_checkpoint_leaves_original_sending_phase(tmp_path, m
     assert not state["will_retry"] and len(calls) == 1
     with pytest.raises(ValueError, match="reconciliação"):
         queue.retry(job["id"])
+
+
+@pytest.mark.parametrize("second_result", [202, 503, "timeout"])
+def test_new_attempt_does_not_report_previous_throttling(tmp_path, monkeypatch, second_result):
+    calls = []
+    def transport(req, **kwargs):
+        calls.append(req)
+        if len(calls) == 1:
+            raise HTTPError(req.full_url, 429, "throttled", {"Retry-After": "700"}, io.BytesIO(b""))
+        if second_result == "timeout":
+            raise TimeoutError("synthetic")
+        if second_result == 503:
+            raise HTTPError(req.full_url, 503, "unavailable", {}, io.BytesIO(b""))
+        return Response()
+    queue, job = queued(tmp_path, transport)
+    queue.run_until_idle()
+    first = queue.status(job["id"])
+    assert first["result"]["http_status"] == 429
+    monkeypatch.setattr(time, "time", lambda: first["next_attempt_at"] + 1)
+    queue.run_until_idle()
+    state = queue.status(job["id"])
+    assert len(calls) == 2
+    assert state["result"].get("http_status") != 429
+    assert state["result"].get("retry_not_before") is None
+    if second_result == 202:
+        assert state["status"] == "complete" and state["result"]["accepted"] is True
+        assert state["result"]["status_code"] == 202
+    else:
+        assert state["status"] == "failed" and state["result"]["phase"] == "teams_unknown"
+        assert state["reconciliation_required"] and not state["will_retry"]

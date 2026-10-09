@@ -929,7 +929,9 @@ class GraphSyncQueue:
             self._checkpoint_result(job_id, {"phase": "teams_rejected", "http_status": exc.http_status,
                                             "retry_not_before": exc.retry_not_before})
             raise
-        self._checkpoint_result(job_id, {"phase": "sending_teams"})
+        self._checkpoint_result(job_id, {
+            "phase": "sending_teams", "http_status": None, "retry_not_before": None,
+        })
         try:
             receipt = service.send_prepared(notification, operation_id=job_id)
             if not isinstance(receipt, dict) or receipt.get("accepted") is not True:

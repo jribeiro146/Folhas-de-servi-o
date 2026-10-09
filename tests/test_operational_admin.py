@@ -191,7 +191,8 @@ def test_admin_cannot_retry_uncertain_mail(tmp_path, monkeypatch, phase, prefix)
     assert not service.repository.admin_history()
 
 @pytest.mark.parametrize("prefix", ["/api/admin/jobs/", "/api/graph/jobs/"])
-def test_admin_retry_of_known_failure_is_audited_without_executing_worker(tmp_path, monkeypatch, prefix):
+@pytest.mark.parametrize("kind", ["remove_active", "notify_teams", "notify_teams_deadline_race"])
+def test_admin_retry_of_known_failure_is_audited_without_executing_worker(tmp_path, monkeypatch, prefix, kind):
     from src.services.graph_sync_queue import GraphSyncQueue
     monkeypatch.setattr(web,"AUTH_ENABLED",True)
     monkeypatch.setattr(web,"ACTIVE_AUTH_PROVIDER","microsoft")
@@ -199,9 +200,15 @@ def test_admin_retry_of_known_failure_is_audited_without_executing_worker(tmp_pa
         def user_from_session(self,payload):
             return SimpleNamespace(**payload) if payload else None
     queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", auto_start=False)
-    job = queue.enqueue("remove_active", {"source_name":"synthetic.xlsx"})
+    teams = kind.startswith("notify_teams")
+    job = queue.enqueue("notify_teams" if teams else kind,
+                        {"notification": {}} if teams else {"source_name":"synthetic.xlsx"})
     with queue._connect() as db:
         db.execute("UPDATE graph_sync_jobs SET status='failed',retryable=0 WHERE id=?", (job["id"],))
+        if teams:
+            db.execute("UPDATE graph_sync_jobs SET result_json=? WHERE id=?",
+                       (json.dumps({"phase": "teams_rejected", "http_status": 429,
+                                    "retry_not_before": time.time() - 3600}), job["id"]))
     service = EditingStateService(tmp_path / "edits")
     app = web.create_app(editing_state_service=service, graph_sync_queue=queue, microsoft_auth_service=Auth())
     admin = login(app,ADMIN.email)
@@ -213,8 +220,24 @@ def test_admin_retry_of_known_failure_is_audited_without_executing_worker(tmp_pa
                       headers={"X-Admin-CSRF":"synthetic-csrf"}).status_code == 409
     assert queue.status(job["id"])["status"] == "failed"
     assert not service.repository.admin_history()
+    assert admin.get("/api/admin/overview").get_json()["jobs"][0]["can_retry"]
+    if kind == "notify_teams_deadline_race":
+        original_audit = service.repository.record_admin_action
+        def audit_with_new_deadline(entry):
+            if entry["action"] == "retry_job_requested":
+                with queue._connect() as db:
+                    db.execute("UPDATE graph_sync_jobs SET result_json=? WHERE id=?",
+                        (json.dumps({"phase": "teams_rejected", "http_status": 429,
+                                     "retry_not_before": time.time() + 86400}), job["id"]))
+            return original_audit(entry)
+        monkeypatch.setattr(service.repository, "record_admin_action", audit_with_new_deadline)
     response = admin.post(prefix+job["id"]+"/retry", json={"reason":"Falha resolvida"},
                           headers={"X-Admin-CSRF":"synthetic-csrf"})
+    if kind == "notify_teams_deadline_race":
+        assert response.status_code == 409
+        assert queue.status(job["id"])["status"] == "failed"
+        assert [entry["action"] for entry in service.repository.admin_history()] == ["retry_job_requested"]
+        return
     assert response.status_code == 202
     assert queue.status(job["id"])["status"] == "pending"
     assert [entry["action"] for entry in service.repository.admin_history()] == ["retry_job_accepted","retry_job_requested"]
