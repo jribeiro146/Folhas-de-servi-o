@@ -82,6 +82,7 @@ def test_legacy_queue_migration_keeps_receipts_and_never_requeues_attempts(tmp_p
     job = queue.status("old-job")
     assert job["status"] == "failed" and not job["will_retry"]
     assert job["result"]["previous_result_json"] == receipt
+    assert job["reconciliation_required"] is True
     assert job["attempts"] == 1
     with pytest.raises(ValueError):
         queue.retry("old-job")
@@ -106,10 +107,13 @@ def modern_storage(root):
 
 
 @pytest.mark.parametrize("boundary", ["editing-state.sqlite3", "graph-sync.sqlite3", "runtime-contract.sqlite3"])
-def test_interrupted_publication_resumes_and_does_not_admit_partial_data(tmp_path, monkeypatch, boundary):
+@pytest.mark.parametrize("has_contract", [True, False])
+def test_interrupted_publication_resumes_and_does_not_admit_partial_data(tmp_path, monkeypatch, boundary, has_contract):
     import src.services.runtime_migration as migration
     from src.services.runtime_contract import RuntimeContract, ContractError
     data, work = modern_storage(tmp_path)
+    if not has_contract:
+        (data / "runtime-contract.sqlite3").unlink()
     migration.prepare(data, [], work, source_sha256="a" * 64)
     original = migration._publish
     def interrupt(source, target, work_id):
@@ -330,3 +334,166 @@ def test_future_runtime_format_is_not_downgraded_by_migration(tmp_path, field):
     with pytest.raises(MigrationError, match="Contrato persistente desconhecido"):
         prepare(data, [], work, source_sha256="a" * 64)
     assert RuntimeContract(data, "b" * 64).inspect()["formats"][field] == 99
+
+
+def test_historical_session_without_last_seen_is_converted_without_extending_it(tmp_path):
+    from src.services.runtime_migration import prepare, apply
+    from tests.legacy_editing_shapes import version_two
+    from tests.legacy_editing_sessions_a1 import HistoricalEditingStateService
+    data, work = modern_storage(tmp_path)
+    state = version_two("document")
+    lease = legacy_lease("document")["lease"]
+    state["lease"] = lease
+    HistoricalEditingStateService()._normalize_sessions(state, now=1)
+    assert "last_seen_at" not in state["sessions"][lease["token"]]
+    with sqlite3.connect(data / "editing-state/editing-state.sqlite3") as db:
+        db.execute("UPDATE editing_states SET state_json=?", (json.dumps(state),))
+    db.close()
+    assert prepare(data, [], work, source_sha256="a" * 64)["editing_quarantined"] == 0
+    apply(work, source_sha256="a" * 64)
+    with closing(sqlite3.connect(data / "editing-state/editing-state.sqlite3")) as db:
+        result = json.loads(db.execute("SELECT state_json FROM editing_states").fetchone()[0])
+    assert result["sessions"][lease["token"]] == {**lease, "last_seen_at": 1}
+
+
+def test_publication_preserves_owner_and_mode_before_replacing_each_database(tmp_path, monkeypatch):
+    import src.services.runtime_migration as migration
+    import os
+    import stat
+    data, work = modern_storage(tmp_path)
+    migration.prepare(data, [], work, source_sha256="a" * 64)
+    targets = {data / "editing-state/editing-state.sqlite3", data / "runtime-contract.sqlite3", data / "graph-sync.sqlite3"}
+    original_stat = Path.stat
+    original_chmod = os.chmod
+    chowns, chmods = [], []
+    def owned(path, *args, **kwargs):
+        value = original_stat(path, *args, **kwargs)
+        if path in targets or path == data:
+            fields = list(value)
+            fields[0] = (stat.S_IFDIR | 0o700) if path == data else (stat.S_IFREG | 0o600)
+            fields[4], fields[5] = 10001, 10002
+            return os.stat_result(fields)
+        return value
+    def chmod(path, mode, *args, **kwargs):
+        chmods.append((Path(path), mode))
+        return original_chmod(path, mode, *args, **kwargs)
+    monkeypatch.setattr(Path, "stat", owned)
+    monkeypatch.setattr(os, "chown", lambda path, uid, gid: chowns.append((Path(path), uid, gid)), raising=False)
+    monkeypatch.setattr(os, "chmod", chmod)
+    migration.apply(work, source_sha256="a" * 64)
+    for target in targets:
+        temporary_name = target.name + "." + json.loads((work / "plan.json").read_text())["attempt"] + ".migration"
+        temporary = target.with_name(temporary_name)
+        assert (temporary, 10001, 10002) in chowns
+        assert (temporary, 0o600) in chmods
+
+
+@pytest.mark.skipif(__import__("os").name != "posix", reason="Real POSIX ownership/modes require Linux")
+def test_posix_database_permissions_are_preserved(tmp_path):
+    from src.services.runtime_migration import prepare, apply
+    import stat
+    data, work = modern_storage(tmp_path)
+    targets = [data / "editing-state/editing-state.sqlite3", data / "runtime-contract.sqlite3"]
+    for target in targets:
+        target.chmod(0o600)
+    before = {target: (target.stat().st_uid, target.stat().st_gid) for target in targets}
+    prepare(data, [], work, source_sha256="a" * 64)
+    apply(work, source_sha256="a" * 64)
+    for target in targets:
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+        assert (target.stat().st_uid, target.stat().st_gid) == before[target]
+
+
+def test_cli_malformed_snapshot_returns_structured_refusal(tmp_path, monkeypatch, capsys):
+    from tools import migrate_runtime as cli
+    from src.services.release_identity import write_release_manifest
+    artifact = tmp_path / "artifact"
+    (artifact / "src").mkdir(parents=True)
+    (artifact / "src/entry.py").write_text("synthetic = True\n")
+    write_release_manifest(artifact, revision="a" * 40)
+    monkeypatch.setattr(cli, "ROOT", artifact)
+    data = tmp_path / "data"
+    (data / "editing-state").mkdir(parents=True)
+    raw = b'{"broken"'
+    snapshot = data / "editing-state/broken.json"
+    snapshot.write_bytes(raw)
+    assert cli.main(["prepare", "--data-dir", str(data), "--workspace", str(tmp_path / "work"),
+                     "--writers-stopped", "--roots-complete"]) == 2
+    assert json.loads(capsys.readouterr().err)["code"] == "migration_refused"
+    assert snapshot.read_bytes() == raw
+    assert not (tmp_path / "work/plan.json").exists()
+
+
+def test_historical_sqlite_import_takes_precedence_over_old_json(tmp_path):
+    from tests.legacy_editing_repository_a1 import SqliteStateRepository
+    from src.services.runtime_migration import prepare, apply
+    from tests.legacy_editing_shapes import version_two
+    data = tmp_path / "data"
+    editing = data / "editing-state"
+    editing.mkdir(parents=True)
+    snapshot = editing / snapshot_name("historical")
+    snapshot.write_text(json.dumps(legacy_lease("historical")))
+    repository = SqliteStateRepository(editing / "editing-state.sqlite3", legacy_root=editing)
+    with repository.transaction("historical", lambda: {}) as state:
+        state.clear()
+        state.update(version_two("historical"), revision=12)
+    # The historical implementation's connection context commits but does not
+    # close. Collect unreachable handles to model stopped writers on Windows.
+    import gc
+    gc.collect()
+    work = tmp_path / "work"
+    assert prepare(data, [], work, source_sha256="a" * 64)["snapshots_shadowed"] == 1
+    apply(work, source_sha256="a" * 64)
+    with closing(sqlite3.connect(editing / "editing-state.sqlite3")) as db:
+        assert json.loads(db.execute("SELECT state_json FROM editing_states").fetchone()[0])["revision"] == 12
+    assert json.loads(snapshot.read_text())["version"] == 1
+
+
+def test_failure_to_preserve_ownership_refuses_replacement_and_can_resume(tmp_path, monkeypatch):
+    import src.services.runtime_migration as migration
+    import os
+    from src.services.runtime_contract import RuntimeContract, ContractError
+    data, work = modern_storage(tmp_path)
+    migration.prepare(data, [], work, source_sha256="a" * 64)
+    source = data / "editing-state/editing-state.sqlite3"
+    before = source.read_bytes()
+    def denied(*_args):
+        raise PermissionError("Synthetic ownership refusal")
+    monkeypatch.setattr(os, "chown", denied, raising=False)
+    with pytest.raises(PermissionError):
+        migration.apply(work, source_sha256="a" * 64)
+    assert source.read_bytes() == before
+    with pytest.raises(ContractError):
+        with RuntimeContract(data, "a" * 64).operation():
+            pytest.fail("Migration with incomplete publication was admitted")
+    monkeypatch.setattr(os, "chown", lambda *_: None)
+    assert migration.apply(work, source_sha256="a" * 64)["state"] == "complete"
+
+
+@pytest.mark.parametrize("kind,evidence", [("remove_active", {"cancellation_started": True}),
+                                          ("notify_teams", {"phase": "sending_teams", "accepted": False})])
+def test_legacy_cancel_and_teams_keep_visible_uncertainty(tmp_path, kind, evidence):
+    from src.services.runtime_migration import prepare, apply
+    from src.services.graph_sync_queue import GraphSyncQueue
+    from tests.legacy_sqlite_format_v2 import SCHEMAS, IDENTITIES
+    data = tmp_path / "data"
+    data.mkdir()
+    raw = json.dumps(evidence)
+    with sqlite3.connect(data / "graph-sync.sqlite3") as db:
+        for statement in SCHEMAS["queue"]:
+            db.execute(statement)
+        db.execute(f"PRAGMA application_id={IDENTITIES['queue']}")
+        db.execute("PRAGMA user_version=2")
+        db.execute("INSERT INTO graph_sync_jobs(id,kind,payload_json,status,attempts,next_attempt_at,created_at,updated_at,result_json) VALUES(?,?,?,?,?,?,?,?,?)",
+                   ("uncertain", kind, "{}", "running", 1, 0, 1, 1, raw))
+    db.close()
+    work = tmp_path / "work"
+    prepare(data, [], work, source_sha256="a" * 64)
+    apply(work, source_sha256="a" * 64)
+    queue = GraphSyncQueue(None, data / "graph-sync.sqlite3", auto_start=False)
+    queue.run_until_idle()
+    result = queue.status("uncertain")
+    assert result["reconciliation_required"] is True and not result["will_retry"]
+    assert result["result"]["previous_result_json"] == raw
+    with pytest.raises(ValueError):
+        queue.retry("uncertain")

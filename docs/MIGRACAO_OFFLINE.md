@@ -49,6 +49,16 @@ servidores tenham um desses formatos: a preparação verifica o conjunto forneci
    preparação e aplicação. Os caminhos abaixo são exemplos, a substituir pelos
    caminhos da instalação; não acrescentar raízes que não pertençam à aplicação.
 
+Executar como o utilizador da aplicação, ou como um instalador com privilégios
+para conservar os donos existentes. No POSIX, cada base/contrato conserva UID,
+GID e modo; ficheiros novos usam o dono/grupo da pasta de dados e modo 0600,
+e diretórios novos são privados (0700). Falhar a reposição destes atributos
+interrompe a publicação antes de substituir esse ficheiro. No Windows, as ACL
+são herdadas da pasta: preparar as ACL privadas no destino e no workspace.
+O Dockerfile atual declara UID/GID10001 por defeito; a ferramenta não pressupõe
+esse número e conserva os atributos encontrados. O UID real da instalação e
+o ensaio Linux serão confirmados com os detalhes Docker ainda aguardados.
+
 ```sh
 python -B tools/migrate_runtime.py prepare \
   --data-dir /srv/folhas/data \
@@ -60,6 +70,7 @@ python -B tools/migrate_runtime.py prepare \
 
 Esta fase simula a conversão numa cópia, sem publicar dados novos. O resultado
 mostra `state=prepared`, contagens de edição/quarentena e ficheiros preservados.
+`snapshots_shadowed` conta JSON antigos preservados cujo estado SQLite prevalece.
 `plan.json` identifica as raízes, hashes, estado e tentativa. A subpasta da
 tentativa contém `original/0` para data, `original/1`, etc. para raízes externas,
 e `prepared` com as bases novas. Bases SQLite são capturadas pela API de backup,
@@ -151,3 +162,14 @@ quando falta `last_seen_at`. Não usa a hora da migração para prolongar uma se
 As formas JSON v1/v2 independentes estão em `tests/legacy_editing_shapes.py`;
 os validadores SQLite congelados de queue1/queue2 estão em
 `tests/legacy_sqlite_format_v1.py` e `tests/legacy_sqlite_format_v2.py`.
+O importador e o normalizador efetivos de a1cac3c foram ainda congelados em
+`tests/legacy_editing_repository_a1.py` e `tests/legacy_editing_sessions_a1.py`:
+confirmam que uma reserva sem `last_seen_at` podia ficar persistida dentro de
+`sessions`. A migração converte também essa forma, preservando o prazo original.
+
+Após a primeira revisão independente, os recibos mantêm os campos de incerteza
+no resultado atual, além da cópia textual original. O indicador de reconciliação
+continua disponível ao monitor de email e ao painel; quarentena não significa
+que o email não tenha sido aceite. Há teste real POSIX de permissões que é
+ignorado em Windows, além de testes simulados de UID/GID e falha de chown.
+O ensaio Linux permanece pendente; uma simulação não o substitui.

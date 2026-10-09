@@ -138,16 +138,18 @@
                 );
             }
             if (job.status === "failed" && !job.will_retry) {
-                if (job.result?.invalid_state) {
-                    throw new MailJobMonitorError(
-                        "Os dados do trabalho são inválidos. É necessária revisão antes de repetir.",
-                        { code: "mail_invalid_state", job }
-                    );
-                }
+                // Migration may preserve an uncertain send in quarantine. Keep
+                // the uncertainty explicit so an operator does not resend it.
                 if (job.reconciliation_required) {
                     throw new MailJobMonitorError(
                         "O resultado do envio é desconhecido. Confirme a aceitação antes de repetir.",
                         { code: "mail_unknown", job }
+                    );
+                }
+                if (job.result?.invalid_state) {
+                    throw new MailJobMonitorError(
+                        "Os dados do trabalho são inválidos. É necessária revisão antes de repetir.",
+                        { code: "mail_invalid_state", job }
                     );
                 }
                 throw new MailJobMonitorError(

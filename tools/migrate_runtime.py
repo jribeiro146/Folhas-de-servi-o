@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 from src.services.release_identity import get_release_info, ReleaseIdentityError
 from src.services.runtime_contract import ContractError
 from src.services.file_mutex import FileMutexBusy
+from src.services.editing_state_format import EditingStateError
 from src.services.runtime_migration import prepare, apply, MigrationError
 
 
@@ -43,7 +44,7 @@ def main(argv=None):
         print(json.dumps(result, sort_keys=True))
         return 0
     except (MigrationError, ContractError, ReleaseIdentityError, OSError, sqlite3.Error,
-            FileMutexBusy, ValueError) as exc:
+            FileMutexBusy, EditingStateError, ValueError, KeyError, TypeError) as exc:
         print(json.dumps({"code": "migration_refused", "error": str(exc)}), file=sys.stderr)
         return 2
 

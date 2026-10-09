@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import stat
 import uuid
 
 from src.services.editing_state_format import (
@@ -141,6 +142,13 @@ def _editing_state(raw, identity):
                 state["owner"] = {"owner_id": lease.get("owner_id"), "owner_name": lease.get("owner_name"),
                                   "assigned_at": lease.get("acquired_at")}
             state["lease"] = None
+        # a1cac3c also persisted a copied v1 lease inside sessions after clearing
+        # lease. Use the same historical timestamp; validation below refuses
+        # missing/invalid identity or times instead of renewing the reservation.
+        if isinstance(state.get("sessions"), dict):
+            for session in state["sessions"].values():
+                if isinstance(session, dict) and "last_seen_at" not in session:
+                    session["last_seen_at"] = session.get("acquired_at")
     validate_editing_state(state, identity)
     return json.dumps(state, ensure_ascii=False, separators=(",", ":"))
 
@@ -175,6 +183,7 @@ def _convert_editing(snapshot, target):
     target.parent.mkdir(parents=True, exist_ok=True)
     rows = {}
     audit = []
+    shadowed = 0
     database = snapshot / STORES["editing"]
     if database.exists():
         with closing(sqlite3.connect(database)) as db:
@@ -184,14 +193,19 @@ def _convert_editing(snapshot, target):
                 audit = list(db.execute("SELECT * FROM admin_actions"))
     for path in sorted((snapshot / "editing-state").glob("*.json")):
         raw = path.read_text(encoding="utf-8")
-        state = decode_state_object(raw)
+        try:
+            state = decode_state_object(raw)
+        except EditingStateQuarantinedError as exc:
+            raise MigrationError("Snapshot JSON ilegível; preservado para diagnóstico.") from exc
         identity = state.get("document_id")
         if (not isinstance(identity, str) or not identity.strip()
                 or path.name != hashlib.sha256(identity.encode()).hexdigest() + ".json"):
             raise MigrationError("Snapshot sem identidade comprovada; preservado para diagnóstico.")
         # Historical JSON is recovery evidence. A later SQLite row is authoritative.
+        if identity in rows:
+            shadowed += 1
         rows.setdefault(identity, (raw, path.stat().st_mtime))
-    counts = {"editing_converted": 0, "editing_quarantined": 0}
+    counts = {"editing_converted": 0, "editing_quarantined": 0, "snapshots_shadowed": shadowed}
     with closing(sqlite3.connect(target)) as db:
         initialize_store(db, "editing")
         for identity, (raw, updated) in rows.items():
@@ -225,12 +239,21 @@ def _convert_queue(source, target):
                     # Legacy versions have weaker remote-effect evidence. Keep
                     # the raw receipt, payload and attempt count; no implicit retry
                     # or admin button can turn missing evidence into permission.
+                    try:
+                        evidence = json.loads(original["result_json"] or "{}")
+                        if not isinstance(evidence, dict):
+                            evidence = {}
+                    except (TypeError, ValueError):
+                        evidence = {}
+                    # Keep uncertainty visible in the API/monitor, as well as
+                    # blocking replay. Hiding the old phase could suggest to a
+                    # technician that a manual resend outside the app is safe.
+                    evidence.update(invalid_state=True, migration_hold=True,
+                                    previous_result_json=original["result_json"],
+                                    previous_status=original["status"], previous_error=original["last_error"])
                     row.update(status="failed", retryable=0,
                                last_error="Trabalho legado preservado; requer reconciliação após migração.",
-                               result_json=json.dumps({"invalid_state": True, "migration_hold": True,
-                                                       "previous_result_json": original["result_json"],
-                                                       "previous_status": original["status"],
-                                                       "previous_error": original["last_error"]}))
+                               result_json=json.dumps(evidence))
                     held += 1
                 columns = [info[1] for info in writer.execute("PRAGMA table_info(graph_sync_jobs)")]
                 writer.execute("INSERT INTO graph_sync_jobs VALUES(" + ",".join("?" for _ in columns) + ")",
@@ -312,11 +335,25 @@ def prepare(data, extra_roots, work, *, source_sha256):
 
 
 def _publish(source, target, work_id):
-    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.parent.exists():
+        owner = target.parent.parent.stat()
+        target.parent.mkdir(mode=0o700)
+        if hasattr(os, "chown"):
+            os.chown(target.parent, owner.st_uid, owner.st_gid)
+    access = target.stat() if target.exists() else target.parent.stat()
+    mode = stat.S_IMODE(access.st_mode) if target.exists() else 0o600
     temporary = target.with_name(target.name + "." + work_id + ".migration")
+    if temporary.is_symlink() or temporary.is_junction():
+        raise MigrationError("Temporário de publicação inesperado.")
     shutil.copy2(source, temporary)
     with temporary.open("r+b") as stream:
         os.fsync(stream.fileno())
+    # Replacing an inode must not turn app-owned private SQLite into a root-owned
+    # or world-readable file. Failure to preserve access aborts before replacement.
+    # Windows uses inherited directory ACLs; POSIX preserves explicit UID/GID/mode.
+    if hasattr(os, "chown"):
+        os.chown(temporary, access.st_uid, access.st_gid)
+    os.chmod(temporary, mode)
     os.replace(temporary, target)
 
 

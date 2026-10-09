@@ -14,6 +14,16 @@ test("an ambiguous send requires reconciliation instead of offering retry", asyn
     }), error => error.code === "mail_unknown" && error.job === job);
 });
 
+test("migration quarantine keeps the unknown-send warning visible", async () => {
+    const job = { id: "migrated", status: "failed", will_retry: false,
+        reconciliation_required: true,
+        result: { invalid_state: true, migration_hold: true, phase: "sending_mail" } };
+    await assert.rejects(waitForMailJob(job.id, {
+        fetchFn: async () => ({ ok: true, json: async () => ({ success: true, job }) }),
+        waitFn: async () => {},
+    }), error => error.code === "mail_unknown" && /desconhecido/.test(error.message));
+});
+
 test("waits through a scheduled retry and only confirms an accepted email", async () => {
     const jobs = [
         { id: "send:1", status: "pending", will_retry: false },

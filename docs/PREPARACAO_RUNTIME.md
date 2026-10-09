@@ -1,8 +1,9 @@
 # Preparação explícita do runtime
 
 Comandos locais para o profissional que instala a aplicação. Esta alteração não
-executa nem autoriza instalação no servidor. O empacotamento final, migração de
-dados antigos, backup/restauro e validação Linux continuam etapas separadas do plano.
+executa nem autoriza instalação no servidor. O empacotamento final,
+backup/restauro e validação Linux continuam etapas separadas do plano. A migração
+de formatos suportados tem procedimento próprio em [M06](MIGRACAO_OFFLINE.md).
 
 Usar Python 3.13 (mínimo 3.12), o código de um artefacto preparado fora de Git por
 `tools/build_release.py`, e uma pasta persistente **absoluta num disco local do
@@ -29,7 +30,7 @@ worker e não usa credenciais/transportes.
 A mensagem durável e a retenção de resultados incertos Teams exigem fila de
 formato 3 (editing continua 1). `activate` não converte filas de formato 1 ou 2:
 recusa-as. Esta transição exige a ferramenta de
-migração offline ainda prevista no plano; não mudar marcadores manualmente nem
+[migração offline M06](MIGRACAO_OFFLINE.md); não mudar marcadores manualmente nem
 apagar a fila para contornar a recusa. Não instalar este checkpoint em produção.
 
 1. Parar todos os escritores: web, workers, agendadores e ferramentas antigas.
@@ -51,7 +52,7 @@ SHA mudar. Após êxito, processos antigos recusam novas operações.
    imutável; não substituir ficheiros por cima de processos ainda ativos.
 
 O bloqueio não abrange versões antigas sem contrato. A primeira passagem desses
-dados exige migração exclusiva e backup próprios, ainda por implementar. Uma
+dados exige a migração exclusiva M06 e a sua cópia privada de recuperação. Uma
 troca de código não é migração nem restauro e não desfaz efeitos externos.
 
 ## Resultados e diagnóstico
