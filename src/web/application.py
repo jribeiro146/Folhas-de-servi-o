@@ -512,15 +512,17 @@ def _create_app(
         # Optional keys historically used null/empty as "generate on the server".
         if not require_idempotency and metadata.get("idempotency_key") in (None, ""):
             metadata.pop("idempotency_key", None)
-        for key in ("document_id", "client_id", "lease_token", "idempotency_key"):
-            if key in metadata:
-                metadata[key] = str(metadata[key] or "").strip()
+        # These are opaque identities, not display text. Trimming can make the
+        # operation mutex protect a different document from the eventual write.
+        invalid = [key for key in ("document_id", "client_id", "lease_token", "idempotency_key")
+                   if key in metadata and (not isinstance(metadata[key], str)
+                                           or not metadata[key] or metadata[key] != metadata[key].strip())]
         required = ["document_id", "client_id", "lease_token", "base_revision"]
         missing = [key for key in required if not str(metadata.get(key) or "").strip()]
         if (require_idempotency or "idempotency_key" in metadata) and not metadata.get("idempotency_key"):
             missing.append("idempotency_key")
-        if missing:
-            raise EditingSessionMetadataError(missing)
+        if missing or invalid:
+            raise EditingSessionMetadataError(list(dict.fromkeys(missing + invalid)))
         try:
             metadata["base_revision"] = int(metadata["base_revision"])
         except (TypeError, ValueError) as exc:
@@ -536,11 +538,13 @@ def _create_app(
                     payload = json.loads(request.form.get("document") or "{}")
                 except (TypeError, ValueError):
                     payload = {}
-            metadata = payload.get("_edit") if isinstance(payload, dict) else None
-            document_id = str(metadata.get("document_id") or "") if isinstance(metadata, dict) else ""
-            if not document_id:
-                return view(*args, **kwargs)
             try:
+                # Validate before acquiring a mutex or opening a state transaction.
+                # A copy keeps the JSON/multipart body intact for the view, which
+                # applies the same validation and uses the identical opaque ID.
+                metadata = extract_edit_metadata(dict(payload) if isinstance(payload, dict) else {},
+                                                 require_idempotency=True)
+                document_id = metadata["document_id"]
                 path = file_service.get_file_by_name(str(kwargs.get("name") or ""))
                 with editing_state_service.operation_guard(
                     document_id, current_editor_identity(),

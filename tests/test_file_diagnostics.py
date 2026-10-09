@@ -47,8 +47,20 @@ def test_rejected_requests_record_sheet_and_category_without_private_content(loc
     name = "2026_9991 Cliente Confidencial"
     (local_dir / f"{name}.xlsx").write_bytes(b"synthetic")
     app = web.create_app(file_service=FileService(local_dir, require_remote_index=False))
+    client = app.test_client()
+    payload = {"customer_name": private_detail}
+    if failure != "metadata":
+        # A request must pass session validation before it can exercise the
+        # document/attachment error mapping. Keep the privacy assertions below.
+        lease = client.post(f"/api/file/{name}/lease", json={"client_id": "synthetic-diagnostic"})
+        assert lease.status_code == 200, lease.get_json()
+        editing = lease.get_json()["editing"]
+        payload["_edit"] = {"document_id": editing["document_id"], "client_id": "synthetic-diagnostic",
+                            "lease_token": editing["lease"]["token"], "base_revision": editing["revision"],
+                            "idempotency_key": "synthetic-diagnostic"}
+    caplog.clear()
     endpoint = "send" if failure == "metadata" else "draft"
-    response = app.test_client().post(f"/api/file/{name}/{endpoint}", json={"customer_name":private_detail})
+    response = client.post(f"/api/file/{name}/{endpoint}", json=payload)
     assert response.status_code == (409 if failure == "metadata" else 400)
     record = events(caplog, "http_request_completed")[-1]
     assert record["error_code"] == expected_code

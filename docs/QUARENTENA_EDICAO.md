@@ -23,8 +23,10 @@ agregado à persistência, na entrada e antes do commit.
   segura. Não devolve o estado bruto.
 - Uma mutação inválida criada depois de ler estado válido faz rollback e recebe
   `editing_state_write_invalid` (409), sem alegar corrupção do estado anterior.
-  Metadados de sessão obrigatórios vazios são recusados antes da transação; texto é
-  normalizado. Onde a chave de idempotência é opcional, ausência, `null` e `""`
+  Identificadores de documento, sessão e idempotência são texto opaco: são usados
+  exatamente como recebidos, sem remover espaços. Valores de tipo errado, vazios
+  ou com espaços nas extremidades são recusados antes do bloqueio/transação.
+  Onde a chave de idempotência é opcional, ausência, `null` e `""`
   mantêm a compatibilidade anterior: o servidor gera a chave quando a operação a
   usa. Uma chave composta apenas por espaços é recusada. Nos envios, gravações de
   rascunho e cancelamentos a chave continua obrigatória.
@@ -69,6 +71,23 @@ quantas existem na instalação, nem se todas são legítimas. As fixtures em
 `tests/legacy_editing_shapes.py` foram reconstruídas destas funções, com valores
 fictícios; nenhum estado real foi copiado para testes.
 
+No gravador JSON de `f409af0`, o nome do snapshot é o hash do identificador.
+Extrato de `src/services/editing_state_service.py`, conferido nesse commit:
+
+```python
+def _state_path(self, document_id: str) -> Path:
+    safe = hashlib.sha256(document_id.encode("utf-8")).hexdigest()
+    return self.root / f"{safe}.json"
+```
+
+`_state_transaction` obtinha esse caminho, lia o estado e passava o mesmo caminho
+e objeto a `_atomic_write_json`, que serializava o objeto em UTF-8 e publicava-o
+com `os.replace`. O inspetor lê `document_id` do conteúdo, confirma a correspondência
+exata com `sha256(document_id).json` e só depois classifica a versão/estrutura.
+Nome divergente, identidade ausente ou JSON inválido ficam `invalid_state`.
+Não aceita uma renomeação para `document_id.json` como se fosse um snapshot válido.
+No modo SQLite, compara o identificador do conteúdo com a chave da linha.
+
 Antes de instalar o candidato, o profissional dispõe deste diagnóstico sobre uma
 **cópia consistente**, não sobre dados em utilização:
 
@@ -97,3 +116,45 @@ pendentes: a migração explícita M06 e a recuperação M07 têm de lhes dar tr
 Isto faz parte das ferramentas/instruções entregues ao profissional, não reabre
 uma tarefa nossa de inventariar ou operar o Plesk. Nunca trocar `version` ou
 preencher campos manualmente para fazer uma linha passar no validador.
+
+## Manutenção e continuidade do desenvolvimento
+
+O M04 protege dados de uma aplicação interna. A prioridade é resolver falhas
+concretas dos técnicos sem acrescentar complexidade desnecessária. Antes de alterar
+o formato ou os metadados de um pedido, ler os respetivos produtores e consumidores:
+
+| Responsabilidade | Código e contrato a manter |
+|---|---|
+| Pedidos do navegador | `editing-coordinator.js` gera as chaves do autosave/fecho; `document-editor.js` e `maintenance-editor.js` usam o coordenador nas operações e SADI. |
+| Entrada HTTP | `application.py`: `extract_edit_metadata` recusa identidades ambíguas; `exclusive_operation` valida uma cópia do JSON/multipart antes de bloquear; a vista valida pela mesma regra. |
+| Exclusão e administrador | `EditingStateService.operation_guard` e `admin_change_access` usam o mutex do mesmo `document_id`. A preparação da gravação já tem de estar protegida antes de criar a operação pendente. |
+| Persistência | `editing_state_format.py` valida o agregado; `editing_state_repository.py` preserva a linha por rollback. Validação de estado existente e de uma nova escrita têm erros diferentes. |
+| Leitores e efeitos externos | Serviço de edição, painel admin e guarda da fila usam a validação comum. Um leitor novo não deve transformar erro de descodificação em `{}` nem autorizar publicação com prova inválida. |
+| Diagnóstico histórico | `tools/inspect_editing_states.py` lê cópias sem importar app/configuração; `tests/legacy_editing_shapes.py` conserva a proveniência das fixtures. |
+
+O HTTP423 `editing_state_quarantined` pede recuperação do estado preservado.
+O HTTP409 `editing_session_required` pede metadados válidos; não indica corrupção.
+O HTTP409 `editing_state_write_invalid` recusa a nova escrita e mantém o estado
+anterior. `operation_in_progress` (409) indica exclusão ativa. Manter estas
+distinções nas interfaces e logs para facilitar o apoio interno.
+
+Para reproduzir o âmbito do M04 na raiz da aplicação, com o isolamento de
+`tests/conftest.py` e dados fictícios:
+
+```text
+python -B -m pytest -q tests/test_editing_request_identity.py tests/test_editing_quarantine.py tests/test_inspect_editing_states.py tests/test_operational_admin.py tests/test_graph_finalization_queue.py tests/test_graph_publication_recovery.py tests/test_maintenance_access.py
+node --test tests/js/*.test.cjs
+```
+
+Os testes de identidade cobrem JSON/multipart, recusa antes de criar linhas,
+bloqueio HTTP real e tentativa do administrador dentro da preparação da gravação.
+Os testes de snapshots cobrem nomes históricos, versões, identidades divergentes,
+JSON danificado e preservação de bytes. Uma mudança no formato deve atualizar os
+testes de leitura/escrita e o procedimento de migração explícita em conjunto.
+Ver também [formatos SQLite](FORMATOS_SQLITE.md), [contrato de execução](CONTRATO_DE_EXECUCAO.md)
+e [administração/sincronização](SINCRONIZACAO_V2_ADMIN.md).
+
+O fecho técnico do M04 não fecha M05 (cancelamento), M06/M07 (migração/restauro)
+ou M13/M14 (entrega). As aprovações, SHA e evidência de cada revisão ficam no
+registo de colaboração e na nota de passagem da consolidação; esses estados devem
+ser atualizados na entrega, sem confundir documentação histórica com instalação.

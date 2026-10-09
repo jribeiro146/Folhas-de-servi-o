@@ -7,6 +7,11 @@ A SADI fica ativa por defeito com `FS_ENVIRONMENT=production`, autenticação Mi
 Para a migracao do sincronismo transacional, seguir tambem `docs/SINCRONIZACAO_V2_ADMIN.md`.
 Para localizacao, rotacao e operacao dos logs, seguir `docs/LOGGING.md`.
 
+Para manutenção do estado de edição, consultar [Quarentena de edição — M04](docs/QUARENTENA_EDICAO.md):
+comportamento, mapa dos componentes, diagnóstico de cópias antigas, testes e limites.
+Este candidato continua sujeito às etapas de migração/restauro e preparação da
+entrega; a proteção M04 não converte dados antigos nem aprova a instalação completa.
+
 Estrutura principal do projeto:
 
 - `src/`: codigo da aplicacao.

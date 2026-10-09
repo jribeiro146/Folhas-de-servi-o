@@ -43,8 +43,8 @@ def inspect_copy(path, *, database):
     counts = Counter()
     records = []
 
-    def record(document_id, raw):
-        category = classify(raw, document_id)
+    def record(document_id, raw, *, category=None):
+        category = category or classify(raw, document_id)
         counts[category] += 1
         records.append({"document_ref": hashlib.sha256(str(document_id).encode()).hexdigest()[:16],
                         "classification": category})
@@ -63,7 +63,18 @@ def inspect_copy(path, *, database):
         for snapshot in sorted(path.glob("*.json")):
             if snapshot.is_symlink() or not snapshot.is_file():
                 raise ValueError("Unexpected snapshot")
-            record(snapshot.stem, snapshot.read_bytes())
+            raw = snapshot.read_bytes()
+            try:
+                document_id = decode_state_object(raw).get("document_id")
+            except EditingStateQuarantinedError:
+                document_id = None
+            # The historical writer stored sha256(document_id).json. The stem
+            # is evidence of identity, not the identity itself. Validate both
+            # sides before classifying; never rename or repair the source copy.
+            matches = (isinstance(document_id, str) and bool(document_id.strip())
+                       and snapshot.name == hashlib.sha256(document_id.encode("utf-8")).hexdigest() + ".json")
+            record(document_id if matches else snapshot.stem, raw,
+                   category=None if matches else "invalid_state")
     return {"scope": "editing_aggregate_only", "total": len(records), "counts": dict(counts),
             "ready": all(row["classification"] == "compatible" for row in records), "records": records}
 

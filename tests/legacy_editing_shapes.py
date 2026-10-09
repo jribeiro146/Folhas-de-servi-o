@@ -4,6 +4,12 @@ v1: _new_state / acquire_lease in f409af0b0ea77b11374954325e02779529aaa1e8.
 v2: _new_state in a1cac3c0d3da8c7c712fce816cbc2b746e01ba21.
 Values below are fictitious; names/fields follow those source functions.
 """
+import hashlib
+
+
+def snapshot_name(document_id):
+    # Exact _state_path algorithm from f409af0 (the filename is not the ID).
+    return hashlib.sha256(document_id.encode("utf-8")).hexdigest() + ".json"
 
 
 def version_one(document_id):

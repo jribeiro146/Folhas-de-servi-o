@@ -5,7 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tests.legacy_editing_shapes import version_one, version_two, legacy_lease
+from tests.legacy_editing_shapes import version_one, version_two, legacy_lease, snapshot_name
+import pytest
 
 
 def test_inspect_copy_classifies_legacy_and_current_without_mutation(tmp_path, capsys):
@@ -32,7 +33,7 @@ def test_inspect_copy_classifies_legacy_and_current_without_mutation(tmp_path, c
 
 def test_inspect_legacy_json_copy_does_not_import_or_rewrite(tmp_path, capsys):
     from tools.inspect_editing_states import main
-    snapshot = tmp_path / "legacy.json"
+    snapshot = tmp_path / snapshot_name("legacy")
     snapshot.write_text(json.dumps(legacy_lease("legacy")), encoding="utf-8")
     before = snapshot.read_bytes()
     assert main(["--json-directory-copy", str(tmp_path)]) == 1
@@ -40,6 +41,33 @@ def test_inspect_legacy_json_copy_does_not_import_or_rewrite(tmp_path, capsys):
     assert result["counts"]["legacy_version"] == 1
     assert snapshot.read_bytes() == before
     assert list(tmp_path.iterdir()) == [snapshot]
+
+
+@pytest.mark.parametrize("name", ["current.json", snapshot_name("different-id")])
+def test_json_filename_must_match_embedded_identity(tmp_path, capsys, name):
+    from tools.inspect_editing_states import main
+    snapshot = tmp_path / name
+    snapshot.write_text(json.dumps(version_two("current")), encoding="utf-8")
+    before = snapshot.read_bytes()
+    assert main(["--json-directory-copy", str(tmp_path)]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["counts"] == {"invalid_state": 1} and result["ready"] is False
+    assert snapshot.read_bytes() == before
+
+
+def test_json_copy_classifies_current_and_damaged_records_independently(tmp_path, capsys):
+    from tools.inspect_editing_states import main
+    snapshots = {snapshot_name("current"): json.dumps(version_two("current")),
+                 snapshot_name("old"): json.dumps(legacy_lease("old")),
+                 snapshot_name("damaged"): '{"document_id":',
+                 snapshot_name("missing"): '{"version":2}',
+                 snapshot_name("duplicate"): '{"document_id":"duplicate","document_id":"duplicate"}'}
+    for name, raw in snapshots.items():
+        (tmp_path / name).write_text(raw, encoding="utf-8")
+    assert main(["--json-directory-copy", str(tmp_path)]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["counts"] == {"compatible": 1, "legacy_version": 1, "invalid_state": 3}
+    assert {path.name: path.read_text(encoding="utf-8") for path in tmp_path.iterdir()} == snapshots
 
 
 def test_missing_copy_is_not_created(tmp_path, capsys):
