@@ -439,8 +439,10 @@ print("CLEAN_BOOTSTRAP_OK")
     assert b"CLEAN_BOOTSTRAP_OK" in result.stdout
 
 
-@pytest.mark.parametrize("path", ["/", "/static/js/document-editor.js"])
-def test_busy_http_refuses_before_later_hooks_and_never_caches_error(tmp_path, path):
+@pytest.mark.parametrize("path,ready_status", [
+    ("/", 200), ("/static/js/document-editor.js", 200), ("/api/graph/jobs/synthetic", 400),
+])
+def test_busy_http_refuses_before_later_hooks_and_never_caches_error(tmp_path, path, ready_status):
     import sqlite3
     from src.web.application import create_app
     contract = RuntimeContract(tmp_path / "data", get_release_info()["source_sha256"])
@@ -459,7 +461,7 @@ def test_busy_http_refuses_before_later_hooks_and_never_caches_error(tmp_path, p
         assert hooks == []
     finally:
         db.close()
-    assert app.test_client().get(path).status_code == 200
+    assert app.test_client().get(path).status_code == ready_status
     assert hooks == ["ran"]
 
 

@@ -88,7 +88,7 @@
                     retryAt = Date.parse(header);
                 }
                 const delay = retryAt === null ? intervalMs : Math.max(intervalMs, retryAt - now());
-                if (delay >= deadline - clock()) {
+                if (retryAt !== null && retryAt - now() >= deadline - clock()) {
                     throw new MailJobMonitorError(
                         "O serviço pediu uma pausa nas consultas. O resultado do envio continua por confirmar.",
                         { code: "mail_status_deferred", jobId: identifier, retryAt }
@@ -167,7 +167,7 @@
                 typeof nextAttempt === "number" && Number.isFinite(nextAttempt) && nextAttempt > 0) {
                 const retryAt = Math.min(Number.MAX_VALUE, nextAttempt * 1000);
                 const delay = Math.max(intervalMs, retryAt - now());
-                if (delay >= deadline - clock()) {
+                if (retryAt - now() >= deadline - clock()) {
                     throw new MailJobMonitorError(
                         "O envio está agendado para uma tentativa posterior. A aceitação ainda não está confirmada.",
                         { code: "mail_scheduled", job, retryAt }
@@ -180,12 +180,6 @@
             await pause(intervalMs);
         }
 
-        if (lastJob?.status === "held") {
-            throw new MailJobMonitorError(
-                "A conclusão local da folha está por confirmar. Contacte o administrador antes de qualquer repetição.",
-                { code: "mail_commit_unconfirmed", job: lastJob }
-            );
-        }
         throw new MailJobMonitorError(
             "A folha foi arquivada, mas ainda não foi possível confirmar o envio do e-mail.",
             { code: "mail_status_timeout", jobId: identifier, job: lastJob }

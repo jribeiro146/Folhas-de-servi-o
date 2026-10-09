@@ -19,7 +19,23 @@ de estado apresenta a referência e, quando existe, o prazo. O antigo botão de 
 sem CSRF/motivo foi retirado do editor; a repetição de falhas conhecidas continua a
 depender do painel de administração e das verificações do servidor.
 
+Prazos passados e 5xx sem Retry-After terminam por tempo esgotado, sem inventar um
+agendamento. `held` persistente tem esse mesmo resultado neutro: a finalização HTTP
+já confirmou o arquivo local, mas o worker pode não ter libertado o trabalho.
+`mail_commit_unconfirmed` é reservado ao sinal explícito `commit_guard_required`.
+Um prazo futuro dentro da sessão é respeitado antes da consulta seguinte.
+
 Este bloco cobre a consulta durante a sessão aberta. Persistir referências após
-recarregar/navegar, consultar vários trabalhos e os ensaios completos de interface
-continuam pendentes. Os testes Node usam respostas sintéticas; não validam serviços
-reais ou comportamento visual num navegador. Não foram enviados emails ou Teams.
+recarregar/navegar e os ensaios integrais de finalização continuam pendentes.
+`tools/check_mail_monitor_ui.py` executa quatro cenários no Chromium, com o HTML,
+CSS, editor e monitor reais. Configura armazenamento temporário antes de importar
+a aplicação; bloqueia sockets Python e interceta todos os pedidos do navegador.
+O coordenador de edição e as respostas HTTP são simulados: o ensaio verifica a
+janela de estado, referência/prazo, ausência de detalhes privados e que Fechar não
+faz retry. Não é um ensaio integral de worker, autenticação ou entrega.
+
+O worker em `src/queue_worker.py` processa uma vez por invocação; com `--watch`,
+repete por predefinição a cada5s (mínimo1s). A cadência efetiva no Plesk não foi
+observada e fica para o inventário de instalação. O monitor não pressupõe essa
+cadência nem a presença do worker: expirar não declara sucesso ou falha de envio.
+Não foram enviados emails ou Teams.

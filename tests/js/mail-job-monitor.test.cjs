@@ -246,7 +246,7 @@ test("Retry-After HTTP date on 429 is respected, including when the deadline exc
 
 test("provisional commits and long scheduled jobs remain unconfirmed, with safe diagnostics", async () => {
     for (const [job, code] of [
-        [{ id: "state", status: "held" }, "mail_commit_unconfirmed"],
+        [{ id: "state", status: "held" }, "mail_status_timeout"],
         [{ id: "state", status: "failed", result: { commit_guard_required: true } }, "mail_commit_unconfirmed"],
         [{ id: "state", status: "failed", will_retry: true, next_attempt_at: 1791547200 }, "mail_scheduled"],
         [{ id: "state", status: "failed", last_error: "PRIVATE_PROVIDER_PAYLOAD" }, "mail_failed"],
@@ -299,4 +299,46 @@ test("a held commit can become accepted during consultation", async () => {
         fetchFn: async () => ({ ok: true, json: async () => ({ success: true, job: replies.shift() }) }),
     });
     assert.equal(result, job);
+});
+
+for (const scenario of ["past_pending", "past_retry", "503_without_deadline", "503_past_deadline", "held"]) {
+    test(`an inactive worker or unavailable status ends as timeout: ${scenario}`, async () => {
+        let elapsed = 0;
+        const now = Date.parse("2026-10-09T10:00:00Z");
+        await assert.rejects(waitForMailJob("waiting", {
+            timeoutMs: 25, intervalMs: 10, maxPolls: 8, clockFn: () => elapsed,
+            nowFn: () => now + elapsed,
+            waitFn: async delay => { elapsed += delay; },
+            fetchFn: async () => scenario.startsWith("503") ? {
+                ok: false, status: 503,
+                headers: { get: () => scenario === "503_past_deadline" ? "Fri, 09 Oct 2026 09:00:00 GMT" : null },
+            } : { ok: true, json: async () => ({ success: true, job: {
+                id: "waiting", status: scenario === "held" ? "held" : scenario === "past_retry" ? "failed" : "pending",
+                will_retry: scenario === "past_retry", next_attempt_at: now / 1000 - 100,
+            } }) },
+        }), error => {
+            assert.equal(error.code, "mail_status_timeout");
+            assert.equal(error.retryAt, null);
+            assert.doesNotMatch(error.message, /agendado|pediu uma pausa|conclusão local/i);
+            return true;
+        });
+    });
+}
+
+test("a future queue retry within the consultation budget waits until due and then confirms", async () => {
+    const waits = [];
+    let calls = 0;
+    const now = Date.parse("2026-10-09T10:00:00Z");
+    const accepted = { id: "due", status: "complete", result: { mail: { accepted: true } } };
+    const result = await waitForMailJob("due", {
+        timeoutMs: 10000, maxPolls: 3, nowFn: () => now,
+        waitFn: async delay => waits.push(delay),
+        fetchFn: async () => ({ ok: true, json: async () => ({ success: true,
+            job: ++calls === 1 ? { id: "due", status: "failed", will_retry: true,
+                next_attempt_at: now / 1000 + 2 } : accepted,
+        }) }),
+    });
+    assert.equal(result, accepted);
+    assert.deepEqual(waits, [2000]);
+    assert.equal(calls, 2);
 });
