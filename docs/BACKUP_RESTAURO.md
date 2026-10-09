@@ -55,9 +55,12 @@ Inclui estados/reservas/autosaves/auditoria, fila/recibos e MIME, bundles Excel,
 fotografias, assinaturas, metadados Graph e dados/PDF privados SADI nas raízes
 inventariadas. Não reconstitui nem volta a assinar documentos. Um HMAC específico
 da cópia verifica a chave apresentada no restauro, sem armazenar a própria chave.
-Isto não prova que o operador forneceu a chave correta na criação inicial: deve
-ser o valor ativo da aplicação, conservado pelo profissional. Os checksums são
-controlo de integridade, não uma assinatura contra um administrador malicioso.
+O manifesto completo (caminhos, hashes, UID/GID/modos e timestamps) também é
+autenticado por HMAC-SHA256 com essa chave. Adulterá-lo e recalcular apenas os
+checksums não permite recuperar a cópia. Isto não prova que o operador forneceu
+a chave correta na criação inicial: deve
+ser o valor ativo da aplicação, conservado pelo profissional. Quem possui a chave
+pode autenticar outro manifesto; manter chave e cópia em canais privados separados.
 
 Só são aceites os formatos atuais e contrato ativo. A cópia privada de originais
 do migrador M06 é outro tipo de evidência; não é automaticamente um backup M07.
@@ -82,11 +85,13 @@ python -B tools/backup_runtime.py restore \
    que já respeitam o contrato também recusam esse formato, incluindo `activate`.
    Código legado sem contrato tem de continuar parado. Não editar diretamente o
    contrato, não usar `init`/`activate`/M06 para contornar este bloqueio.
-4. Se o processo for interrompido, repetir **o mesmo comando/workspace/artefacto**.
+4. Se o restauro for interrompido, repetir **o mesmo comando/workspace/artefacto**.
    Só se completam ficheiros ausentes de uma recuperação ainda em curso. Conteúdo
    existente diferente é preservado e recusado. Depois de `held`, alterações,
    ficheiros extra ou em falta também recusam a libertação. Não apagar o workspace:
-   contém o plano e os candidatos que permitem a retoma.
+   contém o plano e os candidatos que permitem a retoma. Se a interrupção foi
+   durante `release`, repetir `release`. Repetir `restore` nessa fase devolve
+   `state=releasing`, `next_command=release`, sem alterar dados nem auditoria.
 5. O responsável compara os efeitos externos entre a data da cópia e a paragem:
    emails aceites, Teams, movimentos/cancelamentos Graph e documentos finalizados.
    Abrange **documentos e trabalhos criados depois da cópia e ausentes nela**.
@@ -105,7 +110,9 @@ python -B tools/backup_runtime.py release \
 O resultado `state=released` permite reabrir a aplicação. É uma **declaração do
 operador**, não uma verificação automática da Microsoft. `reconciliation.json`
 é gravado antes da ativação; o plano guarda o seu hash e retoma uma interrupção
-sem substituir a decisão. Guardar workspace/relatório junto da evidência privada.
+sem substituir a decisão, mesmo se falhou a gravação do plano depois da auditoria.
+Os argumentos actor/motivo de uma retoma não substituem a primeira declaração.
+Guardar workspace/relatório junto da evidência privada.
 Toda a fila restaurada que não estava `complete` permanece falhada, sem repetição,
 com indicação de reconciliação, estado e resultado anteriores preservados. A
 libertação global não liberta esses trabalhos. A resolução individual auditada
@@ -113,7 +120,10 @@ libertação global não liberta esses trabalhos. A resolução individual audit
 
 ## Acessos, testes e limites
 
-POSIX conserva UID/GID/modo e mtime dos ficheiros e diretórios. Executar com os
+POSIX conserva UID/GID/modo normal e mtime dos ficheiros e diretórios. Bits especiais
+setuid/setgid/sticky são recusados no backup e na aplicação de atributos; não são
+necessários neste armazenamento e requerem avaliação específica do instalador.
+Executar com os
 privilégios necessários; uma falha de `chown` interrompe sem publicar o ficheiro.
 Em Windows herda-se a ACL da pasta privada de destino; ACLs específicas, atributos
 estendidos e políticas de retenção/encriptação são responsabilidade do instalador.

@@ -36,6 +36,20 @@ def _key_check(key, snapshot_id):
     return hmac.new(key, ("runtime-backup-v1:" + snapshot_id).encode(), hashlib.sha256).hexdigest()
 
 
+def _manifest_mac(manifest, key):
+    # Authenticate paths, hashes AND privileged metadata; checksums alone allow
+    # someone who can alter a backup to substitute a root-owned executable.
+    content = {name: value for name, value in manifest.items() if name != "manifest_hmac"}
+    canonical = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hmac.new(key, b"runtime-backup-manifest-v1\n" + canonical, hashlib.sha256).hexdigest()
+
+
+def _validate_access(metadata):
+    if (any(type(metadata.get(name)) is not int or metadata[name] < 0 for name in ("mode", "uid", "gid", "mtime_ns"))
+            or metadata["mode"] & ~0o777):
+        raise BackupError("Atributos de acesso inválidos ou bits especiais; requerem avaliação explícita do instalador.")
+
+
 def _separate(paths):
     if any(a == b or a.is_relative_to(b) or b.is_relative_to(a)
            for index, a in enumerate(paths) for b in paths[index + 1:]):
@@ -44,8 +58,10 @@ def _separate(paths):
 
 def _attributes(path):
     info = path.stat()
-    return {"mode": stat.S_IMODE(info.st_mode), "uid": info.st_uid, "gid": info.st_gid,
-            "mtime_ns": info.st_mtime_ns}
+    attributes = {"mode": stat.S_IMODE(info.st_mode), "uid": info.st_uid, "gid": info.st_gid,
+                  "mtime_ns": info.st_mtime_ns}
+    _validate_access(attributes)
+    return attributes
 
 
 def _directories(roots):
@@ -120,6 +136,7 @@ def backup(data, extra_roots, destination, *, source_sha256, key):
         manifest = {"format": 1, "snapshot_id": snapshot_id, "created_at": datetime.now(timezone.utc).isoformat(),
                     "source_sha256": source_sha256, "roots": list(map(str, roots)), "files": metadata,
                     "directories": dirs, "key_check": proof}
+        manifest["manifest_hmac"] = _manifest_mac(manifest, key)
         _json(destination / "backup.json", manifest)
         os.chmod(destination / "backup.json", 0o600)
     return verify(destination, key=key)
@@ -140,11 +157,16 @@ def _manifest(destination, key):
     if manifest["format"] != 1 or not hmac.compare_digest(
             manifest["key_check"], _key_check(key, manifest["snapshot_id"])):
         raise BackupError("Formato ou chave da cópia incompatível; nenhum restauro publicado.")
+    if (not isinstance(manifest.get("manifest_hmac"), str)
+            or not hmac.compare_digest(manifest["manifest_hmac"], _manifest_mac(manifest, key))):
+        raise BackupError("Autenticidade do manifesto não confirmada; nenhum restauro publicado.")
     roots = list(map(_local, manifest["roots"]))
     _separate([*roots, destination])
-    for name in manifest["directories"]:
+    for name, metadata in manifest["directories"].items():
+        _validate_access(metadata)
         _entry(name, roots)
     for name, metadata in manifest["files"].items():
+        _validate_access(metadata)
         _entry(name, roots)
         source = _local(destination / "files" / name)
         if _digest(source) != metadata["sha256"]:
@@ -181,6 +203,7 @@ def _hold_queue(path):
 def _access(path, metadata):
     # Preserve the app UID even when recovery is run by root. On Windows use the
     # private destination's inherited ACL; POSIX metadata cannot represent ACLs.
+    _validate_access(metadata)
     if hasattr(os, "chown"):
         os.chown(path, metadata["uid"], metadata["gid"])
     os.chmod(path, metadata["mode"])
@@ -266,7 +289,8 @@ def _load_plan(workspace, source_sha256, key):
     manifest = _manifest(destination, key)
     roots = list(map(_local, plan["roots"]))
     _separate([*roots, destination, workspace])
-    if (plan["format"] != 1 or re.fullmatch(r"candidate-[0-9a-f]{32}", plan["candidate"]) is None
+    if (plan["format"] != 1 or plan["state"] not in {"restoring", "held", "releasing", "released"}
+            or re.fullmatch(r"candidate-[0-9a-f]{32}", plan["candidate"]) is None
             or plan["source_sha256"] != source_sha256
             or plan["snapshot_id"] != manifest["snapshot_id"] or plan["roots"] != manifest["roots"]
             or plan["backup_hash"] != _digest(destination / "backup.json")):
@@ -288,6 +312,10 @@ def restore(destination, workspace, *, source_sha256, key):
             raise BackupError("Este workspace pertence a outra cópia.")
         if plan["state"] == "released":
             return {"state": "released", "snapshot_id": plan["snapshot_id"]}
+        if plan["state"] == "releasing":
+            # Never roll back the decision state or replace its original audit.
+            # The contract may already be active after a lost completion reply.
+            return {"state": "releasing", "snapshot_id": plan["snapshot_id"], "next_command": "release"}
         with file_mutex(roots[0] / ".runtime-migration.lock"):
             _check_targets(plan, roots, complete=plan["state"] == "held")
             for name, metadata in sorted(plan["directories"].items(), key=lambda pair: len(PurePosixPath(pair[0]).parts)):
@@ -344,9 +372,21 @@ def release_hold(workspace, *, source_sha256, key, actor, reason, external_effec
                 if plan["state"] == "held":
                     if current["formats"] != HOLD_FORMATS:
                         raise BackupError("Bloqueio de recuperação inesperadamente ausente.")
-                    decision = {"snapshot_id": plan["snapshot_id"], "actor": actor.strip(), "reason": reason.strip(),
-                                "external_effects_reconciled": True, "at": datetime.now(timezone.utc).isoformat()}
-                    _json(audit_path, decision)
+                    if audit_path.exists():
+                        # The decision can be durable even if saving 'releasing'
+                        # failed. Preserve that first statement on the retry.
+                        decision = json.loads(audit_path.read_text(encoding="utf-8"))
+                        if (not isinstance(decision, dict) or decision.get("snapshot_id") != plan["snapshot_id"]
+                                or decision.get("source_sha256") != source_sha256
+                                or decision.get("external_effects_reconciled") is not True
+                                or not isinstance(decision.get("actor"), str) or not decision["actor"].strip()
+                                or not isinstance(decision.get("reason"), str) or len(decision["reason"].strip()) < 10):
+                            raise BackupError("Existe uma decisão incompatível; preservada para diagnóstico.")
+                    else:
+                        decision = {"snapshot_id": plan["snapshot_id"], "source_sha256": source_sha256,
+                                    "actor": actor.strip(), "reason": reason.strip(),
+                                    "external_effects_reconciled": True, "at": datetime.now(timezone.utc).isoformat()}
+                        _json(audit_path, decision)
                     plan["audit_hash"] = _digest(audit_path)
                     plan["state"] = "releasing"
                     _json(workspace / "restore.json", plan)

@@ -273,14 +273,50 @@ def test_interrupted_explicit_release_retains_audit_and_resumes(tmp_path, monkey
     with pytest.raises(OSError, match="Synthetic release"):
         recovery.release_hold(workspace, **params)
     audit = (workspace / "reconciliation.json").read_bytes()
+    repeated_restore = recovery.restore(destination, workspace, source_sha256=SOURCE, key=KEY)
+    assert repeated_restore["state"] == "releasing"
+    assert repeated_restore["next_command"] == "release"
     if boundary == "decision":
         with pytest.raises(ContractError):
             with RuntimeContract(data, SOURCE).operation():
                 pytest.fail("Release interrupted before activation admitted a writer")
     monkeypatch.setattr(recovery, "_json", record)
+    params["actor"] = "different installer"
+    params["reason"] = "Different statement must not replace the first decision"
     assert recovery.release_hold(workspace, **params)["state"] == "released"
     assert (workspace / "reconciliation.json").read_bytes() == audit
     assert recovery.restore(destination, workspace, source_sha256=SOURCE, key=KEY)["state"] == "released"
+
+
+@pytest.mark.parametrize("change", ["mode", "owner", "content", "extra", "root"])
+def test_manifest_tampering_is_refused_even_with_recomputed_file_hash(tmp_path, change):
+    import hashlib
+    from src.services.runtime_backup import backup, verify, restore, BackupError
+    data, excel, destination, workspace = storage(tmp_path)
+    backup(data, [excel], destination, source_sha256=SOURCE, key=KEY)
+    retire_roots(tmp_path, data, excel)
+    manifest_path = destination / "backup.json"
+    manifest = json.loads(manifest_path.read_text())
+    metadata = manifest["files"]["1/signature.png"]
+    if change == "mode":
+        metadata["mode"] = 0o4755
+    elif change == "owner":
+        metadata["uid"] = metadata["gid"] = 123456
+    elif change == "content":
+        content = b"synthetic substituted content"
+        (destination / "files/1/signature.png").write_bytes(content)
+        metadata["sha256"] = hashlib.sha256(content).hexdigest()
+    elif change == "extra":
+        (destination / "files/1/extra.sh").write_bytes(b"synthetic inert content")
+        manifest["files"]["1/extra.sh"] = {**metadata, "sha256": hashlib.sha256(b"synthetic inert content").hexdigest(), "mode": 0o4755}
+    else:
+        manifest["roots"][1] = str(tmp_path / "unexpected-root")
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(BackupError):
+        verify(destination, key=KEY)
+    with pytest.raises(BackupError):
+        restore(destination, workspace, source_sha256=SOURCE, key=KEY)
+    assert not data.exists() and not excel.exists()
 
 
 def test_real_web_and_worker_factories_refuse_restored_contract(tmp_path, monkeypatch):
@@ -297,3 +333,34 @@ def test_real_web_and_worker_factories_refuse_restored_contract(tmp_path, monkey
     for factory in (create_app, build_queue):
         with pytest.raises(ContractError, match="Formatos persistentes"):
             factory(runtime_contract=contract)
+
+
+def test_decision_survives_failure_before_releasing_plan_is_saved(tmp_path, monkeypatch):
+    import src.services.runtime_backup as recovery
+    data, excel, destination, workspace = storage(tmp_path)
+    recovery.backup(data, [excel], destination, source_sha256=SOURCE, key=KEY)
+    retire_roots(tmp_path, data, excel)
+    recovery.restore(destination, workspace, source_sha256=SOURCE, key=KEY)
+    write_json = recovery._json
+    def fail_after_audit(path, value):
+        write_json(path, value)
+        if path.name == "reconciliation.json":
+            raise OSError("Synthetic stop between audit and plan")
+    monkeypatch.setattr(recovery, "_json", fail_after_audit)
+    with pytest.raises(OSError, match="Synthetic stop"):
+        recovery.release_hold(workspace, source_sha256=SOURCE, key=KEY, actor="first installer",
+                              reason="First synthetic declaration", external_effects_reconciled=True)
+    original = (workspace / "reconciliation.json").read_bytes()
+    monkeypatch.setattr(recovery, "_json", write_json)
+    assert recovery.release_hold(workspace, source_sha256=SOURCE, key=KEY, actor="other installer",
+                                 reason="Different synthetic declaration", external_effects_reconciled=True)["state"] == "released"
+    assert (workspace / "reconciliation.json").read_bytes() == original
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="Bits especiais POSIX exigem ensaio Linux real.")
+def test_backup_refuses_special_permission_bits(tmp_path):
+    from src.services.runtime_backup import backup, BackupError
+    data, excel, destination, _ = storage(tmp_path)
+    (excel / "signature.png").chmod(0o4755)
+    with pytest.raises(BackupError, match="bits especiais"):
+        backup(data, [excel], destination, source_sha256=SOURCE, key=KEY)
