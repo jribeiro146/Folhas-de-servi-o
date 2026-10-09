@@ -14,12 +14,13 @@ from src.services.file_mutex import file_mutex
 class FinalizationService:
     MARKER = ".fs-finalization.json"
 
-    def __init__(self, archive_service, staging_root: Path):
+    def __init__(self, archive_service, staging_root: Path, *, destination_root: Path | None = None):
         self.archive = archive_service
         self.staging_root = Path(staging_root)
+        self.destination_root = destination_root
 
     def prepare(self, source: Path, operation_id: str) -> tuple[Path, Path]:
-        archive_root = archive_module.EXCEL_ARQUIVADAS_DIR
+        archive_root = self.destination_root or archive_module.EXCEL_ARQUIVADAS_DIR
         archive_root.mkdir(parents=True, exist_ok=True)
         with file_mutex(archive_root / ".fs-locks" / "reserve"):
             destination = self.archive._resolve_conflict(archive_root / source.stem)

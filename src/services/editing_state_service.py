@@ -546,7 +546,7 @@ class EditingStateService:
                 continue
             for key, operation in state.get("operations", {}).items():
                 context = operation.get("context") or {}
-                if operation.get("kind") == "send" and operation.get("status") == "complete" and context.get("source_path") and not context.get("source_retired"):
+                if operation.get("kind") in {"send", "cancel"} and operation.get("status") == "complete" and context.get("source_path") and not context.get("source_retired"):
                     yield str(row["document_id"]), key, context
 
     def update_operation_context(

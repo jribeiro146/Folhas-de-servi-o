@@ -40,6 +40,8 @@ LOGGER = logging.getLogger(__name__)
 
 
 def delivery_uncertain(kind: str, result: dict[str, Any]) -> bool:
+    if kind == "remove_active":
+        return result.get("cancellation_started") is True and result.get("cancellation_confirmed") is not True
     if kind == "notify_teams":
         return (result.get("phase") in {"sending_teams", "teams_unknown"}
                 and result.get("accepted") is not True)
@@ -767,11 +769,21 @@ class GraphSyncQueue:
         if kind == "remove_active":
             if self.graph_service is None:
                 raise RuntimeError("O armazenamento Microsoft Graph não está ativo.")
-            removed = self.graph_service.remove_active_name(
-                str(payload["source_name"]),
-                expected_etag=payload.get("expected_etag"),
-            )
-            return {"removed_active": removed}
+            if prior_result.get("cancellation_confirmed") is True:
+                return prior_result
+            if delivery_uncertain(kind, prior_result):
+                raise GraphJobNoLongerActiveError("Cancelamento remoto incerto; não repetir sem reconciliação.")
+            if not isinstance(payload.get("cancellation"), dict) or not payload.get("_commit_guard"):
+                self._checkpoint_result(job_id, {"invalid_state": True, "phase": "cancellation_proof_missing"})
+                raise ValueError("Cancelamento antigo sem prova de identidade/commit; requer reconciliação.")
+            from src.services.graph_cancellation import execute_cancellation
+            # Persist intent before any request. Even a lost reply followed by a
+            # process death cannot turn this into a fresh name-based removal.
+            self._checkpoint_result(job_id, {"phase": "canceling_remote", "cancellation_started": True})
+            outcome = execute_cancellation(self.graph_service, payload["cancellation"])
+            outcome.update(phase="cancellation_confirmed", cancellation_started=True, cancellation_confirmed=True)
+            self._checkpoint_result(job_id, outcome)
+            return outcome
         raise ValueError(f"Tipo de sincronização desconhecido: {kind}")
 
     @staticmethod
@@ -1169,6 +1181,19 @@ class GraphSyncQueue:
         ).fetchall()
         for row in rows:
             payload = self._json_object(row["payload_json"])
+            if row["kind"] == "remove_active":
+                result = self._json_object(row["result_json"])
+                if result.get("cancellation_started") is not True and result.get("cancellation_confirmed") is not True:
+                    # No remote intent was recorded: normal attempt fencing can
+                    # safely reclaim this job; _execute still demands its proof.
+                    continue
+                confirmed = result.get("cancellation_confirmed") is True
+                connection.execute(
+                    "UPDATE graph_sync_jobs SET status=?,retryable=0,next_attempt_at=?,last_error=?,updated_at=? "
+                    "WHERE id=? AND status='running'",
+                    ("complete" if confirmed else "failed", now, None if confirmed else
+                     "Cancelamento interrompido; confirmar destino e identidade antes de recuperar.", now, row["id"]))
+                continue
             if row["kind"] == "notify_teams":
                 result = self._json_object(row["result_json"])
                 accepted = result.get("accepted") is True

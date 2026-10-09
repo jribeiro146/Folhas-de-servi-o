@@ -187,7 +187,8 @@ def test_corrupt_removal_evidence_stops_retry_but_not_other_jobs(tmp_path, inval
     graph.remove_active_name = lambda name, **kw: calls.append(name) or True
     queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", auto_start=False)
     bad = queue.enqueue("upload_active", {"draft_path": str(file)})
-    good = queue.enqueue("remove_active", {"source_name": "other-synthetic.xlsx"})
+    from tests.cancellation_evidence import ready_cancellation
+    good = ready_cancellation(queue, tmp_path, name="other-synthetic.xlsx", on_move=calls.append)
     queue.run_until_idle()
     assert queue.status(bad["id"])["status"] == "failed"
     assert not queue.status(bad["id"])["will_retry"]

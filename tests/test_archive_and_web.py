@@ -102,6 +102,7 @@ def isolated_dirs(monkeypatch):
 
     monkeypatch.setattr(archive_module, "EXCEL_ARQUIVADAS_DIR", archived_dir)
     monkeypatch.setattr(archive_module, "EXCEL_CANCELADAS_DIR", canceled_dir)
+    monkeypatch.setattr(application_module, "EXCEL_CANCELADAS_DIR", canceled_dir)
     try:
         yield {
             "active": active_dir,

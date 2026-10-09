@@ -8,6 +8,7 @@ import pytest
 
 from src.services.file_mutex import file_mutex
 from src.services.graph_sync_queue import GraphSyncQueue, GraphJobNoLongerActiveError
+from tests.cancellation_evidence import ready_cancellation
 
 
 def reclaimed(tmp_path):
@@ -73,7 +74,7 @@ def test_live_worker_excludes_second_worker_even_if_timestamp_looks_expired(tmp_
             return True
     first = GraphSyncQueue(Graph(), tmp_path / "synthetic.sqlite3", auto_start=False)
     second = GraphSyncQueue(Graph(), first.database_path, auto_start=False)
-    job = first.enqueue("remove_active", {"source_name": "synthetic.xlsx"})
+    job = ready_cancellation(first, tmp_path, on_move=first.graph_service.remove_active_name)
     worker = threading.Thread(target=first.run_until_idle)
     worker.start()
     try:
@@ -127,13 +128,13 @@ def test_another_process_lock_prevents_claim_and_release_allows_recovery(tmp_pat
             calls.append(name)
             return True
     queue = GraphSyncQueue(Graph(), tmp_path / "synthetic.sqlite3", auto_start=False)
-    job = queue.enqueue("remove_active", {"source_name": "synthetic.xlsx"})
+    job = ready_cancellation(queue, tmp_path, on_move=calls.append)
     child = context.Process(target=hold_lock_in_process, args=(str(queue._worker_mutex_path), entered, release))
     child.start()
     try:
         assert entered.wait(5)
         queue.run_until_idle()
-        assert queue.status(job["id"])["status"] == "pending"
+        assert queue.status(job["id"])["status"] == "held"
         assert calls == []
     finally:
         if crash:

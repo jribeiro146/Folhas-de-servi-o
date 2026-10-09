@@ -261,6 +261,8 @@ def _create_app(
     editing_state_service = editing_state_service or EditingStateService()
     private_maintenance = MaintenancePrivateService(APP_DATA_DIR / "sadi")
     finalization_service = FinalizationService(archive_service, APP_DATA_DIR / "finalizing")
+    cancellation_service = FinalizationService(archive_service, APP_DATA_DIR / "canceling",
+                                                destination_root=EXCEL_CANCELADAS_DIR)
     graph_refresh_coordinator = graph_refresh_coordinator or (
         GraphRefreshCoordinator(
             graph_service,
@@ -397,7 +399,7 @@ def _create_app(
 
     def retire_committed_source(document_id, operation_id, context):
         source = Path(str(context.get("source_path") or ""))
-        archived = Path(str(context.get("archived_path") or ""))
+        archived = Path(str(context.get("archived_path") or context.get("canceled_path") or ""))
         if not file_service._contained(source) or not finalization_service.owns(archived, f"{document_id}:{operation_id}"):
             return
         if source.exists() and context.get("source_fingerprint") != editing_state_service._fingerprint(source):
@@ -2242,6 +2244,8 @@ def _create_app(
             if path is not None:
                 validate_document_identity(path, metadata)
 
+            if path is not None and graph_sync_queue is not None and graph_sync_queue.has_unfinished_upload(path):
+                raise GraphConflictError("A publicação do rascunho ainda não terminou; resolva-a antes de cancelar.")
             claim = editing_state_service.claim_operation(
                 document_id=document_id,
                 kind="cancel",
@@ -2255,30 +2259,35 @@ def _create_app(
                 return jsonify(claim["operation"]["response"])
             context = dict(claim["operation"].get("context") or {})
             source_path = Path(str(context.get("source_path") or path))
-            graph_active_etag = str(context.get("graph_active_etag") or "") or None
-            graph_active_source_name = str(context.get("graph_active_source_name") or "")
+            remote_cancellation = context.get("remote_cancellation")
             if canceled_path is None:
                 if graph_service is not None:
-                    graph_active_source_name = graph_service.active_source_name(source_path)
-                    graph_active_etag = graph_service.active_source_etag(source_path)
-                canceled_path = archive_service.cancel(source_path)
-                editing_state_service.update_operation_context(
-                    document_id,
-                    idempotency_key,
-                    source_path=str(source_path),
-                    canceled_path=str(canceled_path),
-                    graph_active_etag=graph_active_etag,
-                    graph_active_source_name=graph_active_source_name,
-                )
+                    from src.services.graph_cancellation import prepare_cancellation
+                    remote_cancellation = prepare_cancellation(graph_service, source_path, f"{document_id}:{idempotency_key}")
+                staged, target = cancellation_service.prepare(source_path, f"{document_id}:{idempotency_key}")
+                try:
+                    # Persist target and identity BEFORE publishing. The source
+                    # survives until the editing commit, so either crash is recoverable.
+                    editing_state_service.update_operation_context(
+                        document_id, idempotency_key, source_path=str(source_path), canceled_path=str(target),
+                        source_fingerprint=editing_state_service._fingerprint(source_path),
+                        remote_cancellation=remote_cancellation,
+                    )
+                    canceled_path = cancellation_service.publish(staged, target, f"{document_id}:{idempotency_key}")
+                finally:
+                    cancellation_service.discard(staged)
+            elif not cancellation_service.owns(canceled_path, f"{document_id}:{idempotency_key}"):
+                raise EditingStateError("A cópia cancelada não tem confirmação de propriedade; requer recuperação.")
             graph_removed_active = False
             graph_sync_job = None
             if graph_service is not None and graph_sync_queue is not None:
                 graph_sync_job = graph_sync_queue.enqueue(
                     "remove_active",
                     {
+                        "_commit_guard": {"database": str(editing_state_service.repository.database_path.resolve()),
+                                          "document_id": document_id, "operation_id": idempotency_key},
+                        "cancellation": remote_cancellation,
                         "source_path": str(source_path),
-                        "expected_etag": graph_active_etag,
-                        "source_name": graph_active_source_name,
                     },
                     job_id=f"cancel:{document_id}:{idempotency_key}",
                 )
@@ -2302,6 +2311,11 @@ def _create_app(
                     ),
                 },
             )
+            try:
+                retire_committed_source(document_id, idempotency_key,
+                    editing_state_service.operation(document_id, idempotency_key)["context"])
+            except OSError:
+                app.logger.exception("Cancelamento completo; limpeza da origem será recuperada na próxima abertura.")
             log_event(
                 app.logger,
                 logging.INFO,

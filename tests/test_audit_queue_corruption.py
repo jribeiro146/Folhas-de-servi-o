@@ -4,6 +4,7 @@ import time
 import pytest
 
 from src.services.graph_sync_queue import GraphSyncQueue
+from tests.cancellation_evidence import ready_cancellation
 
 
 @pytest.mark.parametrize("status", ["pending", "running", "failed", "held"])
@@ -21,12 +22,12 @@ def test_corrupt_job_preserves_evidence_and_does_not_block_valid_work(tmp_path, 
             return True
     queue = GraphSyncQueue(Graph(), tmp_path / "synthetic.sqlite3", auto_start=False)
     bad = queue.enqueue("archive_and_mail_local", {"mail": {"to": "synthetic@example.invalid"}})
-    good = queue.enqueue("remove_active", {"source_name": "synthetic.xlsx"})
+    good = ready_cancellation(queue, tmp_path, on_move=calls.append)
     with queue._connect() as db:
         db.execute(f"UPDATE graph_sync_jobs SET {field}=?, status=?, updated_at=?, retryable=1 WHERE id=?",
                    (raw, status, time.time() - 7200, bad["id"]))
     # Initialization, status queries and worker processing must all remain usable.
-    queue = GraphSyncQueue(Graph(), queue.database_path, auto_start=False)
+    queue = GraphSyncQueue(queue.graph_service, queue.database_path, auto_start=False)
     before = queue.status(bad["id"])
     assert before["status"] == "failed" and not before["will_retry"]
     assert before["result"]["invalid_state"]

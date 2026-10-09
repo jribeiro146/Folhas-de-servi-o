@@ -99,7 +99,8 @@ def test_queue_holds_admission_through_external_operation_and_completion(tmp_pat
 
     queue = GraphSyncQueue(Graph(), contract.data_dir / "queue.sqlite3", auto_start=False,
                            runtime_contract=contract)
-    job = queue.enqueue("remove_active", {"source_name": "synthetic.xlsx"})
+    from tests.cancellation_evidence import ready_cancellation
+    job = ready_cancellation(queue, tmp_path, on_move=queue.graph_service.remove_active_name)
     assert queue.run_until_idle()
     assert queue.status(job["id"])["status"] == "complete"
     assert calls == ["synthetic.xlsx"]
@@ -332,7 +333,8 @@ def test_async_queue_retries_transient_busy(tmp_path, monkeypatch):
 
     queue = GraphSyncQueue(Graph(), contract.data_dir / "queue.sqlite3", auto_start=False,
                            runtime_contract=contract)
-    job = queue.enqueue("remove_active", {"source_name": "synthetic.xlsx"})
+    from tests.cancellation_evidence import ready_cancellation
+    job = ready_cancellation(queue, tmp_path)
     failures = _busy_once(monkeypatch, contract, thread_name="graph-sync-outbox")
     queue.start()
     assert queue.wait(job["id"], timeout=3)["status"] == "complete"
