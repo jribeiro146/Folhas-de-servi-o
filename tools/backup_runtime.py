@@ -12,7 +12,7 @@ from src.services.release_identity import get_release_info, ReleaseIdentityError
 from src.services.runtime_contract import ContractError
 from src.services.file_mutex import FileMutexBusy
 from src.services.runtime_migration import MigrationError, _local
-from src.services.runtime_backup import backup, verify, restore, release_hold, BackupError, _manifest
+from src.services.runtime_backup import backup, verify, restore, release_hold, BackupError, _manifest, _read_plan
 
 
 def main(argv=None):
@@ -49,7 +49,7 @@ def main(argv=None):
         key = key_text.encode("utf-8")
         workspace = _local(args.workspace) if hasattr(args, "workspace") else None
         if args.command == "release":
-            plan = json.loads((workspace / "restore.json").read_text(encoding="utf-8"))
+            plan = _read_plan(workspace, key)
             destination = _local(plan["backup"])
         else:
             destination = _local(args.backup)

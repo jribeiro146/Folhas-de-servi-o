@@ -232,6 +232,14 @@ def test_backup_cli_requires_verified_artifact_and_explicit_offline_flags(tmp_pa
     retire_roots(tmp_path, data, excel)
     assert cli.main(["restore", "--backup", str(destination), "--workspace", str(workspace),
                      "--key-file", str(keyfile), "--writers-stopped"]) == 0
+    plan_path = workspace / "restore.json"
+    forged = json.loads(plan_path.read_text(encoding="utf-8"))
+    forged["backup"] = str(tmp_path / "unexpected-backup")
+    plan_path.write_text(json.dumps(forged), encoding="utf-8")
+    assert cli.main(["release", "--workspace", str(workspace), "--key-file", str(keyfile),
+                     "--writers-stopped", "--external-effects-reconciled", "--actor", "installer",
+                     "--reason", "Synthetic reconciliation"]) == 2
+    assert RuntimeContract(data, SOURCE).inspect()["formats"]["restore_hold"] == 1
     assert KEY.decode() not in str(capsys.readouterr())
 
 
@@ -335,7 +343,8 @@ def test_real_web_and_worker_factories_refuse_restored_contract(tmp_path, monkey
             factory(runtime_contract=contract)
 
 
-def test_decision_survives_failure_before_releasing_plan_is_saved(tmp_path, monkeypatch):
+@pytest.mark.parametrize("tamper", [False, True])
+def test_decision_survives_failure_before_releasing_plan_is_saved(tmp_path, monkeypatch, tamper):
     import src.services.runtime_backup as recovery
     data, excel, destination, workspace = storage(tmp_path)
     recovery.backup(data, [excel], destination, source_sha256=SOURCE, key=KEY)
@@ -352,6 +361,15 @@ def test_decision_survives_failure_before_releasing_plan_is_saved(tmp_path, monk
                               reason="First synthetic declaration", external_effects_reconciled=True)
     original = (workspace / "reconciliation.json").read_bytes()
     monkeypatch.setattr(recovery, "_json", write_json)
+    if tamper:
+        forged = json.loads(original)
+        forged["actor"] = "forged actor"
+        (workspace / "reconciliation.json").write_text(json.dumps(forged), encoding="utf-8")
+        with pytest.raises(recovery.BackupError):
+            recovery.release_hold(workspace, source_sha256=SOURCE, key=KEY, actor="other installer",
+                                  reason="Different synthetic declaration", external_effects_reconciled=True)
+        assert RuntimeContract(data, SOURCE).inspect()["formats"]["restore_hold"] == 1
+        return
     assert recovery.release_hold(workspace, source_sha256=SOURCE, key=KEY, actor="other installer",
                                  reason="Different synthetic declaration", external_effects_reconciled=True)["state"] == "released"
     assert (workspace / "reconciliation.json").read_bytes() == original
@@ -364,3 +382,71 @@ def test_backup_refuses_special_permission_bits(tmp_path):
     (excel / "signature.png").chmod(0o4755)
     with pytest.raises(BackupError, match="bits especiais"):
         backup(data, [excel], destination, source_sha256=SOURCE, key=KEY)
+
+
+@pytest.mark.parametrize("change", ["queue", "contract", "mode", "directory", "state"])
+def test_interrupted_restore_refuses_workspace_forgery(tmp_path, monkeypatch, change):
+    import hashlib
+    import src.services.runtime_backup as recovery
+    from src.services.runtime_migration import _store_digest
+    data, excel, destination, workspace = storage(tmp_path)
+    recovery.backup(data, [excel], destination, source_sha256=SOURCE, key=KEY)
+    retire_roots(tmp_path, data, excel)
+    publish = recovery._publish_recovery
+    boundary = "runtime-contract.sqlite3" if change == "contract" else "graph-sync.sqlite3"
+    def interrupt(source, target, metadata, snapshot_id):
+        if target.name == boundary:
+            raise OSError("Synthetic interruption before publication")
+        publish(source, target, metadata, snapshot_id)
+    monkeypatch.setattr(recovery, "_publish_recovery", interrupt)
+    with pytest.raises(OSError, match="Synthetic interruption"):
+        recovery.restore(destination, workspace, source_sha256=SOURCE, key=KEY)
+    monkeypatch.setattr(recovery, "_publish_recovery", publish)
+    plan_path = workspace / "restore.json"
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    if change in {"queue", "contract"}:
+        name = "graph-sync.sqlite3" if change == "queue" else "runtime-contract.sqlite3"
+        candidate = workspace / plan["candidate"] / name
+        with closing(sqlite3.connect(candidate)) as db:
+            if change == "queue":
+                db.execute("UPDATE graph_sync_jobs SET status='pending',retryable=1,result_json='{}' WHERE id='mail'")
+            else:
+                db.execute("UPDATE state_contract SET formats_json=?", (json.dumps(SUPPORTED_FORMATS),))
+            db.commit()
+        plan["files"]["0/" + name]["sha256"] = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        if change == "queue":
+            plan["files"]["0/" + name]["logical_sha256"] = _store_digest(candidate)
+    elif change == "mode":
+        metadata = plan["files"]["1/signature.png"]
+        # Windows already reports UID=GID=0/mode0666; ensure this is a forgery.
+        metadata.update(uid=metadata["uid"] + 1, gid=metadata["gid"] + 1, mode=0o666)
+    elif change == "directory":
+        plan["directories"]["1/unexpected"] = dict(plan["directories"]["1"])
+    else:
+        plan["state"] = "released"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    before = {str(p.relative_to(data)): p.read_bytes() for p in data.rglob("*") if p.is_file()}
+    with pytest.raises(recovery.BackupError):
+        recovery.restore(destination, workspace, source_sha256=SOURCE, key=KEY)
+    with pytest.raises(recovery.BackupError):
+        recovery.release_hold(workspace, source_sha256=SOURCE, key=KEY, actor="installer",
+                              reason="Synthetic attestation cannot authorize forged state", external_effects_reconciled=True)
+    assert {str(p.relative_to(data)): p.read_bytes() for p in data.rglob("*") if p.is_file()} == before
+    assert not (data / "graph-sync.sqlite3").exists()
+
+
+@pytest.mark.parametrize("candidate_name", ["runtime-contract.sqlite3", "graph-sync.sqlite3"])
+def test_candidate_tampering_is_refused_even_when_plan_is_intact(tmp_path, candidate_name):
+    import src.services.runtime_backup as recovery
+    data, excel, destination, workspace = storage(tmp_path)
+    recovery.backup(data, [excel], destination, source_sha256=SOURCE, key=KEY)
+    retire_roots(tmp_path, data, excel)
+    recovery.restore(destination, workspace, source_sha256=SOURCE, key=KEY)
+    plan = json.loads((workspace / "restore.json").read_text(encoding="utf-8"))
+    (workspace / plan["candidate"] / candidate_name).write_bytes(b"synthetic altered candidate")
+    with pytest.raises(recovery.BackupError, match="Candidato"):
+        recovery.restore(destination, workspace, source_sha256=SOURCE, key=KEY)
+    with pytest.raises(recovery.BackupError, match="Candidato"):
+        recovery.release_hold(workspace, source_sha256=SOURCE, key=KEY, actor="installer",
+                              reason="Synthetic reconciliation", external_effects_reconciled=True)
+    assert RuntimeContract(data, SOURCE).inspect()["formats"]["restore_hold"] == 1

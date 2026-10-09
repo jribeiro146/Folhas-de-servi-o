@@ -36,12 +36,34 @@ def _key_check(key, snapshot_id):
     return hmac.new(key, ("runtime-backup-v1:" + snapshot_id).encode(), hashlib.sha256).hexdigest()
 
 
-def _manifest_mac(manifest, key):
-    # Authenticate paths, hashes AND privileged metadata; checksums alone allow
-    # someone who can alter a backup to substitute a root-owned executable.
-    content = {name: value for name, value in manifest.items() if name != "manifest_hmac"}
+def _document_mac(document, key, field, domain):
+    content = {name: value for name, value in document.items() if name != field}
     canonical = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hmac.new(key, b"runtime-backup-manifest-v1\n" + canonical, hashlib.sha256).hexdigest()
+    return hmac.new(key, domain + canonical, hashlib.sha256).hexdigest()
+
+
+def _authenticate(document, key, field, domain):
+    if (not isinstance(document, dict) or not isinstance(document.get(field), str)
+            or not hmac.compare_digest(document[field], _document_mac(document, key, field, domain))):
+        raise BackupError("Autenticidade do documento de recuperação não confirmada; operação recusada.")
+
+
+def _manifest_mac(manifest, key):
+    # Paths, hashes AND privileged attributes must share the same trust boundary.
+    return _document_mac(manifest, key, "manifest_hmac", b"runtime-backup-manifest-v1\n")
+
+
+def _save_plan(workspace, plan, key):
+    plan["plan_hmac"] = _document_mac(plan, key, "plan_hmac", b"runtime-restore-plan-v1\n")
+    _json(workspace / "restore.json", plan)
+
+
+def _read_plan(workspace, key):
+    plan = json.loads((workspace / "restore.json").read_text(encoding="utf-8"))
+    # Authenticate BEFORE using any path, state, metadata or candidate hash from
+    # the workspace. Otherwise altering the plan could undo the queue/global hold.
+    _authenticate(plan, key, "plan_hmac", b"runtime-restore-plan-v1\n")
+    return plan
 
 
 def _validate_access(metadata):
@@ -220,7 +242,7 @@ def _publish_recovery(source, target, metadata, snapshot_id):
     os.replace(temporary, target)
 
 
-def _prepare_restore(destination, workspace, manifest, source_sha256):
+def _prepare_restore(destination, workspace, manifest, source_sha256, key):
     roots = list(map(_local, manifest["roots"]))
     if any(root.exists() and any(root.iterdir()) for root in roots):
         raise BackupError("Restauro só para raízes vazias; preserve os dados existentes noutro local.")
@@ -252,7 +274,7 @@ def _prepare_restore(destination, workspace, manifest, source_sha256):
             "backup": str(destination), "backup_hash": _digest(destination / "backup.json"),
             "source_sha256": source_sha256, "candidate": candidates.name,
             "files": files, "directories": manifest["directories"], "roots": manifest["roots"]}
-    _json(workspace / "restore.json", plan)
+    _save_plan(workspace, plan, key)
     return plan
 
 
@@ -284,7 +306,7 @@ def _check_targets(plan, roots, *, skip_contract=False, complete=False):
 
 
 def _load_plan(workspace, source_sha256, key):
-    plan = json.loads((workspace / "restore.json").read_text(encoding="utf-8"))
+    plan = _read_plan(workspace, key)
     destination = _local(plan["backup"])
     manifest = _manifest(destination, key)
     roots = list(map(_local, plan["roots"]))
@@ -295,6 +317,14 @@ def _load_plan(workspace, source_sha256, key):
             or plan["snapshot_id"] != manifest["snapshot_id"] or plan["roots"] != manifest["roots"]
             or plan["backup_hash"] != _digest(destination / "backup.json")):
         raise BackupError("Plano, cópia e versão não correspondem; usar o mesmo workspace/artefacto.")
+    # Candidate bytes are bound by the authenticated plan, not by a hash supplied
+    # alongside an unauthenticated replacement database. Check before any use,
+    # including the expected contract epoch during release of an existing hold.
+    for name in (CONTRACT_FILE, STORES["queue"]):
+        if "0/" + name in plan["files"]:
+            candidate = _local(workspace / plan["candidate"] / name)
+            if _digest(candidate) != plan["files"]["0/" + name]["sha256"]:
+                raise BackupError("Candidato de recuperação alterado; operação recusada.")
     return plan, destination, roots
 
 
@@ -306,7 +336,7 @@ def restore(destination, workspace, *, source_sha256, key):
     workspace.mkdir(mode=0o700, exist_ok=True)
     with file_mutex(workspace / ".lock"):
         if not (workspace / "restore.json").exists():
-            _prepare_restore(destination, workspace, manifest, source_sha256)
+            _prepare_restore(destination, workspace, manifest, source_sha256, key)
         plan, actual_backup, roots = _load_plan(workspace, source_sha256, key)
         if destination != actual_backup:
             raise BackupError("Este workspace pertence a outra cópia.")
@@ -338,7 +368,7 @@ def restore(destination, workspace, *, source_sha256, key):
             for name, metadata in plan["directories"].items():
                 _access(_entry(name, roots), metadata)
             plan["state"] = "held"
-            _json(workspace / "restore.json", plan)
+            _save_plan(workspace, plan, key)
     return {"state": "held", "snapshot_id": plan["snapshot_id"], "reconciliation_required": True}
 
 
@@ -376,6 +406,7 @@ def release_hold(workspace, *, source_sha256, key, actor, reason, external_effec
                         # The decision can be durable even if saving 'releasing'
                         # failed. Preserve that first statement on the retry.
                         decision = json.loads(audit_path.read_text(encoding="utf-8"))
+                        _authenticate(decision, key, "decision_hmac", b"runtime-restore-decision-v1\n")
                         if (not isinstance(decision, dict) or decision.get("snapshot_id") != plan["snapshot_id"]
                                 or decision.get("source_sha256") != source_sha256
                                 or decision.get("external_effects_reconciled") is not True
@@ -386,10 +417,11 @@ def release_hold(workspace, *, source_sha256, key, actor, reason, external_effec
                         decision = {"snapshot_id": plan["snapshot_id"], "source_sha256": source_sha256,
                                     "actor": actor.strip(), "reason": reason.strip(),
                                     "external_effects_reconciled": True, "at": datetime.now(timezone.utc).isoformat()}
+                        decision["decision_hmac"] = _document_mac(decision, key, "decision_hmac", b"runtime-restore-decision-v1\n")
                         _json(audit_path, decision)
                     plan["audit_hash"] = _digest(audit_path)
                     plan["state"] = "releasing"
-                    _json(workspace / "restore.json", plan)
+                    _save_plan(workspace, plan, key)
                 if _digest(audit_path) != plan["audit_hash"]:
                     raise BackupError("Decisão de reconciliação alterada.")
                 _current_stores(roots[0])
@@ -397,5 +429,5 @@ def release_hold(workspace, *, source_sha256, key, actor, reason, external_effec
                            (json.dumps(SUPPORTED_FORMATS, sort_keys=True),))
                 db.commit()
             plan["state"] = "released"
-            _json(workspace / "restore.json", plan)
+            _save_plan(workspace, plan, key)
     return {"state": "released", "snapshot_id": plan["snapshot_id"]}

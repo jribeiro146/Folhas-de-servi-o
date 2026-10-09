@@ -92,6 +92,14 @@ python -B tools/backup_runtime.py restore \
    contém o plano e os candidatos que permitem a retoma. Se a interrupção foi
    durante `release`, repetir `release`. Repetir `restore` nessa fase devolve
    `state=releasing`, `next_command=release`, sem alterar dados nem auditoria.
+
+   O plano é autenticado por HMAC com domínio distinto do manifesto, antes de
+   usar caminhos, estado, modos ou hashes. Os candidatos de contrato/fila são
+   conferidos contra os hashes autenticados antes de publicar ou libertar.
+   A decisão tem também HMAC próprio, incluindo quando sobreviveu a uma falha
+   anterior à gravação do plano. Alterar JSON ou recalcular hashes no workspace
+   não autoriza remover o bloqueio nem reativar trabalhos. Não editar esses
+   ficheiros manualmente; conservar a evidência para diagnóstico se forem recusados.
 5. O responsável compara os efeitos externos entre a data da cópia e a paragem:
    emails aceites, Teams, movimentos/cancelamentos Graph e documentos finalizados.
    Abrange **documentos e trabalhos criados depois da cópia e ausentes nela**.
