@@ -23,7 +23,11 @@ resultado da fila; o nome original e a prova ficam no contexto da operação.
   Falhas de preparação/publicação/commit mantêm a origem e podem ser retomadas
   com a mesma chave da operação, sem criar uma segunda cópia concluída.
 - A fila nasce em `held` e só pode atuar depois do commit de edição confirmado.
-  Uma resposta ambígua depois da intenção persistida exige reconciliação; não
+  Leituras/preparação remotas que falhem antes do PATCH mantêm a repetição
+  normal; conflitos conhecidos são terminais e permitem revisão/repetição
+  manual. Respostas 409/412 ao PATCH são registadas como recusas definidas.
+  A intenção só é persistida imediatamente antes desse PATCH. Uma resposta
+  ambígua depois da intenção persistida exige reconciliação; não
   há repetição automática nem através do botão de repetição do administrador.
 - Trabalhos antigos `remove_active` sem a nova prova são recusados e preservados
   para diagnóstico. A migração não pode inventar essa prova (ver M06).
@@ -57,6 +61,9 @@ a criação da aplicação configura serviços e não é uma ação apenas de le
 3. Se a origem ficou bloqueada pelo sistema operativo depois do commit, a próxima
    listagem/abertura recupera a limpeza. A fingerprint e o marcador impedem retirar
    uma origem alterada ou sem cópia pertencente à operação.
+   Cancelamentos do formato antigo, sem fingerprint/marcador, não entram neste
+   ciclo: a sua análise pertence à migração/recuperação offline, sem transações
+   inúteis repetidas em cada listagem.
 4. Em resultado remoto incerto, inspecionar o item pelo `source_id` e o destino
    determinístico registado, sem apagar ou reenviar nada. Se estiver no destino,
    o conteúdo remoto foi preservado; se ainda estiver em Activas ou noutro local,

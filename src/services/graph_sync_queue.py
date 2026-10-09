@@ -20,7 +20,7 @@ from src.services.graph_mail_service import (
     GraphMailService, GraphMailDelivery, GraphMailError, GraphMailUnknownResultError,
     MAX_SIMPLE_REQUEST_BYTES,
 )
-from src.services.graph_storage_service import GraphStorageService
+from src.services.graph_storage_service import GraphStorageService, GraphConflictError
 from src.services.local_pdf_service import LocalPdfService
 from src.services.teams_notification_service import (
     TeamsNotificationService, TeamsNotificationConfigurationError,
@@ -777,10 +777,16 @@ class GraphSyncQueue:
                 self._checkpoint_result(job_id, {"invalid_state": True, "phase": "cancellation_proof_missing"})
                 raise ValueError("Cancelamento antigo sem prova de identidade/commit; requer reconciliação.")
             from src.services.graph_cancellation import execute_cancellation
-            # Persist intent before any request. Even a lost reply followed by a
-            # process death cannot turn this into a fresh name-based removal.
-            self._checkpoint_result(job_id, {"phase": "canceling_remote", "cancellation_started": True})
-            outcome = execute_cancellation(self.graph_service, payload["cancellation"])
+            # Preflight failures remain retryable. Only an attempted PATCH has
+            # an uncertain effect; a definite 409/412 is a recorded refusal.
+            def before_write():
+                self._checkpoint_result(job_id, {"phase": "canceling_remote", "cancellation_started": True})
+            try:
+                outcome = execute_cancellation(self.graph_service, payload["cancellation"], before_write=before_write)
+            except GraphConflictError as exc:
+                if exc.status_code in {409, 412}:
+                    self._checkpoint_result(job_id, {"phase": "cancellation_rejected", "cancellation_started": False})
+                raise
             outcome.update(phase="cancellation_confirmed", cancellation_started=True, cancellation_confirmed=True)
             self._checkpoint_result(job_id, outcome)
             return outcome

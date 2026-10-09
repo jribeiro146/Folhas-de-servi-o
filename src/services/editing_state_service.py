@@ -546,6 +546,11 @@ class EditingStateService:
                 continue
             for key, operation in state.get("operations", {}).items():
                 context = operation.get("context") or {}
+                # Legacy cancellations already moved their source and have no
+                # ownership marker. Do not schedule unresolvable cleanup on
+                # every list request; recovery here belongs to the new format.
+                if operation.get("kind") == "cancel" and not context.get("source_fingerprint"):
+                    continue
                 if operation.get("kind") in {"send", "cancel"} and operation.get("status") == "complete" and context.get("source_path") and not context.get("source_retired"):
                     yield str(row["document_id"]), key, context
 

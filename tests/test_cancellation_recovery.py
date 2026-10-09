@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from src.services.graph_storage_service import GraphConfig, GraphStorageService, GraphConflictError
+from src.services.graph_storage_service import GraphStorageError
 from src.services.graph_sync_queue import GraphSyncQueue
 from tests.editing_evidence import committed_editing_repository
 
@@ -159,6 +160,67 @@ def test_lost_response_blocks_manual_and_automatic_repetition(tmp_path):
     assert len(graph.writes) == 1 and graph.item["id"] == "replacement"
 
 
+@pytest.mark.parametrize("boundary", ["lookup", "children", "destination"])
+def test_failure_before_patch_remains_retryable(tmp_path, boundary):
+    graph = CancellationGraph()
+    _, payload = guarded_payload(tmp_path, plan(graph, source_with_receipts(tmp_path)))
+    method = {"lookup": "_get_item_by_path", "children": "_list_children", "destination": "ensure_folder_path"}[boundary]
+    original = getattr(graph, method)
+    failed = []
+    def fail_once(*args, **kwargs):
+        if not failed:
+            failed.append(True)
+            raise GraphStorageError("Synthetic transient preflight failure")
+        return original(*args, **kwargs)
+    setattr(graph, method, fail_once)
+    queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", auto_start=False)
+    job = queue.enqueue("remove_active", payload)
+    queue.run_until_idle()
+    result = queue.status(job["id"])
+    assert result["status"] == "failed" and result["will_retry"]
+    assert not result["reconciliation_required"] and not graph.writes
+    with queue._connect() as connection:
+        connection.execute("UPDATE graph_sync_jobs SET next_attempt_at=0 WHERE id=?", (job["id"],))
+    queue.run_until_idle()
+    assert queue.status(job["id"])["status"] == "complete" and len(graph.writes) == 1
+
+
+@pytest.mark.parametrize("status_code", [409, 412])
+def test_explicit_patch_rejection_is_terminal_but_not_uncertain(tmp_path, status_code):
+    graph = CancellationGraph()
+    _, payload = guarded_payload(tmp_path, plan(graph, source_with_receipts(tmp_path)))
+    calls = []
+    def rejected(*args, **kwargs):
+        calls.append(args)
+        raise GraphConflictError("Synthetic explicit refusal", status_code=status_code)
+    graph._graph_bytes = rejected
+    queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", auto_start=False)
+    job = queue.enqueue("remove_active", payload)
+    queue.run_until_idle()
+    result = queue.status(job["id"])
+    assert result["status"] == "failed" and not result["will_retry"]
+    assert not result["reconciliation_required"]
+    assert result["result"]["phase"] == "cancellation_rejected"
+    queue.run_until_idle()
+    assert len(calls) == 1
+
+
+def test_legacy_cancellation_is_not_scheduled_for_new_cleanup(tmp_path):
+    from src.services.editing_state_service import EditingStateService
+    repository = committed_editing_repository(tmp_path)
+    with repository.transaction("document", lambda: {}) as state:
+        operation = state["operations"]["finalize"]
+        operation["kind"] = "cancel"
+        operation["context"] = {"source_path": str(tmp_path / "absent.xlsx"), "canceled_path": str(tmp_path / "old.xlsx")}
+    editing = EditingStateService(tmp_path / "editing")
+    with repository._connect() as connection:
+        before = connection.execute("SELECT state_json FROM editing_states WHERE document_id='document'").fetchone()[0]
+    assert list(editing.finalizations_to_retire()) == []
+    assert list(editing.finalizations_to_retire()) == []
+    with repository._connect() as connection:
+        assert connection.execute("SELECT state_json FROM editing_states WHERE document_id='document'").fetchone()[0] == before
+
+
 @pytest.mark.parametrize("confirmed", [False, True])
 def test_restart_after_remote_checkpoint_never_replays_move(tmp_path, confirmed):
     graph = CancellationGraph()
@@ -283,4 +345,58 @@ def test_unfinished_upload_prevents_cancel_and_preserves_all_data(cancellation_h
     assert response.status_code == 409 and source.exists()
     assert editing.operation(body["_edit"]["document_id"], "cancel-1") is None
     assert queue.status(upload["id"])["status"] == "pending"
+    assert not list((root / "Canceladas").glob("*"))
+
+
+def published_http_graph(queue, source, client, body):
+    graph = queue.graph_service
+    graph.item["name"] = source.parent.name
+    graph.children[0]["name"] = source.name
+    graph._get_item_by_path = lambda path: (graph.item if path == "Activas/" + source.parent.name else
+        {"id": "canceled-root", "folder": {}} if path == "Arquivadas/Canceladas" else None)
+    GraphStorageService._write_bundle_meta(source.parent, graph.item)
+    GraphStorageService._write_item_meta(GraphStorageService._item_meta_path(source), graph.children[0])
+    # This fixture adds receipts to an unassociated local draft. Obtain the
+    # Graph-derived identity and current revision through the public lease API.
+    lease = client.post(f"/api/file/{source.stem}/lease", json={"client_id": "cancel-tab"})
+    assert lease.status_code == 200, lease.json
+    current = lease.json["editing"]
+    body["_edit"].update(document_id=current["document_id"], base_revision=current["revision"],
+                         lease_token=current["lease"]["token"])
+    return graph
+
+
+def test_published_http_cancel_persists_proof_before_copy_and_queue(cancellation_http, monkeypatch):
+    from src.services.finalization_service import FinalizationService
+    client, editing, queue, source, body, _ = cancellation_http
+    graph = published_http_graph(queue, source, client, body)
+    original = FinalizationService.publish
+    checks = []
+    def checked_publish(self, staged, target, operation_id):
+        context = editing.operation(body["_edit"]["document_id"], "cancel-1")["context"]
+        assert context["remote_cancellation"]["source_id"] == "original"
+        assert context["remote_cancellation"]["children"][0]["id"] == "book"
+        assert context["canceled_path"] == str(target)
+        checks.append("proof-before-copy")
+        return original(self, staged, target, operation_id)
+    monkeypatch.setattr(FinalizationService, "publish", checked_publish)
+    response = client.post(f"/api/file/{source.stem}/cancel", json=body)
+    assert response.status_code == 200, response.json
+    job = queue.status(response.json["graph_job_id"])
+    assert job["status"] == "held" and not graph.writes
+    assert job["payload"]["cancellation"]["source_id"] == "original"
+    queue.run_until_idle()
+    assert queue.status(job["id"])["status"] == "complete"
+    assert checks == ["proof-before-copy"] and len(graph.writes) == 1
+
+
+def test_unmanaged_remote_photo_without_receipt_prevents_http_cancel(cancellation_http):
+    client, editing, queue, source, body, root = cancellation_http
+    graph = published_http_graph(queue, source, client, body)
+    graph.children.append({"id": "photos", "name": "fotografias", "eTag": "p1", "folder": {}})
+    graph._list_children = lambda item_id: (graph.children if item_id == "original" else
+        [{"id": "other-photo", "name": "foreign.jpg", "eTag": "v1", "file": {}}])
+    response = client.post(f"/api/file/{source.stem}/cancel", json=body)
+    assert response.status_code == 409 and response.json["code"] == "graph_conflict"
+    assert source.exists() and not graph.writes
     assert not list((root / "Canceladas").glob("*"))
