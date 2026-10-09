@@ -7,6 +7,7 @@ snapshot; publication is resumable and activates the runtime contract last.
 from contextlib import ExitStack, closing, contextmanager
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -223,6 +224,39 @@ def _convert_editing(snapshot, target):
     return counts
 
 
+def _legacy_evidence(kind, raw):
+    """Expose readable evidence; preserve malformed bytes in the audit field.
+
+    Mirror the queue's type checks without importing application configuration
+    or transports. Corruption does not prove the absence of an external effect:
+    require reconciliation without inventing receipts or remote intentions.
+    """
+    try:
+        result = json.loads(raw or "{}")
+        if not isinstance(result, dict):
+            raise ValueError("Expected result object")
+        if "phase" in result and not isinstance(result["phase"], str):
+            raise ValueError("Invalid phase")
+        if result.get("mail") is not None and not isinstance(result["mail"], dict):
+            raise ValueError("Invalid mail receipt")
+        receipt = result.get("mail") or {}
+        if "accepted" in receipt and type(receipt["accepted"]) is not bool:
+            raise ValueError("Invalid acceptance")
+        if kind == "notify_teams":
+            if "accepted" in result and type(result["accepted"]) is not bool:
+                raise ValueError("Invalid Teams acceptance")
+            deadline = result.get("retry_not_before")
+            if deadline is not None and (type(deadline) not in (int, float)
+                                         or deadline < 0 or not math.isfinite(deadline)):
+                raise ValueError("Invalid Teams deadline")
+        for field in ("cancellation_started", "cancellation_confirmed"):
+            if field in result and type(result[field]) is not bool:
+                raise ValueError("Invalid cancellation evidence")
+        return result
+    except (TypeError, ValueError, OverflowError):
+        return {"migration_uncertain": True}
+
+
 def _convert_queue(source, target):
     with closing(sqlite3.connect(target)) as writer:
         initialize_store(writer, "queue")
@@ -239,12 +273,7 @@ def _convert_queue(source, target):
                     # Legacy versions have weaker remote-effect evidence. Keep
                     # the raw receipt, payload and attempt count; no implicit retry
                     # or admin button can turn missing evidence into permission.
-                    try:
-                        evidence = json.loads(original["result_json"] or "{}")
-                        if not isinstance(evidence, dict):
-                            evidence = {}
-                    except (TypeError, ValueError):
-                        evidence = {}
+                    evidence = _legacy_evidence(row["kind"], original["result_json"])
                     # Keep uncertainty visible in the API/monitor, as well as
                     # blocking replay. Hiding the old phase could suggest to a
                     # technician that a manual resend outside the app is safe.

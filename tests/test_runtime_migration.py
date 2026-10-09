@@ -497,3 +497,42 @@ def test_legacy_cancel_and_teams_keep_visible_uncertainty(tmp_path, kind, eviden
     assert result["result"]["previous_result_json"] == raw
     with pytest.raises(ValueError):
         queue.retry("uncertain")
+
+
+@pytest.mark.parametrize("kind,evidence", [
+    ("upload_active", {"phase": ["sending_mail"]}),
+    ("archive_and_mail_local", {"phase": {}, "mail": "accepted"}),
+    ("notify_teams", {"accepted": "yes", "retry_not_before": -1}),
+    ("notify_teams", {"retry_not_before": float("inf")}),
+    ("archive_and_mail_local", {"phase": "sending_mail", "mail": {"accepted": "yes"}}),
+    ("remove_active", {"cancellation_started": "yes"}),
+])
+def test_corrupt_legacy_results_stay_readable_and_block_repetition(tmp_path, kind, evidence):
+    from src.services.runtime_migration import prepare, apply
+    from src.services.graph_sync_queue import GraphSyncQueue
+    from tests.legacy_sqlite_format_v2 import SCHEMAS, IDENTITIES
+    data = tmp_path / "data"
+    data.mkdir()
+    draft = tmp_path / "synthetic.xlsx"
+    raw = json.dumps(evidence)
+    with sqlite3.connect(data / "graph-sync.sqlite3") as db:
+        for statement in SCHEMAS["queue"]:
+            db.execute(statement)
+        db.execute(f"PRAGMA application_id={IDENTITIES['queue']}")
+        db.execute("PRAGMA user_version=2")
+        db.execute("INSERT INTO graph_sync_jobs(id,kind,payload_json,status,attempts,next_attempt_at,created_at,updated_at,result_json) VALUES(?,?,?,?,?,?,?,?,?)",
+                   ("corrupt", kind, json.dumps({"draft_path": str(draft)}), "running", 1, 0, 1, 1, raw))
+    db.close()
+    work = tmp_path / "work"
+    prepare(data, [], work, source_sha256="a" * 64)
+    apply(work, source_sha256="a" * 64)
+    queue = GraphSyncQueue(None, data / "graph-sync.sqlite3", auto_start=False)
+    queue.run_until_idle()
+    result = queue.status("corrupt")
+    assert result["reconciliation_required"] is True and not result["will_retry"]
+    assert result["result"]["previous_result_json"] == raw
+    with pytest.raises(ValueError):
+        queue.retry("corrupt")
+    if kind == "upload_active":
+        assert queue.unfinished_upload(draft)["status"] == "failed"
+        assert queue.has_unfinished_upload(draft)

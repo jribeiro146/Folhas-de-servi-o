@@ -317,6 +317,44 @@ def test_real_queue_blocks_finalization_until_draft_upload_finishes(production_s
     assert [kind for kind, _ in queue.graph_service.calls] == ["upload_active", "upload_archive", "remove_active"]
 
 
+def test_migrated_corrupt_upload_returns_publication_conflict_not_server_error(production_sadi):
+    import sqlite3
+    import json
+    from contextlib import closing
+    from src.services.runtime_migration import prepare, apply
+    from tests.legacy_sqlite_format_v2 import SCHEMAS, IDENTITIES
+    app, client, draft, _edits, root = production_sadi
+    queue = app.extensions["test_graph_queue"]
+    legacy = root / "legacy-data"
+    legacy.mkdir()
+    with sqlite3.connect(legacy / "graph-sync.sqlite3") as db:
+        for statement in SCHEMAS["queue"]:
+            db.execute(statement)
+        db.execute(f"PRAGMA application_id={IDENTITIES['queue']}")
+        db.execute("PRAGMA user_version=2")
+        db.execute("INSERT INTO graph_sync_jobs(id,kind,payload_json,status,attempts,next_attempt_at,created_at,updated_at,result_json) VALUES(?,?,?,?,?,?,?,?,?)",
+                   ("legacy-corrupt", "upload_active", json.dumps({"draft_path": str(draft)}),
+                    "running", 1, 0, 1, 1, '{"phase":["broken"]}'))
+    db.close()
+    work = root / "migration"
+    prepare(legacy, [draft.parent], work, source_sha256="a" * 64)
+    apply(work, source_sha256="a" * 64)
+    with closing(sqlite3.connect(legacy / "graph-sync.sqlite3")) as db:
+        migrated = db.execute("SELECT * FROM graph_sync_jobs").fetchone()
+    # Feed the real migrated row into the fixture's operational queue boundary.
+    with closing(queue._connect()) as db:
+        db.execute("INSERT INTO graph_sync_jobs VALUES(" + ",".join("?" for _ in migrated) + ")", migrated)
+        db.commit()
+    login(client, "jribeiro@sensorpoint.pt")
+    metadata = lease(client, draft, "owner")
+    before = draft.read_bytes()
+    response = client.post(f"/api/file/{draft.stem}/send", json={"_edit": metadata})
+    assert response.status_code == 409, response.get_json()
+    assert response.get_json()["code"] == "publication_failed"
+    assert queue.status("legacy-corrupt")["reconciliation_required"]
+    assert draft.read_bytes() == before and queue.graph_service.calls == []
+
+
 @pytest.mark.parametrize("email", [None, "outro@sensorpoint.pt", "jribeiro@sensorpoint.pt"])
 @pytest.mark.parametrize("production_sadi", [{"flag": "true"}], indirect=True)
 def test_public_manifest_with_sadi_active_in_production(production_sadi, email):

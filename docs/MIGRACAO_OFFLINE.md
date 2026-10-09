@@ -173,3 +173,9 @@ continua disponível ao monitor de email e ao painel; quarentena não significa
 que o email não tenha sido aceite. Há teste real POSIX de permissões que é
 ignorado em Windows, além de testes simulados de UID/GID e falha de chown.
 O ensaio Linux permanece pendente; uma simulação não o substitui.
+
+Resultados JSON legados com tipos inválidos (fase, aceitação, recibo, prazo Teams
+ou intenção de cancelamento) ficam apenas no campo textual original; não se
+expõem esses valores malformados no estado atual. O marcador explícito
+`migration_uncertain` conserva o pedido de reconciliação na API/admin/monitor,
+sem inventar prova de envio ou fazer a consulta do trabalho falhar com erro500.
