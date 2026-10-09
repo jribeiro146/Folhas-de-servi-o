@@ -1575,45 +1575,20 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         } catch (error) {
             showToast(error.message, "error");
-            if (error?.code === "mail_failed" && error.job?.id) {
-                const failedJobId = error.job.id;
+            if (error?.jobId && error instanceof window.SensorpointMailJobMonitor.MailJobMonitorError) {
+                const retryDate = new Date(error.retryAt);
+                const schedule = error.retryAt
+                    ? (Number.isFinite(retryDate.getTime())
+                        ? ` Próxima consulta a partir de ${retryDate.toLocaleString("pt-PT")}.`
+                        : " O prazo indicado pelo serviço é muito distante.")
+                    : "";
                 showConfirm({
-                    eyebrow: "Envio não concluído",
-                    title: "E-mail não enviado",
-                    message: (
-                        `${error.message} A folha já está arquivada. `
-                        + "Pretende repetir apenas este envio?"
-                    ),
-                    confirmLabel: "Tentar novamente",
+                    eyebrow: "Acompanhamento do e-mail",
+                    title: "Estado do envio",
+                    message: `${error.message}${schedule} Referência para o administrador: ${error.jobId}.`,
+                    confirmLabel: "Fechar",
                     confirmVariant: "primary",
-                    onAccept: async () => {
-                        hideConfirm();
-                        setBusy(
-                            true,
-                            "A repetir o envio",
-                            "Estamos a repetir apenas este e-mail."
-                        );
-                        try {
-                            const retryResponse = await fetch(
-                                `/api/graph/jobs/${encodeURIComponent(failedJobId)}/retry`,
-                                { method: "POST", headers: { "Accept": "application/json" } }
-                            );
-                            const retryResult = await retryResponse.json();
-                            if (!retryResponse.ok || !retryResult.success) {
-                                throw new Error(
-                                    retryResult.error || "Não foi possível repetir o envio."
-                                );
-                            }
-                            await window.SensorpointMailJobMonitor.waitForMailJob(failedJobId, {
-                                timeoutMs: mailJobMonitorTimeoutMs
-                            });
-                            navigateAfterCommit("/", "E-mail aceite para envio pela Microsoft.");
-                        } catch (retryError) {
-                            showToast(retryError.message, "error");
-                        } finally {
-                            setBusy(false);
-                        }
-                    }
+                    onAccept: hideConfirm
                 });
             }
         } finally {
