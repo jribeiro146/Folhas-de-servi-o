@@ -646,7 +646,7 @@ def test_held_expiration_preserves_mail_receipt_and_recovery_never_resends(tmp_p
     assert queue.status(job["id"])["status"] == "failed"
 
     with editing.transaction("document", lambda: {}) as state:
-        state["operations"]["finalize"]["status"] = "unknown"
+        state["operations"]["finalize"]["status"] = "pending"
     assert queue.retry(job["id"])["status"] == "held"
     with queue._connect() as db:
         db.execute("UPDATE graph_sync_jobs SET updated_at=? WHERE id=?",

@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
 from src.services.sqlite_storage_format import initialize_store, validate_store, StorageFormatError
-from src.services.editing_state_format import decode_state_object
+from src.services.editing_state_format import decode_state_object, EditingStateQuarantinedError, EditingStateWriteInvalidError
 
 
 class SqliteStateRepository:
@@ -75,10 +75,18 @@ class SqliteStateRepository:
                 raise KeyError(document_id)
             state = decode_state_object(row["state_json"]) if row else factory()
             if validator:
-                validator(state, document_id)
+                try:
+                    validator(state, document_id)
+                except EditingStateQuarantinedError as exc:
+                    if row is None:
+                        raise EditingStateWriteInvalidError() from exc
+                    raise
             yield state
             if validator:
-                validator(state, document_id)
+                try:
+                    validator(state, document_id)
+                except EditingStateQuarantinedError as exc:
+                    raise EditingStateWriteInvalidError() from exc
             connection.execute(
                 """
                 INSERT INTO editing_states (document_id, state_json, updated_at)

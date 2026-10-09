@@ -49,8 +49,10 @@ def quarantine_app(tmp_path, monkeypatch):
     service = EditingStateService(tmp_path / "editing")
     identity = EditorIdentity("synthetic-user", "Synthetic")
     state = service.acquire_lease(draft, identity, "tab-1")
+    original_state = stored_evidence(service, state["document_id"])[0]
     replace_stored_state(service, state["document_id"], '{"version":')
     app = web.create_app(file_service=files, editing_state_service=service, test_editor_identity=identity)
+    app.config["SYNTHETIC_INITIAL_STATE"] = original_state
     return app, service, state["document_id"], draft
 
 
@@ -72,6 +74,49 @@ def test_bootstrap_explains_quarantine_without_exposing_state(quarantine_app):
     assert response.json["success"] is False
     assert "server_document" not in response.json
     assert stored_evidence(service, document_id) == before
+
+
+def test_file_data_explains_quarantine_without_internal_error(quarantine_app):
+    app, service, document_id, path = quarantine_app
+    before = stored_evidence(service, document_id)
+    response = app.test_client().get(f"/api/file/{path.stem}")
+    assert response.status_code == 423
+    assert response.json["code"] == "editing_state_quarantined"
+    assert stored_evidence(service, document_id) == before
+
+
+@pytest.mark.parametrize("route", ["autosave", "editing/close"])
+@pytest.mark.parametrize("field", ["client_id", "idempotency_key"])
+def test_blank_editing_metadata_is_a_request_error_not_quarantine(quarantine_app, route, field):
+    app, service, document_id, path = quarantine_app
+    replace_stored_state(service, document_id, app.config["SYNTHETIC_INITIAL_STATE"])
+    state = json.loads(app.config["SYNTHETIC_INITIAL_STATE"])
+    token = next(iter(state["sessions"]))
+    metadata = {"document_id": document_id, "client_id": "tab-1", "lease_token": token,
+                "base_revision": state["revision"], "idempotency_key": "synthetic-save", field: " "}
+    before = stored_evidence(service, document_id)
+    response = app.test_client().post(f"/api/file/{path.stem}/{route}", json={
+        "_edit": metadata, "document": {"intervention_report": "Synthetic"}})
+    assert response.status_code == 409
+    assert response.json["code"] == "editing_session_required"
+    assert stored_evidence(service, document_id) == before
+    assert all(not record.get("quarantined") for record in service.admin_documents())
+
+
+def test_rejected_new_write_is_not_reported_as_corrupt_stored_evidence(tmp_path):
+    from src.services.editing_state_service import EditorIdentity, EditingStateError
+    path = tmp_path / "synthetic.xlsx"
+    path.write_bytes(b"synthetic")
+    service = EditingStateService(tmp_path / "editing")
+    owner = EditorIdentity("synthetic", "Synthetic")
+    lease = service.acquire_lease(path, owner, "tab")
+    before = stored_evidence(service, lease["document_id"])
+    with pytest.raises(EditingStateError) as error:
+        service.save_autosave(document_id=lease["document_id"], identity=owner, client_id="tab",
+                              lease_token=lease["lease"]["token"], base_revision=lease["revision"],
+                              idempotency_key=" ", document={"intervention_report": "Synthetic"})
+    assert not isinstance(error.value, EditingStateQuarantinedError)
+    assert stored_evidence(service, lease["document_id"]) == before
 
 
 def test_admin_lists_corrupt_document_as_requiring_recovery(quarantine_app):
@@ -186,3 +231,52 @@ def test_logout_http_preserves_other_autosave_and_admin_revocation(quarantine_ap
     with pytest.raises(EditingSessionRevokedError):
         service.acquire_lease(original, owner, "new-tab")
     assert stored_evidence(service, document_id) == before_bad
+
+
+def test_preview_of_client_payload_does_not_read_or_replace_quarantined_state(quarantine_app):
+    app, service, document_id, path = quarantine_app
+    app.config["MAINTENANCE_ENABLED"] = True
+    app.config["MAINTENANCE_DEMO"] = False
+    before = stored_evidence(service, document_id)
+    response = app.test_client().post(f"/api/file/{path.stem}/document-preview", json={"intervention_report": "Synthetic"})
+    assert response.status_code == 200 and response.json["success"] is True
+    assert stored_evidence(service, document_id) == before
+
+
+def test_invalid_initial_state_is_not_reported_as_corrupt_stored_evidence(tmp_path):
+    from src.services.editing_state_service import EditingStateError
+    service = EditingStateService(tmp_path / "editing")
+    with pytest.raises(EditingStateError) as error:
+        service.snapshot_document(" ")
+    assert not isinstance(error.value, EditingStateQuarantinedError)
+    assert service.repository.document_ids() == []
+
+
+@pytest.mark.parametrize("shape", ["v1", "lease", "incomplete-v2"])
+def test_historical_shapes_require_explicit_preparation_and_remain_intact(tmp_path, shape):
+    from tests.legacy_editing_shapes import version_one, legacy_lease
+    service = EditingStateService(tmp_path / "editing")
+    service.snapshot_document("historical")
+    state = legacy_lease("historical") if shape == "lease" else version_one("historical")
+    if shape == "incomplete-v2":
+        state["version"] = 2
+    replace_stored_state(service, "historical", json.dumps(state))
+    before = stored_evidence(service, "historical")
+    with pytest.raises(EditingStateQuarantinedError):
+        service.snapshot_document("historical")
+    assert list(service.finalizations_to_retire()) == []
+    assert service.admin_documents()[0]["quarantined"] is True
+    assert service.release_user_leases("unrelated") == 0
+    assert stored_evidence(service, "historical") == before
+
+
+def test_quarantine_diagnostic_emits_only_safe_reference(quarantine_app, caplog):
+    from src.logging_config import JsonLogFormatter
+    _, service, document_id, _ = quarantine_app
+    service.admin_documents()
+    records = [record for record in caplog.records if getattr(record, "event", "") == "editing_state_quarantined"]
+    assert records
+    encoded = JsonLogFormatter().format(records[-1])
+    payload = json.loads(encoded)
+    assert len(payload["document_ref"]) == 16
+    assert document_id not in encoded and "state_json" not in encoded

@@ -18,10 +18,17 @@ class EditingStateQuarantinedError(EditingStateError):
         super().__init__("O estado desta folha requer recuperação pelo administrador. Os dados guardados foram preservados.")
 
 
+class EditingStateWriteInvalidError(EditingStateError):
+    """A proposed mutation was rejected; stored evidence is still valid."""
+
+    def __init__(self):
+        super().__init__("A alteração não é válida e não foi guardada. O estado anterior da folha foi preservado.")
+
+
 def report_quarantined_state(document_id):
     logging.getLogger(__name__).warning("Estado de edição em quarentena.", extra={
         "event": "editing_state_quarantined",
-        "document_ref": hashlib.sha256(str(document_id).encode("utf-8")).hexdigest()[:16],
+        "event_fields": {"document_ref": hashlib.sha256(str(document_id).encode("utf-8")).hexdigest()[:16]},
     })
 
 

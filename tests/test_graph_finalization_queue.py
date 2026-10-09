@@ -111,7 +111,7 @@ def test_archive_and_mail_wait_for_commit_and_are_not_duplicated(tmp_path):
     job = queue.enqueue("archive_and_remove", payload, job_id="send:synthetic")
     assert job["status"] == "held"
     assert queue._next_retry_delay() is not None
-    for status in (None, "pending", "failed"):
+    for status in ("pending", "failed"):
         with editing.transaction("document", lambda: {}) as state:
             state["operations"]["finalize"]["status"] = status
         queue.run_until_idle()

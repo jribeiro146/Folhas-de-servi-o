@@ -85,6 +85,7 @@ from src.services.editing_state_service import (
     OperationInProgressError,
     RevisionConflictError,
 )
+from src.services.editing_state_format import EditingStateWriteInvalidError
 from src.services.excel_service import ExcelService, ExcelValidationError
 from src.services.file_service import FileService
 from src.services.graph_mail_service import (
@@ -453,6 +454,8 @@ def _create_app(
     def editing_error_response(error: Exception):
         if isinstance(error, EditingStateQuarantinedError):
             return jsonify({"success": False, "error": str(error), "code": "editing_state_quarantined"}), 423
+        if isinstance(error, EditingStateWriteInvalidError):
+            return json_error(str(error), 409, code="editing_state_write_invalid")
         if isinstance(error, EditingSessionMetadataError):
             log_event(
                 app.logger,
@@ -506,9 +509,12 @@ def _create_app(
     ) -> dict[str, object]:
         raw = payload.pop("_edit", {})
         metadata = dict(raw) if isinstance(raw, dict) else {}
+        for key in ("document_id", "client_id", "lease_token", "idempotency_key"):
+            if key in metadata:
+                metadata[key] = str(metadata[key] or "").strip()
         required = ["document_id", "client_id", "lease_token", "base_revision"]
         missing = [key for key in required if not str(metadata.get(key) or "").strip()]
-        if require_idempotency and not str(metadata.get("idempotency_key") or "").strip():
+        if (require_idempotency or "idempotency_key" in metadata) and not metadata.get("idempotency_key"):
             missing.append("idempotency_key")
         if missing:
             raise EditingSessionMetadataError(missing)
@@ -1441,6 +1447,8 @@ def _create_app(
             })
         except ExcelValidationError as exc:
             return json_error(str(exc), 400, code="document_invalid")
+        except EditingStateError as exc:
+            return editing_error_response(exc)
         except Exception as exc:
             log_event(
                 app.logger,
