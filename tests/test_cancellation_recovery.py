@@ -241,6 +241,31 @@ def test_restart_after_remote_checkpoint_never_replays_move(tmp_path, confirmed)
     assert not graph.writes
 
 
+def test_uncertain_cancel_with_different_stale_deadlines_does_not_block_queue(tmp_path, monkeypatch):
+    monkeypatch.setenv("FS_MAIL_JOB_STALE_SECONDS", "1800")
+    monkeypatch.setenv("FS_GRAPH_JOB_STALE_SECONDS", "900")
+    graph = CancellationGraph()
+    _, payload = guarded_payload(tmp_path, plan(graph, source_with_receipts(tmp_path)))
+    queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", auto_start=False)
+    uncertain = queue.enqueue("remove_active", payload)
+    following = queue.enqueue("remove_active", {
+        **payload, "cancellation": {**payload["cancellation"], "absent": True}})
+    with queue._connect() as connection:
+        connection.execute(
+            "UPDATE graph_sync_jobs SET status='running', attempts=1, updated_at=?, result_json=? WHERE id=?",
+            (time.time() - 1000, json.dumps({"cancellation_started": True}), uncertain["id"]))
+    queue.run_until_idle()
+    result = queue.status(uncertain["id"])
+    assert result["status"] == "failed" and result["reconciliation_required"]
+    assert not result["will_retry"]
+    assert queue.status(following["id"])["status"] == "complete"
+    with pytest.raises(ValueError):
+        queue.retry(uncertain["id"])
+    GraphSyncQueue(graph, queue.database_path, auto_start=False).run_until_idle()
+    assert queue.status(uncertain["id"])["status"] == "failed"
+    assert not graph.writes
+
+
 def test_legacy_remove_without_proof_cannot_delete_by_name(tmp_path):
     graph = CancellationGraph()
     queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", auto_start=False)

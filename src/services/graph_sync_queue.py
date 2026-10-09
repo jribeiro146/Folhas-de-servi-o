@@ -74,6 +74,12 @@ class MailSnapshotError(GraphMailError):
     """A persisted message cannot be reconstructed or replayed safely."""
 
 
+class CancellationUnknownResultError(RuntimeError):
+    """The current attempt must fail without replaying an uncertain move."""
+
+    retryable = False
+
+
 class GraphSyncQueue:
     """Persist Graph work before executing it and retry transient failures."""
 
@@ -772,7 +778,10 @@ class GraphSyncQueue:
             if prior_result.get("cancellation_confirmed") is True:
                 return prior_result
             if delivery_uncertain(kind, prior_result):
-                raise GraphJobNoLongerActiveError("Cancelamento remoto incerto; não repetir sem reconciliação.")
+                # This attempt still owns the job. Record a terminal failure even
+                # when reclaim and mail-hold deadlines differ; an orphan error
+                # would be ignored and leave the queue blocked by a running job.
+                raise CancellationUnknownResultError("Cancelamento remoto incerto; não repetir sem reconciliação.")
             if not isinstance(payload.get("cancellation"), dict) or not payload.get("_commit_guard"):
                 self._checkpoint_result(job_id, {"invalid_state": True, "phase": "cancellation_proof_missing"})
                 raise ValueError("Cancelamento antigo sem prova de identidade/commit; requer reconciliação.")

@@ -29,6 +29,8 @@ resultado da fila; o nome original e a prova ficam no contexto da operação.
   A intenção só é persistida imediatamente antes desse PATCH. Uma resposta
   ambígua depois da intenção persistida exige reconciliação; não
   há repetição automática nem através do botão de repetição do administrador.
+  Na recuperação, esse trabalho termina em `failed` para reconciliação e liberta
+  a fila, mesmo quando os prazos de inatividade Graph e email são diferentes.
 - Trabalhos antigos `remove_active` sem a nova prova são recusados e preservados
   para diagnóstico. A migração não pode inventar essa prova (ver M06).
 
@@ -86,7 +88,8 @@ python -B -m pytest tests/test_cancellation_recovery.py tests/test_graph_publica
 imports. Os ensaios cobrem homónimo novo, eTag ausente/alterada, descendente
 alterado/acrescentado, propriedade ausente, resposta perdida, reinício nos dois
 checkpoints, commit falhado, publicação local interrompida, limpeza adiada,
-repetição idempotente e barreira de uploads. São testes de aplicação com transporte
+repetição idempotente, barreira de uploads e recuperação com prazos diferentes
+sem bloquear o trabalho seguinte. São testes de aplicação com transporte
 simulado; não provam o comportamento de uma instalação ou credenciais reais.
 
 Referências do contrato Graph: [movimento por ID e If-Match](https://learn.microsoft.com/en-us/graph/api/driveitem-move?view=graph-rest-1.0)
