@@ -11,6 +11,8 @@ Para manutenção do estado de edição, consultar [Quarentena de edição — M
 comportamento, mapa dos componentes, diagnóstico de cópias antigas, testes e limites.
 Para cancelamento, consultar [Cancelamento recuperável — M05](docs/CANCELAMENTO_RECUPERAVEL.md):
 cópia local antes do commit, movimento remoto por identidade e tratamento de resultados incertos.
+Para converter formatos antigos, consultar [Migração offline — M06](docs/MIGRACAO_OFFLINE.md):
+inventário, cópia privada, aplicação recuperável e quarentena sem repetição de envios.
 Este candidato continua sujeito às etapas de migração/restauro e preparação da
 entrega; a proteção M04 não converte dados antigos nem aprova a instalação completa.
 
