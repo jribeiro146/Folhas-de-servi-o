@@ -13,6 +13,8 @@ Para cancelamento, consultar [Cancelamento recuperável — M05](docs/CANCELAMEN
 cópia local antes do commit, movimento remoto por identidade e tratamento de resultados incertos.
 Para converter formatos antigos, consultar [Migração offline — M06](docs/MIGRACAO_OFFLINE.md):
 inventário, cópia privada, aplicação recuperável e quarentena sem repetição de envios.
+Para cópias e recuperação, consultar [Backup/restauro offline — M07](docs/BACKUP_RESTAURO.md):
+cópia consistente, chave separada, restauro verificado e bloqueio até reconciliação.
 Este candidato continua sujeito às etapas de migração/restauro e preparação da
 entrega; a proteção M04 não converte dados antigos nem aprova a instalação completa.
 

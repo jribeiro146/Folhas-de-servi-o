@@ -1,9 +1,10 @@
 # Preparação explícita do runtime
 
 Comandos locais para o profissional que instala a aplicação. Esta alteração não
-executa nem autoriza instalação no servidor. O empacotamento final,
-backup/restauro e validação Linux continuam etapas separadas do plano. A migração
-de formatos suportados tem procedimento próprio em [M06](MIGRACAO_OFFLINE.md).
+executa nem autoriza instalação no servidor. O empacotamento final e validação
+Linux continuam etapas separadas do plano. A migração de formatos suportados tem
+procedimento próprio em [M06](MIGRACAO_OFFLINE.md); a cópia e recuperação verificadas,
+com bloqueio até reconciliação dos efeitos externos, em [M07](BACKUP_RESTAURO.md).
 
 Usar Python 3.13 (mínimo 3.12), o código de um artefacto preparado fora de Git por
 `tools/build_release.py`, e uma pasta persistente **absoluta num disco local do

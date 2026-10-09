@@ -42,7 +42,7 @@ LOGGER = logging.getLogger(__name__)
 def delivery_uncertain(kind: str, result: dict[str, Any]) -> bool:
     # Malformed legacy evidence cannot prove whether an external effect occurred.
     # Migration preserves its raw text separately and explicitly requires review.
-    if result.get("migration_uncertain") is True:
+    if result.get("migration_uncertain") is True or result.get("restore_uncertain") is True:
         return True
     if kind == "remove_active":
         return result.get("cancellation_started") is True and result.get("cancellation_confirmed") is not True
