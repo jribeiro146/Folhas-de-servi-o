@@ -17,8 +17,9 @@ Para cópias e recuperação, consultar [Backup/restauro offline — M07](docs/B
 cópia consistente, chave separada, restauro verificado e bloqueio até reconciliação.
 Para gerar uma entrega do commit exato, consultar [Identidade e pacote — M13](docs/IDENTIDADE_DA_VERSAO.md).
 O arranque operacional exige manifesto; desenvolvimento usa o lançador sintético.
-Este candidato ainda depende da coerência Docker (M14) e dos ensaios Linux indicados
-na nota ao instalador. Os testes locais não aprovam uma instalação real.
+A entrega Docker (M14) usa esse artefacto. Os ensaios Linux estão pendentes e
+constam da [nota ao instalador](docs/VALIDACAO_DOCKER_INSTALADOR.md).
+Os testes locais não aprovam uma instalação real.
 
 Estrutura principal do projeto:
 

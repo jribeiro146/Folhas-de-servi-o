@@ -1,16 +1,22 @@
-x-runtime: &runtime
+x-image: &image
   build:
     context: .
     args:
       APP_UID: ${APP_UID:-10001}
       APP_GID: ${APP_GID:-10001}
-  image: ${FS_IMAGE:-folhas-servico:latest}
+  image: ${FS_IMAGE:?Defina FS_IMAGE com a etiqueta do commit verificado}
+
+x-runtime: &runtime
+  <<: *image
   restart: unless-stopped
   init: true
   volumes:
     - app-data:/app/data
-    - ./src:/app/src
-    - ${FS_LOG_HOST_DIR:-/var/www/vhosts/service.sensorpoint.pt/private/folhas-servico/logs}:/app/logs
+    - type: bind
+      source: ${FS_LOG_HOST_DIR:-/var/www/vhosts/service.sensorpoint.pt/private/folhas-servico/logs}
+      target: /app/logs
+      bind:
+        create_host_path: false
   env_file:
     - .env
   environment:
@@ -21,6 +27,15 @@ x-runtime: &runtime
     FS_GRAPH_QUEUE_IN_WEB: "false"
 
 services:
+  # Only an explicit command for a NEW empty volume, never automatic adoption.
+  prepare:
+    <<: *image
+    profiles: [maintenance]
+    restart: "no"
+    network_mode: none
+    volumes:
+      - app-data:/app/data
+    command: ["python", "-B", "tools/prepare_runtime.py", "init", "--data-dir", "/app/data"]
   app:
     <<: *runtime
     container_name: folhas-servico

@@ -1,4 +1,4 @@
-FROM python:3.13-slim
+FROM python:3.13-slim AS runtime
 
 WORKDIR /app
 
@@ -18,10 +18,13 @@ RUN pip install --no-cache-dir --upgrade pip \
  && pip install --no-cache-dir -r requirements-server.txt -r requirements-smoke.txt
 
 COPY src/ src/
-COPY passenger_wsgi.py .
-COPY tools/smoke_pdf.py tools/test_runtime.py tools/
+COPY tools/ tools/
+# Build only from the extracted build_release ZIP. Every fingerprinted file
+# must be present, including delivery files; never regenerate a manifest here.
+COPY passenger_wsgi.py requirements.txt Dockerfile .dockerignore docker-compose.yml release-manifest.json ./
+RUN python -B -c "from src.services.release_identity import get_release_info; assert get_release_info()['verified']"
 
-RUN mkdir -p /app/data/graph-cache /home/appuser \
+RUN mkdir -p /app/data /home/appuser \
  && chown -R appuser:appgroup /app/data /home/appuser
 
 USER appuser
@@ -38,3 +41,18 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
 
 CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "120", "--worker-tmp-dir", "/tmp", "passenger_wsgi:application"]
+
+# Optional test image shares the exact runtime layer. The default final target
+# remains production, without pytest, Git or test fixtures.
+FROM runtime AS qa
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git \
+ && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir pytest
+COPY tests/ tests/
+USER appuser
+ENV PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+CMD ["python", "-B", "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider", "--tb=short"]
+
+FROM runtime AS production

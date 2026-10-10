@@ -1,126 +1,91 @@
-# Docker/Plesk — entrega reconciliada de 28/09/2026
+# Docker/Plesk — entrega identificada e preparação explícita — M14
 
-Base de produção: `1ede4d8a690593a5f2b1d2908f3670fc1d038d7d`.
-Construir a raiz desta branch. O pacote `migracao/App_Folhas_Checklists/aplicacao/`
-da entrega anterior não é a base desta instalação.
+Build e execução Linux/Docker ainda não realizados neste processo. O João está a
+obter um ambiente. Até lá o instalador deve executar a
+[nota de validação](VALIDACAO_DOCKER_INSTALADOR.md) e registar os resultados.
+A referência histórica 1ede4d8 não identifica a nova entrega.
 
-## Identidade e dados existentes do hs4
+## Construir do artefacto
 
-O implementador confirmou `appuser` com UID **100** e GID **101**, proprietário
-de todo `/app/data`. O volume `app_app-data` contém a SADI em utilização real.
-Esta entrega mantém o formato JSON, a chave do nome dos ficheiros, a localização
-`FS_APP_DATA_DIR/sadi` e a leitura do armazenamento de `1ede4d8`.
-Não existe migração de checklists, alteração automática de donos ou limpeza no arranque.
-
-O Dockerfile admite `ARG APP_UID=10001` e `ARG APP_GID=10001`. Os valores por
-defeito servem instalações novas. No hs4 usar obrigatoriamente **100:101**:
+Gerar o ZIP do SHA limpo testado conforme [M13](IDENTIDADE_DA_VERSAO.md), conferir
+artifact_sha256 e extrair para pasta nova. O contexto Docker é essa pasta, com
+release-manifest.json. Não construir de checkout sem manifesto nem regenerar o
+manifesto dentro do Docker para esconder diferenças.
 
 ```sh
-docker compose -p app build --build-arg APP_UID=100 --build-arg APP_GID=101
+# Na pasta extraída, sem configuração privada no contexto:
+docker build --target production -t folhas-servico:SHA_COMPLETO .
 ```
 
-Também se podem definir `APP_UID=100` e `APP_GID=101` no `.env` existente para
-preservar a escolha em builds posteriores. São argumentos de build; alterar apenas
-variáveis no container não muda a identidade da imagem. O `chown` do Dockerfile
-afeta apenas diretórios criados durante o build, antes de montar volumes.
-Não executar `chown -R` no volume existente. UID/GID iguais permitem voltar à
-imagem anterior sem conversão dos dados nem das permissões.
+O build verifica o manifesto. A imagem copia src, tools completos, WSGI, todos os
+requisitos atuais, Dockerfile, .dockerignore, compose e manifesto. Novos ficheiros
+cobertos pela identidade também terão de ser copiados: a verificação falha se
+faltarem. O target final production usa appuser e inclui ferramentas offline e
+Chromium, sem testes/pytest/Git. O target qa deriva da mesma camada runtime e
+acrescenta Git, pytest e fixtures fictícias para ensaios. O target por defeito
+continua a ser production.
 
-Manter **700** nos diretórios SADI e **600** nos JSON/PDF/manifestos privados.
-O formato do armazenamento privado existente e o respetivo schema permanecem sem alterações.
-Na primeira finalização sem rascunho prévio, a pasta SADI é também criada
-explicitamente com 700; pastas existentes não são regravadas nem têm o dono alterado.
-Os testes Linux verificam as permissões dos rascunhos e dos conjuntos PDF.
-A fixture `tests/fixtures/sadi-private-1ede4d8.json` foi gravada pelo código exato
-da base, com dados fictícios; o teste copia esses bytes para o nome histórico e
-lê pela API autorizada sem regravar, mudar timestamps ou criar PDFs.
-Isso não substitui a verificação local, pelo implementador, da checklist real.
+## Identidade e volumes
 
-## Compose de referência
-
-Manter a pasta `/var/www/vhosts/service.sensorpoint.pt/app` e o projeto Compose
-`app`, para continuar a usar **app_app-data**. Não executar `down -v`, renomear
-o projeto ou criar um volume vazio para contornar permissões.
-
-| Serviço | Nome do container | Execução |
-|---|---|---|
-| app | `folhas-servico` | Gunicorn, `127.0.0.1:8000:8000` |
-| worker | `folhas-servico-worker` | `python -B -m src.queue_worker --watch --interval 5` |
-
-Os dois serviços partilham imagem, `.env`, volume e bind `./src:/app/src`.
-O código do checkout montado sobrepõe-se ao da imagem: **ambos têm de corresponder
-ao commit da entrega**. O rollback tem de repor também `src`, além da imagem.
-
-O bind de logs é mantido para ambos os serviços. O caminho de referência do host é
-`/var/www/vhosts/service.sensorpoint.pt/private/folhas-servico/logs`, configurável
-por `FS_LOG_HOST_DIR`; o destino interno explícito é `/app/logs`, com
-`FS_LOG_DIR=/app/logs`. Se o servidor usar outro caminho privado, manter essa origem
-em `FS_LOG_HOST_DIR`. Confirmar que o diretório existente é acessível a 100:101;
-não o substituir por um diretório criado implicitamente como root.
-
-Preservar o `.env` operacional e a mesma `FS_SECRET_KEY`, usada também para
-validar assinaturas já gravadas. Não copiar `.env.example` sobre a configuração.
-Manter estes valores no hs4:
-
-```dotenv
-FS_ENVIRONMENT=production
-FS_MAINTENANCE_ENABLED=true
-FS_GRAPH_QUEUE_IN_WEB=false
-FS_PDF_BROWSER_NO_SANDBOX=true
-APP_UID=100
-APP_GID=101
-```
-
-Preservar autenticação Microsoft, caminhos Graph existentes e acesso SADI apenas
-às contas autorizadas `acarvalho@sensorpoint.pt` e `jribeiro@sensorpoint.pt`.
-O `HOME` da imagem passa a `/home/appuser`, criado e gravável por esse utilizador.
-Se o `.env` atual ainda definir `HOME=/tmp`, remover essa sobreposição para usar
-o HOME testado. O Chromium é `/usr/bin/chromium`.
-
-## Validação da imagem antes de trocar os containers
+Novas instalações usam 10001:10001. A documentação histórica identifica hs4 como
+100:101 e volume app_app-data; o profissional deve confirmar os valores reais.
+Preservar UID/GID, projeto Compose, volume, caminhos absolutos e FS_SECRET_KEY.
+Para uma instalação confirmada em 100:101:
 
 ```sh
-docker run --rm --network none folhas-servico:latest id
-docker run --rm --network none -e FS_PDF_BROWSER_NO_SANDBOX=true \
-  folhas-servico:latest python -B tools/smoke_pdf.py
+docker build --target production --build-arg APP_UID=100 --build-arg APP_GID=101 -t folhas-servico:SHA_COMPLETO .
 ```
 
-Se `FS_IMAGE` usar outra etiqueta, usar essa mesma imagem nos comandos. O teste
-cria um PDF fictício de duas páginas, confirma o texto com `pypdf` e imprime
-UID, GID, HOME e estado do sandbox. Não fornecer `--env-file`, volumes operacionais
-ou credenciais ao smoke. O sandbox desligado é necessário no hs4; a imagem não o
-desliga por defeito para outras instalações.
+Não executar chown recursivo nem recriar volumes para contornar incompatibilidades.
+O chown do Dockerfile afeta só diretórios vazios da imagem. /app/data fica vazio;
+cache e restantes dados são criados depois de contrato válido. Um volume antigo
+não recebe preparação automática. A persistência e o preenchimento inicial dos
+volumes seguem as [regras Docker](https://docs.docker.com/engine/storage/volumes/).
 
-O workflow `Production reconciliation` executa testes Linux e constrói imagens
-com 10001:10001 e 100:101. Os artefactos `image-evidence-default` e
-`image-evidence-hs4` registam commit, ID da imagem e saída real de `smoke_pdf.py`.
-Não publicam imagens nem fazem deploy.
+## Compose e preparação
 
-## Sequência de instalação e reversão
+FS_IMAGE é obrigatório e deve identificar a etiqueta do commit verificado; latest
+já não é implícito. APP_UID/APP_GID continuam argumentos de build. Preservar .env
+privado, nunca incluído na imagem/ZIP. Web e worker partilham imagem e app-data,
+sem montagem de src/tools. Não editar código de processos em execução.
 
-1. Registar commit e ID/etiqueta da imagem atual, configuração Compose efetiva,
-   montagens e identidade do container. Guardar também a configuração e checkout
-   anteriores, sem colocar segredos no Git ou no comentário de entrega.
-2. Construir a candidata com 100:101 e concluir os testes da imagem acima.
-3. Num período sem edições, parar app e worker e fazer backup consistente de
-   `app_app-data`, incluindo SADI e SQLite/WAL, preservando donos e modos.
-   Guardar o backup num destino privado. Não copiar só os JSON SADI.
-4. Atualizar o checkout para o commit da entrega, manter `.env` e montagens
-   operacionais, confirmar UID/GID, e executar `docker compose -p app up -d --no-build`.
-5. Confirmar ambos os containers, manifest público HTTP 200, login e acesso SADI.
-   Abrir a checklist preenchida existente e as duas vazias; comparar conteúdo,
-   donos e modos com o backup. Esta verificação não requer finalizar nem enviar email.
-6. Confirmar logs e processamento da fila existente. Não iniciar um segundo worker
-   por cron se o serviço Compose já o processar continuamente.
-7. Fazer login na aplicação, abrir a lista de folhas e usar **Atualizar**.
-   A primeira atualização completa cria `.graph_active_files.json` no diretório
-   local de Activas. Até existir inventário confirmado a lista está vazia por
-   segurança; não copiar um índice de outra instalação nem mostrar a cache antiga.
-   Acompanhar `/api/graph/status` na sessão autenticada e confirmar que terminou;
-   conferir a lista e que não existem ficheiros indisponíveis no índice.
-   Um nome inválido é omitido com o evento `graph_inventory_item_skipped`
-   (`reason=invalid_name`); os restantes ficheiros continuam disponíveis.
-   Corrigir o nome de origem e atualizar novamente para o incluir.
+O bind de logs mantém a origem histórica configurável por FS_LOG_HOST_DIR e
+destino /app/logs. create_host_path=false exige pasta privada existente e acessível
+ao UID/GID correto, evitando criação silenciosa como root. O instalador confirma
+caminho/permissões fora do document root. HOME é /home/appuser e Chromium fica em
+/usr/bin/chromium; manter a opção de sandbox adequada ao servidor.
+
+prepare só corre explicitamente; não acompanha up, não recebe .env, não tem rede
+nem monta logs. Usa a mesma imagem/volume e apenas init. Os perfis suportam essa
+ativação explícita ([Docker](https://docs.docker.com/reference/compose-file/profiles/)).
+
+```sh
+# APENAS instalação nova, volume vazio, projeto/nome conferidos:
+docker compose -p PROJETO_CONFIRMADO run --rm --no-deps prepare
+# Esperado: command=init, verified=true, epoch=1; exit 0.
+```
+
+App/worker sem contrato recusam o arranque. init recusa um volume legado sem o
+adotar/apagar. Nesse caso seguir [M06](MIGRACAO_OFFLINE.md) com inventário, cópia
+privada e escritores parados. Com contrato compatível de outra versão, seguir
+[ativação explícita](PREPARACAO_RUNTIME.md). Os caminhos absolutos têm de ser
+preservados: mudar /app/data ou caminhos Excel/cache não é migração automática.
+
+Antes da troca real, o profissional guarda imagem/configuração/contrato anteriores,
+valida backup e define janela sem escritores. Depois de migrar/ativar conforme o
+caso, usa a mesma FS_IMAGE na web/worker com --no-build e confirma identidade,
+HTTP, login, reservas, SADI privada e diagnóstico da fila. Reconciliar trabalhos
+retidos/incertos antes de repetir. Não ligar um worker por cron se o Compose já
+processa a fila. Nenhum destes passos foi executado na instalação real.
+
+Rollback respeita contrato/formatos e trabalho posterior. [M07](BACKUP_RESTAURO.md)
+restaura com bloqueio global e fila retida, libertados após reconciliação. Se
+leitores de diagnóstico criarem locks/journals, parar os processos e diagnosticar;
+não apagar journals em uso para fazer passar uma recusa.
+
+A CI foi adaptada só para gerar o ZIP antes do build e registar identidade da
+imagem. Não foi executada remotamente; triggers, pinning e matriz completa são
+M15. Reproduzir o ZIP não fixa downloads de dependências/imagem base.
 
 ## Reconciliação da fila e marcadores antigos
 
@@ -173,8 +138,7 @@ O tratamento excecional só se aplica à pasta temporária comprovadamente próp
 e vazia. Ficheiros existentes, arquivos, pastas substituídas/com conteúdo e
 colisões de nome continuam protegidos contra sobrescrita.
 
-Após instalar o commit indicado no PR **na web e no worker**, incluindo o código
-do bind `./src:/app/src`, recuperar cada rascunho afetado desta forma:
+Após instalar o commit indicado no PR **na web e no worker**, usando a mesma imagem verificada nos dois processos, recuperar cada rascunho afetado desta forma:
 
 1. Preservar o volume, a fila, os instantâneos e `.fs-upload-owner.json`.
    Não apagar as pastas temporárias nem recriar a folha a partir do original.
@@ -207,7 +171,7 @@ envia email quando a publicação do arquivo falha. Não retirar `If-Match` nem
 forçar a remoção para contornar conflitos. Contenção temporária de estado responde
 503 com `Retry-After: 2`; repetir o pedido após esse intervalo.
 
-Para reverter: parar app e worker, repor checkout/src, configuração e imagem
-anteriores e arrancar sem reconstruir. Os ficheiros SADI mantêm o formato e
-100:101. Não restaurar um backup sobre trabalho posterior sem avaliação do operador;
-uma restauração de dados pode perder edições entretanto efetuadas.
+Para reverter, parar todos os escritores e avaliar contrato/formatos antes de
+ativar a versão anterior. Repor apenas a imagem não muda a versão aceite pelos
+dados. Seguir PREPARACAO_RUNTIME.md e BACKUP_RESTAURO.md; preservar trabalho
+posterior e reconciliar efeitos externos antes de libertar um restauro.

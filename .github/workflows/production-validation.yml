@@ -34,14 +34,21 @@ jobs:
         identity: [default, hs4]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Package the exact clean commit before building images
+        run: |
+          python -B tools/build_release.py --revision "$(git rev-parse HEAD)" --output "$RUNNER_TEMP/release.zip"
+          python -m zipfile -e "$RUNNER_TEMP/release.zip" "$RUNNER_TEMP/release"
       - name: Build candidate (default 10001 or existing hs4 100:101)
         env:
           IDENTITY: ${{ matrix.identity }}
         run: |
           if [ "$IDENTITY" = hs4 ]; then
-            docker build --build-arg APP_UID=100 --build-arg APP_GID=101 -t folhas-candidate .
+            docker build --build-arg APP_UID=100 --build-arg APP_GID=101 -t folhas-candidate "$RUNNER_TEMP/release"
           else
-            docker build -t folhas-candidate .
+            docker build -t folhas-candidate "$RUNNER_TEMP/release"
           fi
       - name: Verify image identity and actual Chromium PDF without network
         env:
@@ -55,6 +62,7 @@ jobs:
           if [ "$IDENTITY" = hs4 ]; then expected=100:101; fi
           actual=$(docker run --rm --network none folhas-candidate sh -c 'printf "%s:%s" "$(id -u)" "$(id -g)"')
           test "$actual" = "$expected"
+          docker run --rm --network none folhas-candidate python -B -c 'import json; from src.services.release_identity import get_release_info; info=get_release_info(); assert info["verified"]; print(json.dumps(info))' | tee evidence/release.json
           docker run --rm --network none -e FS_PDF_BROWSER_NO_SANDBOX=true folhas-candidate python -B tools/smoke_pdf.py | tee evidence/smoke-pdf.json
       - uses: actions/upload-artifact@v4
         with:
