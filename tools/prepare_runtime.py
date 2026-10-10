@@ -40,7 +40,10 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         data = _data_path(args.data_dir)
-        info, contract = resolve_runtime(data, release_root=ROOT, require_manifest=args.command != "inspect")
+        # Read identity without factory admission: this CLI makes its own
+        # stricter, profile-independent decision below, with a stable JSON code.
+        # No data is opened/created by resolve_runtime.
+        info, contract = resolve_runtime(data, release_root=ROOT, require_manifest=False)
         if args.command != "inspect" and not info["verified"]:
             raise ContractError("A preparação exige um artefacto com manifesto de versão válido.")
         if args.command == "init":

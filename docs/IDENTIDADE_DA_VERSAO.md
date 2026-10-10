@@ -83,7 +83,9 @@ sozinhas não substituem isolamento/rede bloqueada. Não usar dados reais no per
 `get_release_info` permanece uma leitura de diagnóstico: sem manifesto devolve
 working-tree/verified=false. `prepare_runtime.py inspect` pode usar essa leitura,
 mas não ativa nem inicializa dados. init/activate exigem manifesto verificado,
-mesmo num perfil de testes. Fixtures que simulam configuração de produção usam
+mesmo num perfil de testes. Ausência de manifesto em init/activate devolve
+exit 2 e JSON com code=state_contract_invalid em qualquer perfil, sem criar dados.
+inspect requer um contrato existente e apenas o lê. Fixtures que simulam configuração de produção usam
 uma cópia com manifesto real e mantêm rede bloqueada/transportes simulados.
 
 ## Verificação e limites

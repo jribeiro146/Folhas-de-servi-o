@@ -308,3 +308,27 @@ def test_activate_refuses_queue2_without_changing_runtime(package, tmp_path, leg
     assert json.loads(result.stderr)["code"] == (
         "state_contract_invalid" if legacy == "contract" else "storage_format_invalid")
     assert contract.inspect() == snapshot
+
+
+@pytest.mark.parametrize("command", ["init", "activate", "inspect"])
+def test_cli_without_manifest_has_stable_results_outside_synthetic_mode(package, tmp_path, command):
+    import os
+    environment = dict(os.environ, FS_ENVIRONMENT="production")
+    environment.pop("FS_TEST_SYNTHETIC", None)
+    data = tmp_path / "operational-profile-synthetic-data"
+    args = [command, "--data-dir", str(data)]
+    if command == "activate":
+        args += ["--expected-source", "b" * 64, "--writers-stopped"]
+    if command == "inspect":
+        RuntimeContract(data, get_release_info(package)["source_sha256"]).initialize_empty()
+        before = {p.name: p.read_bytes() for p in data.iterdir()}
+    result = subprocess.run([sys.executable, "-B", str(package / "tools/prepare_runtime.py"), *args],
+                            env=environment, cwd=package.parent, capture_output=True, timeout=30)
+    if command == "inspect":
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["release"]["verified"] is False
+        assert {p.name: p.read_bytes() for p in data.iterdir()} == before
+    else:
+        assert result.returncode == 2, result.stderr
+        assert json.loads(result.stderr)["code"] == "state_contract_invalid"
+        assert not data.exists()
