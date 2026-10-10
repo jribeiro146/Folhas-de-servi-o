@@ -1,4 +1,4 @@
-"""Create a source manifest for a fixed release, without importing the app."""
+"""Package a tested clean Git HEAD into a reproducible ZIP, without importing the app."""
 from pathlib import Path
 import argparse
 import json
@@ -6,17 +6,20 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from src.services.release_identity import ReleaseIdentityError, write_release_manifest
+from src.services.release_identity import ReleaseIdentityError
+from src.services.release_package import build_release
+import subprocess
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, required=True, help="Staging copy outside any Git checkout")
-    parser.add_argument("--revision", required=True, help="Full Git commit SHA from the release builder")
+    parser.add_argument("--repo", type=Path, default=ROOT, help="Clean tested Git checkout")
+    parser.add_argument("--revision", required=True, help="Full Git SHA, exactly matching HEAD")
+    parser.add_argument("--output", type=Path, required=True, help="New ZIP file in an existing directory")
     args = parser.parse_args()
     try:
-        info = write_release_manifest(args.root, revision=args.revision)
-    except (ValueError, OSError, ReleaseIdentityError) as exc:
+        info = build_release(args.repo, args.revision, args.output)
+    except (ValueError, OSError, ReleaseIdentityError, subprocess.TimeoutExpired) as exc:
         parser.exit(2, str(exc) + "\n")
     print(json.dumps(info))
     return 0

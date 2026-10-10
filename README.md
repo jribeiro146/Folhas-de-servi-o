@@ -15,8 +15,10 @@ Para converter formatos antigos, consultar [Migração offline — M06](docs/MIG
 inventário, cópia privada, aplicação recuperável e quarentena sem repetição de envios.
 Para cópias e recuperação, consultar [Backup/restauro offline — M07](docs/BACKUP_RESTAURO.md):
 cópia consistente, chave separada, restauro verificado e bloqueio até reconciliação.
-Este candidato continua sujeito às etapas de migração/restauro e preparação da
-entrega; a proteção M04 não converte dados antigos nem aprova a instalação completa.
+Para gerar uma entrega do commit exato, consultar [Identidade e pacote — M13](docs/IDENTIDADE_DA_VERSAO.md).
+O arranque operacional exige manifesto; desenvolvimento usa o lançador sintético.
+Este candidato ainda depende da coerência Docker (M14) e dos ensaios Linux indicados
+na nota ao instalador. Os testes locais não aprovam uma instalação real.
 
 Estrutura principal do projeto:
 

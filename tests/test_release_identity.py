@@ -3,7 +3,6 @@ import json
 from pathlib import Path
 import subprocess
 import sys
-import shutil
 import pytest
 from src.services.release_identity import get_release_info
 
@@ -46,21 +45,6 @@ def test_web_processes_and_worker_report_the_same_source_identity():
     assert first.status_code == second.status_code == 200
     assert first.headers["X-App-Version"] == second.headers["X-App-Version"] == expected["source_sha256"]
     assert build_queue().release_info == expected
-
-
-def test_release_builder_records_the_requested_commit_and_refuses_invalid_revision(tmp_path):
-    source = tmp_path / "src" / "entry.py"
-    source.parent.mkdir()
-    source.write_text("value = 1\n", encoding="utf-8")
-    command = [sys.executable, "-B", str(Path(__file__).resolve().parents[1] / "tools/build_release.py"),
-               "--root", str(tmp_path), "--revision", "b" * 40]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=30)
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout)["revision"] == "b" * 40
-    previous = (tmp_path / "release-manifest.json").read_bytes()
-    command[-1] = "not-a-commit"
-    assert subprocess.run(command, capture_output=True, timeout=30).returncode != 0
-    assert (tmp_path / "release-manifest.json").read_bytes() == previous
 
 
 def test_web_and_worker_refuse_a_mismatched_package_and_worker_logs_the_failure(tmp_path, caplog):
@@ -147,50 +131,6 @@ def test_python_cache_does_not_change_identity_but_extra_source_files_do(tmp_pat
     assert get_release_info(tmp_path)["source_sha256"] != expected
 
 
-def test_packaging_does_not_import_runtime_configuration(tmp_path):
-    source = tmp_path / "src" / "entry.py"
-    source.parent.mkdir()
-    source.write_text("value = 1\n", encoding="utf-8")
-    tool = Path(__file__).resolve().parents[1] / "tools/build_release.py"
-    probe = (
-        "import runpy,sys; "
-        "tool=sys.argv.pop(1); "
-        "module=runpy.run_path(tool,run_name='packaging_probe'); "
-        "assert module['main']()==0; "
-        "assert 'src.config' not in sys.modules; "
-        "assert 'src.web.application' not in sys.modules"
-    )
-    result = subprocess.run([sys.executable, "-B", "-c", probe, str(tool),
-                             "--root", str(tmp_path), "--revision", "e" * 40],
-                            capture_output=True, text=True, timeout=30)
-    assert result.returncode == 0, result.stderr
-
-
-@pytest.mark.parametrize("git_marker", ["omitted-root", "directory", "worktree-file"])
-def test_release_builder_requires_explicit_staging_outside_a_git_checkout(tmp_path, git_marker):
-    # Copy only the standalone command/module, so even the old default cannot
-    # write a manifest in the real development checkout during the red test.
-    repository = Path(__file__).resolve().parents[1]
-    tool = tmp_path / "tools" / "build_release.py"
-    service = tmp_path / "src" / "services" / "release_identity.py"
-    tool.parent.mkdir()
-    service.parent.mkdir(parents=True)
-    shutil.copyfile(repository / "tools" / tool.name, tool)
-    shutil.copyfile(repository / "src" / "services" / service.name, service)
-    command = [sys.executable, "-B", str(tool), "--revision", "f" * 40]
-    if git_marker != "omitted-root":
-        command += ["--root", str(tmp_path)]
-        marker = tmp_path / ".git"
-        if git_marker == "directory":
-            marker.mkdir()
-        else:
-            marker.write_text("gitdir: synthetic-worktree\n", encoding="utf-8")
-    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
-    assert result.returncode == 2, result.stdout
-    assert ("--root" if git_marker == "omitted-root" else "Git") in result.stderr
-    assert not (tmp_path / "release-manifest.json").exists()
-
-
 def test_unsupported_python_is_refused_with_an_actionable_message(tmp_path, monkeypatch):
     from src.services.release_identity import ReleaseIdentityError, write_release_manifest
     (tmp_path / "src").mkdir()
@@ -254,9 +194,8 @@ def test_manifest_diagnostic_bounds_and_escapes_many_long_paths(tmp_path):
     assert "synthetic private content" not in str(failure.value)
 
 
-@pytest.mark.parametrize("interface", ["api", "cli"])
 @pytest.mark.parametrize("git_marker", ["directory", "worktree-file"])
-def test_release_builder_refuses_staging_inside_a_git_ancestor(tmp_path, interface, git_marker):
+def test_release_builder_refuses_staging_inside_a_git_ancestor(tmp_path, git_marker):
     from src.services.release_identity import ReleaseIdentityError, write_release_manifest
     repository = tmp_path / "repository"
     staging = repository / "sub" / "staging"
@@ -268,16 +207,71 @@ def test_release_builder_refuses_staging_inside_a_git_ancestor(tmp_path, interfa
         marker.mkdir()
     else:
         marker.write_text("gitdir: synthetic-worktree\n", encoding="utf-8")
-    if interface == "api":
-        with pytest.raises(ReleaseIdentityError, match="Git"):
-            write_release_manifest(staging, revision="a" * 40)
-    else:
-        tool = Path(__file__).resolve().parents[1] / "tools" / "build_release.py"
-        result = subprocess.run(
-            [sys.executable, "-B", str(tool), "--root", str(source / ".."), "--revision", "a" * 40],
-            capture_output=True, text=True, timeout=30,
-        )
-        assert result.returncode == 2, result.stdout
-        assert "Git" in result.stderr
+    with pytest.raises(ReleaseIdentityError, match="Git"):
+        write_release_manifest(staging, revision="a" * 40)
     assert not (staging / "release-manifest.json").exists()
     assert not list(staging.glob(".release-*.tmp"))
+
+
+@pytest.mark.parametrize("environment", ["production", "development", "test"])
+def test_operational_factories_require_manifest_before_creating_data(tmp_path, monkeypatch, environment):
+    from src.services.release_identity import ReleaseIdentityError
+    from src.services.runtime_contract import RuntimeContract
+    from src.web.application import create_app
+    from src.queue_worker import build_queue
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/entry.py").write_text("synthetic = 1\n", encoding="utf-8")
+    monkeypatch.setenv("FS_ENVIRONMENT", environment)
+    monkeypatch.setenv("FS_TEST_SYNTHETIC", "true" if environment == "production" else "false")
+    data = tmp_path / "absent-data"
+    contract = RuntimeContract(data, get_release_info(tmp_path)["source_sha256"])
+    for factory in (create_app, build_queue):
+        with pytest.raises(ReleaseIdentityError, match="manifesto"):
+            factory(release_root=tmp_path, runtime_contract=contract)
+    assert not data.exists()
+
+
+@pytest.mark.parametrize("name", ["tools/prepare_runtime.py", "tools/backup_runtime.py", "Dockerfile",
+                                  "docker-compose.yml", ".dockerignore", "requirements.txt"])
+def test_packaged_operational_tools_and_delivery_files_are_verified(tmp_path, name):
+    from src.services.release_identity import write_release_manifest, ReleaseIdentityError
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/entry.py").write_text("synthetic = 1\n", encoding="utf-8")
+    path = tmp_path / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("synthetic original\n", encoding="utf-8")
+    write_release_manifest(tmp_path, revision="a" * 40)
+    path.write_text("synthetic changed\n", encoding="utf-8")
+    with pytest.raises(ReleaseIdentityError, match="corresponde"):
+        get_release_info(tmp_path)
+
+
+def test_persistent_data_inside_tools_is_refused_before_fingerprinting(tmp_path):
+    from src.services.runtime_admission import resolve_runtime
+    from src.services.runtime_contract import ContractError
+    (tmp_path / "src").mkdir()
+    with pytest.raises(ContractError, match="dados.*código"):
+        resolve_runtime(tmp_path / "tools/private", release_root=tmp_path)
+
+
+def test_verified_package_is_admitted_even_in_production(monkeypatch, verified_test_release):
+    from src.web.application import create_app
+    from src.queue_worker import build_queue
+    monkeypatch.setenv("FS_ENVIRONMENT", "production")
+    monkeypatch.delenv("FS_TEST_SYNTHETIC", raising=False)
+    app = create_app(release_root=verified_test_release)
+    queue = build_queue(release_root=verified_test_release)
+    expected = get_release_info(verified_test_release)
+    assert expected["verified"]
+    assert app.test_client().get("/static/css/field-app.css").headers["X-App-Version"] == expected["source_sha256"]
+    assert queue.release_info == expected
+
+
+@pytest.mark.parametrize("unsafe", ["FS_STORAGE_BACKEND", "FS_AUTH_PROVIDER", "FS_MAIL_ENABLED",
+                                  "FS_TEAMS_NOTIFICATIONS_ENABLED", "FS_GRAPH_QUEUE_IN_WEB"])
+def test_incomplete_synthetic_profile_does_not_bypass_manifest(monkeypatch, unsafe):
+    from src.services.runtime_admission import resolve_runtime
+    from src.services.release_identity import ReleaseIdentityError
+    monkeypatch.setenv(unsafe, "graph" if unsafe == "FS_STORAGE_BACKEND" else "true")
+    with pytest.raises(ReleaseIdentityError, match="manifesto"):
+        resolve_runtime(Path("synthetic-unused-data"))

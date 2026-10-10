@@ -40,7 +40,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         data = _data_path(args.data_dir)
-        info, contract = resolve_runtime(data, release_root=ROOT)
+        info, contract = resolve_runtime(data, release_root=ROOT, require_manifest=args.command != "inspect")
         if args.command != "inspect" and not info["verified"]:
             raise ContractError("A preparação exige um artefacto com manifesto de versão válido.")
         if args.command == "init":

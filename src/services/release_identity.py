@@ -9,6 +9,13 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MANIFEST_NAME = "release-manifest.json"
+CODE_DIRECTORIES = ("src", "tools")
+
+
+def is_delivery_file(name: str) -> bool:
+    return (name in {"passenger_wsgi.py", "Dockerfile", ".dockerignore"}
+            or (name.startswith("requirements") and name.endswith(".txt"))
+            or (name.startswith("docker-compose") and name.endswith((".yml", ".yaml"))))
 
 
 class ReleaseIdentityError(RuntimeError):
@@ -18,28 +25,28 @@ class ReleaseIdentityError(RuntimeError):
 def _source_fingerprint(root: Path) -> tuple[str, dict[str, str]]:
     if sys.version_info < (3, 12):
         raise ReleaseIdentityError("Esta versão requer Python 3.12 ou superior; usar preferencialmente Python 3.13.")
-    source_root = root / "src"
-    if source_root.is_symlink() or source_root.is_junction():
-        raise ReleaseIdentityError("O pacote não pode conter ligações simbólicas ou junções no código.")
     if not (root / "src").is_dir():
         raise ReleaseIdentityError("Pasta de código da aplicação em falta.")
     paths = []
-    for path in source_root.rglob("*"):
-        if "__pycache__" in path.parts or path.suffix == ".pyc":
-            continue
-        if path.is_symlink() or path.is_junction():
+    for directory in CODE_DIRECTORIES:
+        source_root = root / directory
+        if source_root.is_symlink() or source_root.is_junction():
             raise ReleaseIdentityError("O pacote não pode conter ligações simbólicas ou junções no código.")
-        if path.is_file():
-            paths.append(path)
-    paths += [root / name for name in ("passenger_wsgi.py", "requirements-server.txt", "requirements-smoke.txt")
-              if (root / name).is_file()]
+        for path in source_root.rglob("*"):
+            if "__pycache__" in path.relative_to(source_root).parts or path.suffix == ".pyc":
+                continue
+            if path.is_symlink() or path.is_junction():
+                raise ReleaseIdentityError("O pacote não pode conter ligações simbólicas ou junções no código.")
+            if path.is_file():
+                paths.append(path)
+    paths += [path for path in root.iterdir() if is_delivery_file(path.name)]
     digest = hashlib.sha256()
     files = {}
     for path in sorted(paths, key=lambda p: p.relative_to(root).as_posix()):
-        if path.is_symlink():
+        if path.is_symlink() or path.is_junction() or not path.is_file():
             raise ReleaseIdentityError("O pacote não pode conter ligações simbólicas no código.")
         data = path.read_bytes()
-        if path.suffix in {".py", ".js", ".css", ".html", ".json", ".svg", ".txt", ".webmanifest"}:
+        if path.suffix in {".py", ".js", ".css", ".html", ".json", ".svg", ".txt", ".webmanifest", ".yml", ".yaml"} or path.name in {"Dockerfile", ".dockerignore"}:
             data = data.removeprefix(b"\xef\xbb\xbf").replace(b"\r\n", b"\n")
         name = path.relative_to(root).as_posix()
         file_digest = hashlib.sha256(data).digest()

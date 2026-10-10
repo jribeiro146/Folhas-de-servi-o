@@ -35,12 +35,13 @@ def test_explicit_environment_does_not_emit_missing_environment_warning(monkeypa
 
 
 @pytest.mark.parametrize("signed_in", [False, True])
-def test_manifest_and_worker_remain_public_without_maintenance_demo(monkeypatch, tmp_path, signed_in):
+def test_manifest_and_worker_remain_public_without_maintenance_demo(monkeypatch, tmp_path, signed_in, verified_test_release):
     monkeypatch.setenv("FS_TEST_SYNTHETIC", "false")
     monkeypatch.setattr(application, "ACTIVE_AUTH_PROVIDER", "microsoft")
     monkeypatch.setattr(application, "AUTH_ENABLED", True)
     fake_login = SimpleNamespace(user_from_session=lambda payload: payload)
     app = application.create_app(
+        release_root=verified_test_release,
         file_service=FileService(tmp_path / "active"),
         editing_state_service=EditingStateService(tmp_path / "editing"),
         microsoft_auth_service=fake_login,
@@ -61,9 +62,10 @@ def test_manifest_and_worker_remain_public_without_maintenance_demo(monkeypatch,
 
 
 @pytest.mark.parametrize("environment,secure", [("development", False), ("test", False), ("production", True)])
-def test_secure_cookie_still_requires_explicit_production(monkeypatch, tmp_path, environment, secure):
+def test_secure_cookie_still_requires_explicit_production(monkeypatch, tmp_path, environment, secure, verified_test_release):
     monkeypatch.setenv("FS_ENVIRONMENT", environment)
     app = application.create_app(
+        release_root=verified_test_release,
         file_service=FileService(tmp_path / "active"),
         editing_state_service=EditingStateService(tmp_path / "editing"),
     )

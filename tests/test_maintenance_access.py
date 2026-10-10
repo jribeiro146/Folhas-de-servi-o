@@ -22,7 +22,7 @@ import src.web.application as web
 
 
 @pytest.fixture
-def production_sadi(tmp_path, monkeypatch, request):
+def production_sadi(tmp_path, monkeypatch, request, verified_test_release):
     settings = getattr(request, "param", {})
     monkeypatch.setenv("FS_ENVIRONMENT", settings.get("mode", "production"))
     monkeypatch.delenv("FS_TEST_SYNTHETIC", raising=False)
@@ -85,6 +85,7 @@ def production_sadi(tmp_path, monkeypatch, request):
     graph = Graph()
     queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", auto_start=False)
     app = web.create_app(
+        release_root=verified_test_release,
         file_service=files,
         editing_state_service=edits,
         graph_service=graph,

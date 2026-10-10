@@ -81,3 +81,15 @@ A segunda revisão confirmou os P2 e encontrou um P3: logging predefinido criava
 Contexto JS incluído: autosave conserva o payload/idempotência e a recuperação local, desativa os botões de commit e agenda nova tentativa quando recebe erro; um 503 não é classificado como revogação. Heartbeat não apaga a sessão nem o conteúdo por estes códigos. Rascunho/envio apresentam a mensagem recebida sem `markCommitted`, confirmação de fotos ou navegação; a nova regressão de rascunho verifica os dois códigos 503. A melhoria geral de feedback do plano mantém-se posterior. Não há alegação de ensaio visual nesta etapa.
 
 Há testes adicionais de 503/no-store/Retry-After em HTML e recurso estático, sem executar hooks posteriores, e de refresh ocupado para lá de três segundos seguido de recuperação explícita. Os testes prévios de exclusão do worker cobrem timestamp aparentemente expirado sem segundo claim enquanto o mutex está ocupado; o diagnóstico detalhado de heartbeat/readiness continua na etapa prevista do plano.
+
+
+## Entrega identificada — M13
+
+O contrato passa a estar ligado também às ferramentas operacionais e aos ficheiros
+de entrega cobertos pela identidade. resolve_runtime recusa armazenamento dentro
+de src ou tools antes do fingerprint e exige manifesto nas factories operacionais.
+A exceção é o perfil sintético completo do lançador, nunca produção. A leitura
+inspect é diagnóstica e não prepara dados. Esta ampliação muda source_sha256:
+atualizar exige ativação coordenada, sem recriar o contrato sobre dados existentes.
+Consultar [Identidade e pacote](IDENTIDADE_DA_VERSAO.md) para construir do SHA limpo,
+verificar o ZIP e conhecer os limites da prova de integridade.

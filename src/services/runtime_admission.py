@@ -5,7 +5,7 @@ from functools import wraps
 import os
 import threading
 
-from src.services.release_identity import get_release_info
+from src.services.release_identity import get_release_info, ReleaseIdentityError, CODE_DIRECTORIES
 from src.services.runtime_contract import RuntimeContract, ContractError
 
 _admissions = threading.local()
@@ -29,17 +29,36 @@ def admit_contract(contract):
             entries.pop(key, None)
 
 
-def resolve_runtime(data_dir: Path, *, release_root=None, runtime_contract=None, storage_paths=()):
+def _synthetic_profile():
+    # This is an explicit test profile, never a production bypass. The test
+    # launcher additionally creates fresh data and blocks the network before
+    # importing the application; these flags alone do not isolate a test.
+    expected = {
+        "FS_ENVIRONMENT": "test", "FS_TEST_SYNTHETIC": "true",
+        "FS_STORAGE_BACKEND": "local", "FS_AUTH_PROVIDER": "none",
+        "FS_MAIL_ENABLED": "false", "FS_TEAMS_NOTIFICATIONS_ENABLED": "false",
+        "FS_GRAPH_QUEUE_IN_WEB": "false",
+    }
+    return all(os.environ.get(name, "").strip().lower() == value for name, value in expected.items())
+
+
+def resolve_runtime(data_dir: Path, *, release_root=None, runtime_contract=None, storage_paths=(),
+                    require_manifest=True):
     root = Path(release_root) if release_root is not None else Path(__file__).resolve().parents[2]
-    source = (root / "src").resolve()
+    sources = [(root / directory).resolve() for directory in CODE_DIRECTORIES]
     paths = [data_dir, *storage_paths]
     if runtime_contract is not None:
         paths.append(runtime_contract.data_dir)
     # Never fingerprint an operational SQLite file: closing a raw descriptor can
     # drop the process's POSIX locks, even when another connection owns them.
-    if any(Path(path).resolve().is_relative_to(source) for path in paths):
+    if any(Path(path).resolve().is_relative_to(source) for path in paths for source in sources):
         raise ContractError("As pastas de dados não podem ficar dentro do código da aplicação.")
     info = get_release_info(root)
+    if require_manifest and not info["verified"] and not _synthetic_profile():
+        raise ReleaseIdentityError(
+            "O arranque exige um artefacto com manifesto de versão válido; "
+            "gerar o pacote do commit aprovado com tools/build_release.py."
+        )
     contract = runtime_contract or RuntimeContract(data_dir, info["source_sha256"])
     if contract.source_sha256 != info["source_sha256"]:
         raise ContractError("O contrato fornecido não corresponde ao código deste processo.")
