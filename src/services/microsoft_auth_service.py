@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
+import math
+import time
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 from src.services.admin_access import account_role
 from urllib import error, parse, request
 
@@ -21,6 +25,7 @@ AUTH_SCOPE = "openid profile email User.Read"
 AUTHORIZE_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize"
 TOKEN_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
 GRAPH_ME_URL = "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName"
+INVALID_IDENTITY = "Resposta Microsoft inválida. Tente iniciar sessão novamente."
 
 
 class MicrosoftAuthError(Exception):
@@ -35,6 +40,7 @@ class MicrosoftAuthUser:
     display_name: str
     email: str
     role: str = "technician"
+    tenant_id: str = ""
 
 
 class MicrosoftAuthService:
@@ -89,39 +95,77 @@ class MicrosoftAuthService:
     def authenticate_code(self, *, code: str, redirect_uri: str, nonce: str) -> MicrosoftAuthUser:
         self.validate_config()
         token_payload = self._exchange_code(code=code, redirect_uri=redirect_uri)
-        claims = self._decode_unverified_jwt(str(token_payload.get("id_token") or ""))
-
-        if claims.get("nonce") != nonce:
-            raise MicrosoftAuthError("Resposta Microsoft inválida. Tente iniciar sessão novamente.")
-
-        if str(claims.get("tid") or "").lower() != self.tenant_id.lower():
-            raise MicrosoftAuthError("Esta conta Microsoft não pertence ao tenant configurado.")
-
-        access_token = str(token_payload.get("access_token") or "")
-        profile = self._load_profile(access_token) if access_token else {}
+        if not isinstance(token_payload, dict):
+            raise MicrosoftAuthError(INVALID_IDENTITY)
+        claims = self._decode_unverified_jwt(token_payload.get("id_token"))
+        tenant_id, object_id = self._validate_identity_claims(claims, nonce=nonce)
+        access_token = token_payload.get("access_token")
+        if not isinstance(access_token, str) or not access_token.strip():
+            raise MicrosoftAuthError(INVALID_IDENTITY)
+        profile = self._load_profile(access_token)
+        # /me is required proof from Graph using the delegated token. Never use
+        # a claim/email as a fallback for a missing or different Graph identity.
+        if not isinstance(profile, dict) or self._identity_uuid(profile.get("id")) != object_id:
+            raise MicrosoftAuthError(INVALID_IDENTITY)
 
         email = self._first_value(
             profile.get("mail"),
             profile.get("userPrincipalName"),
-            claims.get("email"),
-            claims.get("preferred_username"),
-            claims.get("upn"),
         )
         display_name = self._first_value(profile.get("displayName"), claims.get("name"), email)
-        user_id = self._first_value(profile.get("id"), claims.get("oid"), email)
 
         if not email or not self._is_allowed_email(email):
             allowed = ", ".join(f"@{domain}" for domain in self.allowed_domains)
             raise MicrosoftAuthError(f"Acesso limitado a contas {allowed}.")
 
         return MicrosoftAuthUser(
-            id=user_id,
+            id=object_id,
             username=email,
             initials=self._initials_from_name(display_name or email),
             display_name=display_name or email,
             email=email,
             role=account_role(email),
+            tenant_id=tenant_id,
         )
+
+    def _validate_identity_claims(self, claims: dict[str, Any], *, nonce: str) -> tuple[str, str]:
+        """Check consistency of the v2 token obtained directly over TLS.
+
+        This does not verify its signature. Do not reuse this helper to accept
+        externally supplied JWTs or bearer authentication on application routes.
+        """
+        tenant_id = self._identity_uuid(claims.get("tid"))
+        if tenant_id != self._identity_uuid(self.tenant_id):
+            raise MicrosoftAuthError(INVALID_IDENTITY)
+        if (claims.get("iss") != f"https://login.microsoftonline.com/{tenant_id}/v2.0"
+                or claims.get("aud") != self.client_id
+                or not isinstance(nonce, str) or not nonce
+                or claims.get("nonce") != nonce):
+            raise MicrosoftAuthError(INVALID_IDENTITY)
+        now = time.time()
+        # No expiry grace: an expired response must initiate a fresh login.
+        # Optional nbf/iat receive the same strict numeric/type checks.
+        for name in ("exp", "nbf", "iat"):
+            if name != "exp" and name not in claims:
+                continue
+            value = claims.get(name)
+            if (type(value) not in (int, float) or (isinstance(value, float) and not math.isfinite(value))
+                    or (name == "exp" and value <= now)
+                    or (name != "exp" and value > now)):
+                raise MicrosoftAuthError(INVALID_IDENTITY)
+        return tenant_id, self._identity_uuid(claims.get("oid"))
+
+    @staticmethod
+    def _identity_uuid(value: Any) -> str:
+        if not isinstance(value, str):
+            raise MicrosoftAuthError(INVALID_IDENTITY)
+        try:
+            normalized = str(UUID(value))
+        except ValueError as exc:
+            raise MicrosoftAuthError(INVALID_IDENTITY) from exc
+        if normalized != value.lower():
+            raise MicrosoftAuthError(INVALID_IDENTITY)
+        return normalized
 
     def user_from_session(self, payload: dict[str, Any] | None) -> MicrosoftAuthUser | None:
         if not payload:
@@ -134,6 +178,7 @@ class MicrosoftAuthService:
                 display_name=str(payload["display_name"]),
                 email=str(payload["email"]),
                 role=account_role(str(payload["email"])),
+                tenant_id=str(payload.get("tenant_id") or ""),
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -147,6 +192,7 @@ class MicrosoftAuthService:
             "display_name": user.display_name,
             "email": user.email,
             "role": user.role,
+            "tenant_id": user.tenant_id,
         }
 
     def _exchange_code(self, *, code: str, redirect_uri: str) -> dict[str, Any]:
@@ -192,17 +238,31 @@ class MicrosoftAuthService:
         except error.URLError as exc:
             raise MicrosoftAuthError(f"Microsoft Login indisponível: {exc}") from exc
 
-        return json.loads(content.decode("utf-8")) if content else {}
+        try:
+            payload = json.loads(content.decode("utf-8")) if content else {}
+        except (ValueError, UnicodeError) as exc:
+            raise MicrosoftAuthError(INVALID_IDENTITY) from exc
+        if not isinstance(payload, dict):
+            raise MicrosoftAuthError(INVALID_IDENTITY)
+        return payload
 
     @staticmethod
-    def _decode_unverified_jwt(token: str) -> dict[str, Any]:
+    def _decode_unverified_jwt(token: Any) -> dict[str, Any]:
         try:
-            payload = token.split(".")[1]
+            if not isinstance(token, str):
+                raise ValueError()
+            parts = token.split(".")
+            if len(parts) != 3 or not all(parts):
+                raise ValueError()
+            payload = parts[1]
             payload += "=" * (-len(payload) % 4)
-            decoded = base64.urlsafe_b64decode(payload.encode("ascii"))
-            return json.loads(decoded.decode("utf-8"))
-        except (IndexError, ValueError, json.JSONDecodeError) as exc:
-            raise MicrosoftAuthError("Não foi possível validar a resposta Microsoft.") from exc
+            decoded = base64.b64decode(payload.encode("ascii"), altchars=b"-_", validate=True)
+            claims = json.loads(decoded.decode("utf-8"))
+            if not isinstance(claims, dict):
+                raise ValueError()
+            return claims
+        except (ValueError, UnicodeError, binascii.Error) as exc:
+            raise MicrosoftAuthError(INVALID_IDENTITY) from exc
 
     def _is_allowed_email(self, email: str) -> bool:
         domain = email.rsplit("@", 1)[-1].lower() if "@" in email else ""
@@ -211,7 +271,7 @@ class MicrosoftAuthService:
     @staticmethod
     def _first_value(*values: object) -> str:
         for value in values:
-            normalized = str(value or "").strip()
+            normalized = value.strip() if isinstance(value, str) else ""
             if normalized:
                 return normalized
         return ""
