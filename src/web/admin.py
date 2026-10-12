@@ -90,15 +90,21 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
                 raise ValueError()
             delivery_unknown = delivery_uncertain(row["kind"], result)
             uncertain = delivery_unknown
-            # A conservative retry guard is not evidence that a queued mail
-            # was sent. Report uncertainty only from delivery evidence or a
-            # terminal failure whose outcome cannot be established.
+            # _send_mail_once persists sending_mail before calling transport.
+            # Preparation checkpoints and a missing local commit prove that
+            # sending never started; retain uncertainty for attempted legacy
+            # jobs without checkpoints or unrecognized terminal outcomes.
             reported_uncertain = uncertain
             deadline = teams_retry_deadline(row["kind"], result)
             has_mail = row["kind"] == "archive_and_mail_local" or bool(payload.get("mail"))
             if has_mail and mail.get("accepted") is not True and result.get("phase") not in ("generating_pdf", "pdf_ready", "mail_rejected"):
                 uncertain = True
-                reported_uncertain = reported_uncertain or (row["status"] == "failed" and not row["retryable"])
+                known_not_sent = (result.get("phase") in {
+                    "message_ready", "removing_active", "active_removed", "mail_snapshot_invalid"
+                } or result.get("commit_guard_required") is True
+                    or (not result.get("phase") and row["attempts"] == 0))
+                reported_uncertain = reported_uncertain or (
+                    row["status"] == "failed" and not row["retryable"] and not known_not_sent)
             invalid = bool(result.get("invalid_state"))
             # Match queue._serialize, not the stricter manual-retry guard.
             will_retry = row["status"] == "failed" and bool(row["retryable"]) and not delivery_unknown and not invalid

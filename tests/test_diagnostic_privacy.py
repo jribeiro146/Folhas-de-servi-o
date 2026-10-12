@@ -330,7 +330,9 @@ def test_admin_does_not_report_unsent_preparation_as_uncertain(diagnostic_app, s
 @pytest.mark.parametrize("phase", [None, "sending_mail", "mail_unknown"])
 def test_admin_still_reports_failed_mail_without_acceptance_as_uncertain(diagnostic_app, phase):
     app, _, _, _, queue, _ = diagnostic_app
-    make_job(queue, result={"phase": phase} if phase else {})
+    identifier = make_job(queue, result={"phase": phase} if phase else {})
+    with queue._connect() as db:
+        db.execute("UPDATE graph_sync_jobs SET attempts=1 WHERE id=?", (identifier,))
     job = login(app, oid=ADMIN_ID, email=admin_access.ADMIN_EMAIL).get("/api/admin/overview").get_json()["jobs"][0]
     assert job["error_code"] == "job_reconciliation_required"
     assert job["reconciliation_required"] is True and job["can_retry"] is False
@@ -360,3 +362,36 @@ def test_admin_never_labels_uncertain_send_as_automatic_retry(diagnostic_app, ph
     job = login(app, oid=ADMIN_ID, email=admin_access.ADMIN_EMAIL).get("/api/admin/overview").get_json()["jobs"][0]
     assert job["will_retry"] is False
     assert job["error_code"] == "job_reconciliation_required" and job["can_retry"] is False
+
+
+def test_admin_reports_expired_unconfirmed_commit_as_failure_before_sending(diagnostic_app):
+    app, _, _, _, queue, _ = diagnostic_app
+    editing = app.extensions["synthetic_editing"].repository
+    item = queue.enqueue("archive_and_mail_local", {"_owner": OWNER, "mail": {"to": "synthetic@example.invalid"},
+        "_commit_guard": {"database": str(editing.database_path), "document_id": "synthetic", "operation_id": "absent"}})
+    assert item["status"] == "held"
+    with queue._connect() as db:
+        db.execute("UPDATE graph_sync_jobs SET updated_at=0 WHERE id=?", (item["id"],))
+    assert queue._claim_next() is None
+    before = queue.status(item["id"])
+    assert before["status"] == "failed" and before["attempts"] == 0
+    assert before["result"]["commit_guard_required"] is True
+    job = login(app, oid=ADMIN_ID, email=admin_access.ADMIN_EMAIL).get("/api/admin/overview").get_json()["jobs"][0]
+    assert job["error_code"] == "job_failed" and job["will_retry"] is False
+    assert job["can_retry"] is False and job["reconciliation_required"] is True
+    assert queue.status(item["id"]) == before
+
+
+@pytest.mark.parametrize("phase", ["message_ready", "removing_active", "active_removed"])
+def test_admin_reports_exhausted_presend_attempts_as_failure_without_uncertain_mail(diagnostic_app, phase):
+    app, _, _, _, queue, _ = diagnostic_app
+    identifier = make_job(queue, status="running", result={"phase": phase})
+    with queue._connect() as db:
+        db.execute("UPDATE graph_sync_jobs SET kind='archive_and_remove',attempts=1,max_attempts=1 WHERE id=?", (identifier,))
+    queue._record_job_failure(queue.status(identifier), GraphStorageError("Falha transitória fictícia"))
+    before = queue.status(identifier)
+    assert before["status"] == "failed" and before["will_retry"] is False
+    job = login(app, oid=ADMIN_ID, email=admin_access.ADMIN_EMAIL).get("/api/admin/overview").get_json()["jobs"][0]
+    assert job["error_code"] == "job_failed" and job["will_retry"] is False
+    assert job["can_retry"] is False and job["reconciliation_required"] is True
+    assert queue.status(identifier) == before

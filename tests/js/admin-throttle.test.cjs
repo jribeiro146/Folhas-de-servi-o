@@ -70,6 +70,22 @@ test("admin explains an automatic retry without claiming an uncertain send", asy
     assert.doesNotMatch(text, /Resultado incerto|Requer revisão|Repetir trabalho/);
 });
 
+test("admin distinguishes failed preparation from an uncertain delivery while keeping review required", async () => {
+    const text = await panel({ ...job, error_code: "job_failed", reconciliation_required: true,
+        will_retry: false, can_retry: false });
+    assert.match(text, /Falha de processamento/);
+    assert.match(text, /Requer revisão/);
+    assert.doesNotMatch(text, /Resultado incerto|Repetir trabalho/);
+});
+
+test("admin shows the scheduled Teams retry with its future deadline", async () => {
+    const text = await panel({ ...job, error_code: null, will_retry: true, can_retry: false,
+        retry_not_before: Date.now() / 1000 + 86400 });
+    assert.match(text, /Nova tentativa automática agendada/);
+    assert.match(text, /bloqueada pelo Teams até/);
+    assert.doesNotMatch(text, /Resultado incerto|Requer revisão|Repetir trabalho/);
+});
+
 test("admin explains a future throttle deadline without offering premature retry", async () => {
     const text = await panel({ ...job, retry_not_before: Date.now() / 1000 + 86400, can_retry: false });
     assert.match(text, /bloqueada pelo Teams até/);

@@ -48,6 +48,19 @@ A primeira nova revisão do rótulo identificou ainda falhas transitórias `fail
 
 Segunda nova ronda do rótulo: 156 Python aprovados, 54,32 s (`p2-m09-label-r2-final.txt`), e 91 Node aprovados, 1,56 s (`p2-m09-label-node-r2.txt`). A tentativa anterior teve 146 aprovados/1 falha/9 erros porque um comentário em src foi alterado durante a execução, disparando corretamente a recusa por identidade de código diferente; log `p2-m09-label-r2.txt` preservado. Repetição feita com o checkout estável, sem alterar a proteção de versão.
 
+A segunda nova revisão identificou a mesma distinção em falhas terminais anteriores ao envio. A invariante confirmada em `_send_mail_once` é persistir `sending_mail` antes de chamar o transporte. Uma confirmação local em falta (`commit_guard_required`) ou checkpoints de preparação (`message_ready`, `removing_active`, `active_removed`, `mail_snapshot_invalid`; PDF/rejeição já tratados) não provam um envio incerto. A categoria apresentada respeita agora a matriz seguinte; as guardas de repetição são preservadas em todos os casos.
+
+| Evidência persistida | Diagnóstico apresentado |
+|---|---|
+| held/pending/running sem evidência de envio | Espera ou fase de preparação |
+| failed com repetição automática admissível | Nova tentativa automática agendada |
+| Falha terminal em preparação, guarda de commit, ou sem fase e zero tentativas | Falha de processamento; mantém revisão/bloqueio manual aplicável |
+| sending_mail/mail_unknown sem aceitação, ou flags de migração/restauro incerto | Resultado incerto, reconciliação obrigatória |
+| Falha terminal antiga, sem fase e com tentativas, ou fase não reconhecida sem prova de resultado | Resultado incerto; não inferir ausência de envio |
+| Estado inválido | Recuperação necessária |
+
+Terceira nova ronda do rótulo: 172 Python aprovados, 44,01 s (`p2-m09-label-r3.txt`), nos quatro módulos dirigidos anteriores mais `test_graph_finalization_queue`; 93 JavaScript aprovados, 1,38 s (`p2-m09-label-node-r3.txt`). Casos adicionais executam a expiração real da guarda de commit através de `_claim_next` e a falha terminal através de `_record_job_failure`, verificando que o overview não modifica a base. Incluem legado sem checkpoint com tentativa e apresentação conjunta de prazo Teams/repetição automática.
+
 Testes sintéticos com `tests/conftest.py`/`tools/test_runtime.py`: diretórios temporários novos, rede bloqueada, mail/Teams/worker no web desativados. Com `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`, executar `python -B -m pytest -p no:cacheprovider` nos grupos relevantes.
 
 - Regressão de diagnóstico, logging, Microsoft, admin, arquivo/web, visibilidade de trabalhos, identidade administrativa e atualização Graph/lista: 255 aprovados, 71,29 s (`qa-output/consolidacao-20261007/p2-m09-regression-final.txt`, relativo à raiz Migração).
