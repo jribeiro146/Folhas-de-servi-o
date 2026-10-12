@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 from src.services.admin_access import account_role
+from src.services.diagnostic_views import known_provider_cause
 from urllib import error, parse, request
 
 from src.config import (
@@ -32,9 +33,10 @@ CLAIM_CLOCK_SKEW_SECONDS = 60
 class MicrosoftAuthError(Exception):
     """Raised when Microsoft login cannot be completed."""
 
-    def __init__(self, message: str, *, code: str = "microsoft_auth_failed"):
+    def __init__(self, message: str, *, code: str = "microsoft_auth_failed", diagnostic_cause=None):
         super().__init__(message)
         self.code = code
+        self.diagnostic_cause = diagnostic_cause
 
 
 @dataclass(frozen=True)
@@ -239,8 +241,13 @@ class MicrosoftAuthService:
             with request.urlopen(req, timeout=60) as response:
                 content = response.read()
         except error.HTTPError as exc:
+            # Retain only an enumerated hint; never retain the provider body.
+            try:
+                cause = known_provider_cause(exc.read(65536).decode("utf-8", errors="replace"))
+            except (OSError, ValueError):
+                cause = None
             raise MicrosoftAuthError("O fornecedor Microsoft não concluiu o pedido de login.",
-                                     code="microsoft_http_failed") from exc
+                                     code="microsoft_http_failed", diagnostic_cause=cause) from exc
         except error.URLError as exc:
             raise MicrosoftAuthError("Microsoft Login temporariamente indisponível.",
                                      code="microsoft_unavailable") from exc

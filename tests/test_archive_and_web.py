@@ -921,7 +921,7 @@ def test_mail_diagnostic_endpoint_refuses_anonymous_without_contacting_provider(
     assert mail.calls == 0
 
 
-def test_send_checks_mail_credentials_before_archiving(isolated_dirs, monkeypatch):
+def test_send_checks_mail_credentials_before_archiving(isolated_dirs, monkeypatch, caplog):
     import src.web.application as application_module
 
     monkeypatch.setattr(application_module, "ACTIVE_AUTH_PROVIDER", "microsoft")
@@ -991,6 +991,8 @@ def test_send_checks_mail_credentials_before_archiving(isolated_dirs, monkeypatc
     assert response.status_code == 503
     assert response.get_json()["code"] == "mail_preflight_configuration_failed"
     assert response.get_json()["reference"] == response.headers["X-Request-ID"]
+    failure = next(record for record in caplog.records if getattr(record, "event", None) == "mail_preflight_configuration_failed")
+    assert failure.event_fields["cause"] == "missing_mail_send"
     assert source.exists()
     assert queue.calls == []
 

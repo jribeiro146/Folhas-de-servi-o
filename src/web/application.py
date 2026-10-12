@@ -99,7 +99,7 @@ from src.services.graph_sync_coordinator import GraphRefreshCoordinator
 from src.services.graph_sync_queue import GraphSyncQueue
 from src.services.admin_access import can_administer
 from src.services.graph_job_visibility import can_read_job, microsoft_job_owner, normalize_job_owner, public_job_status
-from src.services.diagnostic_views import safe_queue_summary, safe_refresh_status, safe_service_status
+from src.services.diagnostic_views import OAUTH_ERRORS, safe_provider_failure, safe_queue_summary, safe_refresh_status, safe_service_status
 from src.services.local_pdf_service import LocalPdfService
 from src.services.microsoft_auth_service import MicrosoftAuthError, MicrosoftAuthService
 from src.services.photo_attachment_service import PhotoAttachmentError, PhotoAttachmentService
@@ -470,12 +470,13 @@ def _create_app(
     def operational_admin_allowed():
         return AUTH_ENABLED and ACTIVE_AUTH_PROVIDER == "microsoft" and can_administer(g.get("current_user"))
 
-    def diagnostic_failure(code, status):
+    def diagnostic_failure(code, status, error=None):
         g.response_error_code = code
         message = ("Diagnóstico reservado ao administrador." if status == 403 else
                    "Não foi possível concluir o pedido. Contacte o administrador com a referência indicada.")
         if status >= 500:
-            log_event(app.logger, logging.ERROR, "Pedido interrompido; consultar o código e a referência.", event=code)
+            log_event(app.logger, logging.ERROR, "Pedido interrompido; consultar o código e a referência.",
+                      event=code, **(safe_provider_failure(error) if error is not None else {}))
         return jsonify(success=False, error=message, code=code, reference=g.get("request_id")), status
 
     def editing_error_response(error: Exception):
@@ -732,7 +733,9 @@ def _create_app(
             return render_template(
                 "login.html",
                 auth_provider="microsoft",
-                error=request.args.get("error"),
+                error=redact_diagnostic_text(request.args.get("error")) if request.args.get("error") else None,
+                diagnostic_reference=(request.args.get("reference") if
+                    re.fullmatch(r"[A-Za-z0-9._:-]{1,64}", request.args.get("reference", "")) else None),
                 next_url=safe_next_url(request.args.get("next")),
                 asset_version=app.config["ASSET_VERSION"],
             )
@@ -753,7 +756,7 @@ def _create_app(
                     logging.ERROR,
                     "Pré-validação Graph do login Microsoft falhou.",
                     event="auth_graph_preflight_failed",
-                    error_type=type(exc).__name__,
+                    **safe_provider_failure(exc),
                 )
                 return login_failure("auth_graph_preflight_failed", friendly_graph_login_error(exc))
 
@@ -775,7 +778,7 @@ def _create_app(
                 logging.ERROR,
                 "Não foi possível construir o pedido de login Microsoft.",
                 event="auth_start_failed",
-                error_type=type(exc).__name__,
+                **safe_provider_failure(exc),
             )
             return login_failure("auth_start_failed")
 
@@ -793,6 +796,7 @@ def _create_app(
                 logging.WARNING,
                 "O fornecedor Microsoft recusou o login.",
                 event="auth_provider_rejected",
+                provider_error_code=request.args.get("error") if request.args.get("error") in OAUTH_ERRORS else "unrecognized_provider_error",
             )
             session.pop("microsoft_auth_state", None)
             session.pop("microsoft_auth_nonce", None)
@@ -826,8 +830,8 @@ def _create_app(
                 logging.ERROR,
                 "Autenticação Microsoft falhou.",
                 event="auth_callback_failed",
-                error_type=type(exc).__name__,
                 auth_error_code=exc.code,
+                **safe_provider_failure(exc),
             )
             return login_failure("auth_callback_failed")
 
@@ -1317,14 +1321,7 @@ def _create_app(
                 "graph": {"authenticated": True},
             })
         except GraphStorageError as exc:
-            log_event(
-                app.logger,
-                logging.ERROR,
-                "Diagnóstico Graph falhou.",
-                event="graph_diagnostic_failed",
-                error_type=type(exc).__name__,
-            )
-            return diagnostic_failure("graph_diagnostic_failed", 502)
+            return diagnostic_failure("graph_diagnostic_failed", 502, exc)
 
     @app.route("/api/mail/test")
     def mail_test():
@@ -1338,23 +1335,9 @@ def _create_app(
                 "mail": safe_service_status(mail_service.test_connection()),
             })
         except GraphMailConfigurationError as exc:
-            log_event(
-                app.logger,
-                logging.ERROR,
-                "Diagnóstico de e-mail encontrou configuração inválida.",
-                event="mail_diagnostic_configuration_failed",
-                error_type=type(exc).__name__,
-            )
-            return diagnostic_failure("mail_diagnostic_configuration_failed", 503)
+            return diagnostic_failure("mail_diagnostic_configuration_failed", 503, exc)
         except GraphMailError as exc:
-            log_event(
-                app.logger,
-                logging.ERROR,
-                "Diagnóstico de e-mail falhou.",
-                event="mail_diagnostic_failed",
-                error_type=type(exc).__name__,
-            )
-            return diagnostic_failure("mail_diagnostic_failed", 502)
+            return diagnostic_failure("mail_diagnostic_failed", 502, exc)
 
     @app.route("/api/graph/sync", methods=["POST"])
     def graph_sync():
@@ -2012,9 +1995,9 @@ def _create_app(
                 try:
                     mail_service.test_connection()
                 except GraphMailConfigurationError as exc:
-                    return diagnostic_failure("mail_preflight_configuration_failed", 503)
+                    return diagnostic_failure("mail_preflight_configuration_failed", 503, exc)
                 except GraphMailError as exc:
-                    return diagnostic_failure("mail_preflight_failed", 502)
+                    return diagnostic_failure("mail_preflight_failed", 502, exc)
 
                 if teams_notification_service is not None:
                     try:

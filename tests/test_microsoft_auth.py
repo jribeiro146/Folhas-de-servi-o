@@ -244,7 +244,8 @@ def test_callback_records_only_safe_time_failure_code(identity, monkeypatch, cap
     response = client.get("/auth/microsoft/callback?state=synthetic-state&code=synthetic-code")
     assert response.status_code == 302 and not calls
     fields = [r.event_fields for r in caplog.records if getattr(r, "event", None) == "auth_callback_failed"]
-    assert fields == [{"error_type": "MicrosoftAuthError", "auth_error_code": "identity_claim_time_invalid"}]
+    assert fields == [{"error_type": "MicrosoftAuthError", "auth_error_code": "identity_claim_time_invalid",
+                       "cause": "identity_invalid"}]
     output = "\n".join(JsonLogFormatter().format(record) for record in caplog.records)
     for marker in (NONCE, tokens["id_token"], tokens["access_token"], OBJECT, TENANT, "untrusted@sensorpoint.pt"):
         assert marker not in output

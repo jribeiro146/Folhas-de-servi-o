@@ -219,3 +219,75 @@ def test_admin_history_projection_preserves_private_original(diagnostic_app):
     assert entry["actor_label"] == "Administrador"
     assert_private(response.get_data(as_text=True))
     assert repository.admin_history()[0]["details"]["provider_error"] == DETAIL
+
+
+@pytest.mark.parametrize("detail,cause", [
+    ("A aplicação não possui Mail.Send. ", "missing_mail_send"),
+    ("AADSTS7000215 invalid_client ", "invalid_client_secret"),
+    ("A Microsoft devolveu um token de acesso inválido. ", "invalid_access_token"),
+    ("Configuração de e-mail incompleta. ", "configuration_missing"),
+])
+def test_mail_diagnostic_preserves_only_known_cause(diagnostic_app, detail, cause):
+    app, _, mail, *_ = diagnostic_app
+    mail.failure = GraphMailConfigurationError(detail + DETAIL)
+    output = io.StringIO()
+    handler = logging.StreamHandler(output)
+    handler.setFormatter(JsonLogFormatter())
+    app.logger.addHandler(handler)
+    try:
+        response = login(app, oid=ADMIN_ID, email=admin_access.ADMIN_EMAIL).get("/api/mail/test")
+    finally:
+        app.logger.removeHandler(handler)
+    rows = [json.loads(line) for line in output.getvalue().splitlines()]
+    failure = next(row for row in rows if row.get("event") == "mail_diagnostic_configuration_failed")
+    assert failure["cause"] == cause
+    assert failure["request_id"] == response.get_json()["reference"]
+    assert_private(output.getvalue())
+    assert_private(response.get_data(as_text=True))
+
+
+@pytest.mark.parametrize("status,cause", [(401, "token_rejected"), (403, "access_denied"), (503, "unavailable")])
+def test_callback_keeps_numeric_http_status_without_body(diagnostic_app, monkeypatch, caplog, status, cause):
+    app, _, _, _, _, auth = diagnostic_app
+    def transport(*_args, **_kwargs):
+        raise HTTPError("https://example.invalid", status, DETAIL, None, io.BytesIO(DETAIL.encode()))
+    monkeypatch.setattr(auth_module.request, "urlopen", transport)
+    monkeypatch.setattr(auth, "authenticate_code", lambda **_kwargs: auth._request_json("https://example.invalid", method="GET"))
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session.update(microsoft_auth_state="state", microsoft_auth_nonce="nonce")
+    caplog.set_level(logging.ERROR)
+    response = client.get("/auth/microsoft/callback", query_string={"state": "state", "code": "code"})
+    row = next(r for r in caplog.records if getattr(r, "event", None) == "auth_callback_failed")
+    assert row.event_fields["http_status"] == status
+    assert row.event_fields["cause"] == cause
+    assert row.event_fields["auth_error_code"] == "microsoft_http_failed"
+    assert_private(response.location)
+    assert_private(JsonLogFormatter().format(row))
+
+
+def test_callback_keeps_allowlisted_oauth_code_and_displays_reference(diagnostic_app, caplog):
+    app = diagnostic_app[0]
+    client = app.test_client()
+    caplog.set_level(logging.WARNING)
+    response = client.get("/auth/microsoft/callback", query_string={"error": "access_denied", "error_description": DETAIL})
+    row = next(r for r in caplog.records if getattr(r, "event", None) == "auth_provider_rejected")
+    assert row.event_fields["provider_error_code"] == "access_denied"
+    assert "access_denied" not in response.location
+    page = client.get(response.location)
+    assert response.headers["X-Request-ID"] in page.get_data(as_text=True)
+    assert_private(page.get_data(as_text=True))
+    assert_private(JsonLogFormatter().format(row))
+
+
+def test_login_sanitizes_external_error_and_rejects_malformed_reference(diagnostic_app):
+    response = diagnostic_app[0].test_client().get("/login", query_string={"error": DETAIL, "reference": DETAIL})
+    assert response.status_code == 200
+    assert_private(response.get_data(as_text=True))
+
+
+def test_traceback_retains_line_and_type_without_path():
+    record = logging.LogRecord("synthetic", logging.ERROR, __file__, 1, "failure", (), None)
+    record.stack_info = 'File "/app/src/x.py", line 10\nRuntimeError: failure'
+    stack = json.loads(JsonLogFormatter().format(record))["stack"]
+    assert "/app/src/x.py" not in stack and "line 10" in stack and "RuntimeError" in stack

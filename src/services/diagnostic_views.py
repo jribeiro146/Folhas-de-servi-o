@@ -1,6 +1,54 @@
 """Allowlisted diagnostics shared by technician polling and administration."""
 import math
 import re
+from urllib.error import HTTPError, URLError
+
+
+OAUTH_ERRORS = frozenset({"access_denied", "server_error", "temporarily_unavailable", "invalid_request",
+    "unauthorized_client", "unsupported_response_type", "invalid_scope", "interaction_required",
+    "login_required", "consent_required"})
+
+
+def known_provider_cause(detail):
+    """Classify known diagnostics without ever returning provider text."""
+    text = str(detail).casefold()
+    if "mail.send" in text:
+        return "missing_mail_send"
+    if any(marker in text for marker in ("aadsts7000215", "invalid_client", "id do secret")):
+        return "invalid_client_secret"
+    if "token de acesso inválido" in text:
+        return "invalid_access_token"
+    if "configuração" in text and "incompleta" in text:
+        return "configuration_missing"
+    return None
+
+
+def safe_provider_failure(error):
+    """Keep a bounded classification and numeric status from explicit causes.
+
+    Exceptions retain their private cause internally. Do not serialize a cause,
+    URL, body or arbitrary OAuth string just to make a public reference useful.
+    """
+    cause = ("identity_invalid" if str(getattr(error, "code", "")).startswith("identity_")
+             else known_provider_cause(error))
+    result = {"error_type": type(error).__name__}
+    current = error
+    for _ in range(8):
+        if current is None:
+            break
+        diagnostic_cause = getattr(current, "diagnostic_cause", None)
+        if diagnostic_cause in {"invalid_client_secret", "missing_mail_send", "invalid_access_token", "configuration_missing"}:
+            cause = cause or diagnostic_cause
+        if isinstance(current, HTTPError) and type(current.code) is int and 100 <= current.code <= 599:
+            result.setdefault("http_status", current.code)
+        elif isinstance(current, (URLError, TimeoutError, ConnectionError)):
+            cause = cause or "unavailable"
+        current = current.__cause__
+    status = result.get("http_status")
+    result["cause"] = cause or ({401: "token_rejected", 403: "access_denied", 429: "rate_limited"}.get(status)) or (
+        "unavailable" if status is not None and status >= 500 else
+        "configuration_invalid" if type(error).__name__ == "GraphMailConfigurationError" else "provider_rejected")
+    return result
 
 
 REFRESH_ERROR = "Não foi possível concluir a atualização. A lista pode estar desatualizada ou ter conteúdo em falta."
