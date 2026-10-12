@@ -96,6 +96,8 @@ from src.services.graph_mail_service import (
 from src.services.graph_storage_service import GraphConflictError, GraphStorageError, GraphStorageService
 from src.services.graph_sync_coordinator import GraphRefreshCoordinator
 from src.services.graph_sync_queue import GraphSyncQueue
+from src.services.admin_access import can_administer
+from src.services.graph_job_visibility import can_read_job, microsoft_job_owner, normalize_job_owner, public_job_status
 from src.services.local_pdf_service import LocalPdfService
 from src.services.microsoft_auth_service import MicrosoftAuthError, MicrosoftAuthService
 from src.services.photo_attachment_service import PhotoAttachmentError, PhotoAttachmentService
@@ -452,6 +454,16 @@ def _create_app(
             session["anonymous_editor_id"] = anonymous_id
             session.permanent = True
         return EditorIdentity(id=f"local:{anonymous_id}", display_name="Técnico local")
+
+    def current_job_owner():
+        if ACTIVE_AUTH_PROVIDER == "microsoft":
+            return microsoft_job_owner(g.get("current_user"))
+        # Local/demo jobs belong to the existing signed editing session too.
+        return normalize_job_owner({"provider": "local", "id": current_editor_identity().id})
+
+    def enqueue_owned_job(kind, payload, *, job_id):
+        # Ownership is server metadata. Never accept a document's supplied owner.
+        return graph_sync_queue.enqueue(kind, {**payload, "_owner": current_job_owner()}, job_id=job_id)
 
     def editing_error_response(error: Exception):
         if isinstance(error, EditingStateQuarantinedError):
@@ -1348,7 +1360,10 @@ def _create_app(
         job = graph_sync_queue.status(job_id)
         if job is None:
             return json_error("Operação de sincronização não encontrada.", 404)
-        return jsonify({"success": True, "job": job})
+        administrator = AUTH_ENABLED and ACTIVE_AUTH_PROVIDER == "microsoft" and can_administer(g.get("current_user"))
+        if not can_read_job(job, current_job_owner(), administrator=administrator):
+            return json_error("Não tem autorização para consultar este trabalho.", 403, code="job_access_denied")
+        return jsonify({"success": True, "job": public_job_status(job)})
 
     @app.route("/api/file/<name>/bootstrap")
     def bootstrap_file_editor(name: str):
@@ -1781,7 +1796,7 @@ def _create_app(
             graph_uploaded_files = []
             graph_sync_job = None
             if graph_service is not None and graph_sync_queue is not None:
-                graph_sync_job = graph_sync_queue.enqueue(
+                graph_sync_job = enqueue_owned_job(
                     "upload_active",
                     {
                         "draft_path": str(draft_path),
@@ -2091,13 +2106,13 @@ def _create_app(
                     graph_job_payload["mail"] = mail_payload
                 if teams_payload is not None:
                     graph_job_payload["teams"] = teams_payload
-                graph_sync_job = graph_sync_queue.enqueue(
+                graph_sync_job = enqueue_owned_job(
                     "archive_and_remove",
                     graph_job_payload,
                     job_id=f"send:{document_id}:{idempotency_key}",
                 )
             elif mail_payload is not None and graph_sync_queue is not None:
-                graph_sync_job = graph_sync_queue.enqueue(
+                graph_sync_job = enqueue_owned_job(
                     "archive_and_mail_local",
                     {
                         "_commit_guard": commit_guard,
@@ -2282,7 +2297,7 @@ def _create_app(
             graph_removed_active = False
             graph_sync_job = None
             if graph_service is not None and graph_sync_queue is not None:
-                graph_sync_job = graph_sync_queue.enqueue(
+                graph_sync_job = enqueue_owned_job(
                     "remove_active",
                     {
                         "_commit_guard": {"database": str(editing_state_service.repository.database_path.resolve()),

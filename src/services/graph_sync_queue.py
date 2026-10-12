@@ -34,6 +34,7 @@ from src.services.runtime_admission import admitted, operation_for
 from src.services.runtime_contract import ContractError, ContractBusy
 from src.services.sqlite_storage_format import initialize_store, validate_store, StorageFormatError
 from src.services.editing_state_format import decode_editing_state
+from src.services.graph_job_visibility import normalize_job_owner
 
 
 LOGGER = logging.getLogger(__name__)
@@ -983,7 +984,7 @@ class GraphSyncQueue:
         # Receipt and completion are committed together by _mark_complete.
         return {**receipt, "phase": "teams_accepted"}
 
-    def _ensure_teams_child(self, connection, notification, parent_job_id):
+    def _ensure_teams_child(self, connection, notification, parent_job_id, *, owner=None):
         """Use the caller's writer transaction; never open a second writer."""
         if not connection.in_transaction:
             raise RuntimeError("A intenção Teams exige uma transação ativa.")
@@ -991,6 +992,9 @@ class GraphSyncQueue:
             return None
         child_id = f"teams:{parent_job_id}"
         payload = {"notification": dict(notification)}
+        normalized_owner = normalize_job_owner(owner)
+        if normalized_owner is not None:
+            payload["_owner"] = normalized_owner
         canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         now = time.time()
         connection.execute("INSERT INTO graph_sync_jobs "
@@ -1018,7 +1022,7 @@ class GraphSyncQueue:
         return {"id": child_id, "status": child["status"]}
 
     def _attach_teams_child(self, connection, parent_id, payload, result):
-        child = self._ensure_teams_child(connection, payload.get("teams"), parent_id)
+        child = self._ensure_teams_child(connection, payload.get("teams"), parent_id, owner=payload.get("_owner"))
         result["teams_job"] = child
         if child and child.get("code") == "teams_child_conflict":
             result["teams_child_conflict"] = True

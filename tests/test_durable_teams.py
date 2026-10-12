@@ -170,11 +170,11 @@ def test_status_reconciliation_is_admitted_transactional_and_idempotent_under_co
                    (json.dumps({"mail": {"accepted": True}, "phase": "mail_accepted"}), parent["id"]))
     ensure_child = queue._ensure_teams_child
     transactions = []
-    def inspect(connection, *args):
+    def inspect(connection, *args, **kwargs):
         transactions.append(connection.in_transaction)
         with pytest.raises(ContractBusy):
             contract.activate("b" * 64, next_formats=SUPPORTED_FORMATS)
-        return ensure_child(connection, *args)
+        return ensure_child(connection, *args, **kwargs)
     monkeypatch.setattr(queue, "_ensure_teams_child", inspect)
     with ThreadPoolExecutor(max_workers=2) as pool:
         states = list(pool.map(lambda _: queue.status(parent["id"]), range(2)))
