@@ -32,7 +32,9 @@ class BundleGraph(GraphStorageService):
         assert item_id == "bundle"
         return [dict(f["item"]) for f in self.files.values()]
 
-    def upload_file(self, file, remote_path, *, expected_etag=None, create_only=False):
+    def upload_file(self, file, remote_path, *, expected_etag=None, create_only=False, parent_item_id=None):
+        if parent_item_id:
+            assert parent_item_id == "photos"
         name = remote_path.removeprefix("Activas/draft/")
         existing = self.files.get(name)
         if create_only:
@@ -61,6 +63,10 @@ class BundleGraph(GraphStorageService):
 
 
 class PhotoGraph(BundleGraph):
+    def _graph_json(self, method, path, **kwargs):
+        assert method == "GET" and path.endswith("/items/bundle:/" + PHOTO_FOLDER_NAME + ":")
+        return self._get_item_by_path("Activas/draft/" + PHOTO_FOLDER_NAME)
+
     def ensure_folder_path(self, _):
         pass
 

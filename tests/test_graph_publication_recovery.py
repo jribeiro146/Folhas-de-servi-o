@@ -30,7 +30,7 @@ class ConditionalGraph(GraphStorageService):
         self.content = None
 
     def _get_item_by_path(self, path):
-        return {"id": "folder", "eTag": "folder-tag"}
+        return {"id": "folder", "name": path.rsplit("/", 1)[-1], "folder": {}, "eTag": "folder-tag"}
 
     def upload_file(self, local_file, remote_path, *, expected_etag=None):
         self.requests.append((expected_etag, self.etag))
@@ -204,7 +204,7 @@ class RecoverableCreation(GraphStorageService):
         return self.items.get(path)
 
     def ensure_folder_path(self, path):
-        pass
+        return {"id": "shared-root", "name": path.rsplit("/", 1)[-1], "folder": {}}
 
     def _list_children(self, item_id):
         return []

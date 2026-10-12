@@ -381,6 +381,7 @@ class GraphStorageService:
         if remote is not None:
             if not owner.get("id") or owner["id"] != remote.get("id") or "folder" not in remote:
                 raise GraphConflictError("Já existe um arquivo remoto com este nome sem prova de propriedade local.")
+            self._require_folder(remote, bundle_dir.name, expected_id=owner["id"])
             return remote
         return self._create_owned_folder(bundle_dir, owner_path, self.config.archive_path)
 
@@ -473,6 +474,7 @@ class GraphStorageService:
                     "Já existe um rascunho remoto com este nome sem correspondência local. "
                     "Resolva o conflito antes de publicar."
                 )
+            self._require_folder(remote, bundle_dir.name, expected_id=known_id)
         else:
             remote = self._create_owned_active_folder(bundle_dir, ownership_path)
         self._apply_explicit_removals(bundle_dir, remote_folder)
@@ -487,7 +489,7 @@ class GraphStorageService:
             uploaded.append(remote_path)
 
         uploaded.extend(
-            self._upload_photo_folder(bundle_dir, remote_folder, prune=True)
+            self._upload_photo_folder(bundle_dir, remote_folder, prune=True, active_folder_id=str(remote["id"]))
         )
         folder_item = self._get_item_by_path(remote_folder) or {"name": bundle_dir.name}
         folder_item["remote_path"] = remote_folder
@@ -544,27 +546,33 @@ class GraphStorageService:
             owner = {"temporary_name": temporary_name}
             self._atomic_write_json(ownership_path, owner)
         temporary_path = self._join_graph_path(root_path, temporary_name)
+        # An explicit POST conflict disproves creation by this attempt. Keep it
+        # durable so a later save cannot mistake the conflicting item for a
+        # lost response. A pre-existing random name alone is never ownership.
+        if owner.get("creation_conflict"):
+            raise GraphConflictError("A criação da pasta temporária entrou em conflito; requer revisão.")
         remote = self._get_item_by_path(temporary_path)
+        if remote is not None and not owner.get("id") and not owner.get("creation_attempted"):
+            raise GraphConflictError("A pasta temporária já existe sem prova de criação local.")
         if remote is None:
             if owner.get("id"):
                 raise GraphConflictError("A pasta temporária remota já não está na localização esperada.")
-            self.ensure_folder_path(root_path)
+            root = self.ensure_folder_path(root_path)
+            owner["creation_attempted"] = True
+            self._atomic_write_json(ownership_path, owner)
             try:
                 remote = self._graph_json(
                     "POST",
-                    f"/drives/{self.config.drive_id}/root:/{self._quote_path(root_path)}:/children",
+                    f"/drives/{self.config.drive_id}/items/{parse.quote(str(root['id']), safe='')}/children",
                     data=json.dumps({"name": temporary_name, "folder": {},
                         "@microsoft.graph.conflictBehavior": "fail"}).encode("utf-8"),
                     content_type="application/json",
                 )
             except GraphConflictError:
-                remote = self._get_item_by_path(temporary_path)
-                if remote is None:
-                    raise GraphStorageError("Criação remota ainda não confirmada; será verificada novamente.")
-        if not remote.get("id"):
-            raise GraphStorageError("A criação da pasta remota não foi confirmada.")
-        if owner.get("id") and owner["id"] != remote["id"]:
-            raise GraphConflictError("A pasta temporária remota foi substituída.")
+                owner["creation_conflict"] = True
+                self._atomic_write_json(ownership_path, owner)
+                raise
+        self._require_folder(remote, temporary_name, expected_id=owner.get("id"))
         owner["id"] = remote["id"]
         self._atomic_write_json(ownership_path, owner)
         # SharePoint can change a newly created folder's eTag before the PATCH.
@@ -574,8 +582,7 @@ class GraphStorageService:
             remote = self._get_item_by_path(temporary_path)
             if remote is None:
                 raise GraphStorageError("A pasta temporária ainda não pôde ser confirmada.")
-            if remote.get("id") != owner["id"] or remote.get("name") != temporary_name or "folder" not in remote:
-                raise GraphConflictError("A pasta temporária remota foi substituída ou alterada.")
+            self._require_folder(remote, temporary_name, expected_id=owner["id"])
             if not remote.get("eTag"):
                 raise GraphStorageError("A versão da pasta temporária ainda não pôde ser confirmada.")
             if self._list_children(str(remote["id"])):
@@ -698,14 +705,67 @@ class GraphStorageService:
         value = str(payload.get("eTag") or "").strip()
         return value or None
 
-    def ensure_folder_path(self, folder_path: str) -> None:
-        current = ""
+    def ensure_folder_path(self, folder_path: str) -> dict[str, Any]:
+        """Ensure shared roots only; each child is addressed by its parent ID.
+
+        A concurrent creator may supply a shared root, but never replace it.
+        Operation-owned bundles use _create_owned_folder instead. Descendants
+        of an owned bundle must start from its proven ID, not recreate its path.
+        """
+        parent = None
+        item = None
         for segment in [part for part in folder_path.strip("/").split("/") if part]:
-            parent = current
-            current = self._join_graph_path(current, segment)
-            if self._path_exists(current):
-                continue
-            self._create_folder(parent, segment)
+            item = self._ensure_child_folder(parent, segment)
+            parent = item["id"]
+        if item is None:
+            item = self._graph_json("GET", f"/drives/{self.config.drive_id}/root")
+            self._require_folder(item)
+        return item
+
+    def _require_folder(self, item: dict[str, Any], name: str | None = None, *,
+                        expected_id: str | None = None, parent_id: str | None = None) -> None:
+        if (not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"].strip()
+                or not isinstance(item.get("folder"), dict) or any(key in item for key in ("file", "remoteItem", "deleted"))
+                or (name is not None and item.get("name") != name)
+                or (expected_id is not None and item["id"] != expected_id)):
+            raise GraphConflictError("O destino remoto não é a pasta esperada; foi preservado.")
+        # The ID-based endpoint establishes the parent. Reject contradictory
+        # provider metadata as well; parentReference is optional in Graph.
+        reference = item.get("parentReference") or {}
+        if (not isinstance(reference, dict)
+                or (reference.get("driveId") and reference["driveId"] != self.config.drive_id)
+                or (parent_id and reference.get("id") and reference["id"] != parent_id)):
+            raise GraphConflictError("A pasta remota pertence a outro destino; foi preservada.")
+
+    def _ensure_child_folder(self, parent_id: str | None, name: str) -> dict[str, Any]:
+        target = (f"/drives/{self.config.drive_id}/items/{parse.quote(parent_id, safe='')}"
+                  if parent_id else f"/drives/{self.config.drive_id}/root")
+        def read():
+            try:
+                return self._graph_json("GET", f"{target}:/{self._quote_path(name)}:")
+            except GraphStorageError as exc:
+                if "HTTP 404" in str(exc):
+                    return None
+                raise
+        item = read()
+        if item is not None:
+            self._require_folder(item, name, parent_id=parent_id)
+            return item
+        created_id = None
+        try:
+            created = self._create_folder(parent_id, name)
+            self._require_folder(created, name, parent_id=parent_id)
+            created_id = created["id"]
+        except GraphConflictError as exc:
+            if exc.status_code != 409:
+                raise
+        # Never replace on 409. Re-read even a successful POST, checking the ID
+        # it returned, before allowing callers to write within the folder.
+        item = read()
+        if item is None:
+            raise GraphStorageError("A pasta remota ainda não pôde ser confirmada.")
+        self._require_folder(item, name, expected_id=created_id, parent_id=parent_id)
+        return item
 
     def upload_file(
         self,
@@ -1047,19 +1107,19 @@ class GraphStorageService:
                 return None
             raise
 
-    def _create_folder(self, parent_path: str, folder_name: str) -> None:
+    def _create_folder(self, parent_item_id: str | None, folder_name: str) -> dict[str, Any]:
         body = json.dumps(
             {
                 "name": folder_name,
                 "folder": {},
-                "@microsoft.graph.conflictBehavior": "replace",
+                "@microsoft.graph.conflictBehavior": "fail",
             }
         ).encode("utf-8")
-        if parent_path:
-            path = f"/drives/{self.config.drive_id}/root:/{self._quote_path(parent_path)}:/children"
+        if parent_item_id:
+            path = f"/drives/{self.config.drive_id}/items/{parse.quote(parent_item_id, safe='')}/children"
         else:
             path = f"/drives/{self.config.drive_id}/root/children"
-        self._graph_json("POST", path, data=body, content_type="application/json")
+        return self._graph_json("POST", path, data=body, content_type="application/json")
 
     @staticmethod
     def _is_cache_current(local_path: Path, meta_path: Path, item: dict[str, Any]) -> bool:
@@ -1345,6 +1405,7 @@ class GraphStorageService:
         *,
         prune: bool = False,
         archive_folder_id: str | None = None,
+        active_folder_id: str | None = None,
     ) -> list[str]:
         local_directory = bundle_dir / PHOTO_FOLDER_NAME
         remote_directory = self._join_graph_path(remote_bundle, PHOTO_FOLDER_NAME)
@@ -1357,19 +1418,12 @@ class GraphStorageService:
             else []
         )
 
-        if archive_folder_id:
-            remote_item = next((item for item in self._list_children(archive_folder_id)
-                                if item.get("name") == PHOTO_FOLDER_NAME and "folder" in item), None)
-        else:
-            remote_item = self._get_item_by_path(remote_directory)
-        if local_files and remote_item is None:
-            if archive_folder_id:
-                remote_item = self._graph_json("POST", f"/drives/{self.config.drive_id}/items/{parse.quote(archive_folder_id, safe='')}/children",
-                    data=json.dumps({"name": PHOTO_FOLDER_NAME, "folder": {},
-                                     "@microsoft.graph.conflictBehavior": "fail"}).encode(), content_type="application/json")
-            else:
-                self.ensure_folder_path(remote_directory)
-                remote_item = self._get_item_by_path(remote_directory)
+        parent_id = archive_folder_id or active_folder_id
+        remote_item = None
+        if local_files:
+            if not parent_id:
+                raise GraphConflictError("A pasta da operação não tem identidade confirmada.")
+            remote_item = self._ensure_child_folder(parent_id, PHOTO_FOLDER_NAME)
 
         uploaded: list[str] = []
         for local_file in local_files:
@@ -1379,9 +1433,10 @@ class GraphStorageService:
                     raise GraphStorageError("A pasta de fotografias do arquivo não foi confirmada.")
                 item = self._upload_archive_file(local_file, remote_path, str(remote_item["id"]))
             elif metadata(local_file).get("deleted"):
-                item = self.upload_file(local_file, remote_path, create_only=True)
+                item = self.upload_file(local_file, remote_path, create_only=True, parent_item_id=str(remote_item["id"]))
             else:
-                item = self.upload_file(local_file, remote_path, expected_etag=self._expected_etag(local_file))
+                item = self.upload_file(local_file, remote_path, expected_etag=self._expected_etag(local_file),
+                                        parent_item_id=str(remote_item["id"]))
             self._write_item_meta(self._item_meta_path(local_file), {**item, "_local_publication": True})
             uploaded.append(remote_path)
 

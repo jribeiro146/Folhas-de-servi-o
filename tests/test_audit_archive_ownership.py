@@ -96,10 +96,17 @@ def test_archive_photos_use_owned_parent_and_exclude_local_proof(tmp_path, monke
     graph = GraphStorageService(GraphConfig("test", "test", "test", "test"))
     monkeypatch.setattr(graph, "_owned_archive_folder", lambda _: {"id": "owned-parent"})
     monkeypatch.setattr(graph, "_list_children", lambda _: [])
+    created = []
     def create(method, path, **kwargs):
+        if method == "GET":
+            assert path.endswith("/items/owned-parent:/" + PHOTO_FOLDER_NAME + ":")
+            if not created:
+                raise GraphStorageError("Microsoft Graph HTTP 404: missing")
+            return created[0]
         assert method == "POST" and path.endswith("/items/owned-parent/children")
         assert json.loads(kwargs["data"])["@microsoft.graph.conflictBehavior"] == "fail"
-        return {"id": "owned-photos", "name": PHOTO_FOLDER_NAME, "folder": {}}
+        created.append({"id": "owned-photos", "name": PHOTO_FOLDER_NAME, "folder": {}})
+        return created[0]
     monkeypatch.setattr(graph, "_graph_json", create)
     writes = []
     def upload(local, remote, parent):
