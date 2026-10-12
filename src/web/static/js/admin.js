@@ -6,6 +6,9 @@
     const kinds = {upload_active:"Publicar rascunho",archive_and_remove:"Arquivar e publicar folha",
         archive_and_mail_local:"Enviar folha por e-mail",notify_teams:"Enviar aviso Teams",remove_active:"Retirar folha ativa"};
     const statuses = {pending:"Pendente",running:"Em processamento",failed:"Falhou",held:"Aguardar confirmação local",complete:"Concluído"};
+    const jobErrors = {job_failed:"Falha de processamento; consultar o registo da operação.",
+        job_reconciliation_required:"Resultado incerto; é necessária reconciliação antes de repetir.",
+        job_invalid_state:"Estado inválido; é necessária recuperação antes de repetir."};
     const actions = {release_sheet:"Folha libertada",restore_sheet_access:"Acesso reposto",
         retry_job_requested:"Repetição pedida",retry_job_accepted:"Repetição aceite",refresh_requested:"Atualização pedida"};
     const date = (timestamp) => timestamp ? new Date(timestamp * 1000).toLocaleString("pt-PT") : "Sem atividade registada";
@@ -71,7 +74,7 @@
             const card = node("article", "", root);
             node("h3", (kinds[job.kind] || job.kind) + " · " + (statuses[job.status] || job.status), card);
             node("p", "Operação: " + job.id + " · Tentativas: " + job.attempts, card);
-            node("p", job.last_error || job.phase || "A aguardar processamento.", card);
+            node("p", jobErrors[job.error_code] || job.last_error || job.phase || "A aguardar processamento.", card);
             if (job.retry_not_before > Date.now() / 1000) {
                 const deadline = new Date(job.retry_not_before * 1000);
                 node("p", Number.isNaN(deadline.getTime())

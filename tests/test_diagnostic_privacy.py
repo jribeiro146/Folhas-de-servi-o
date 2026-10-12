@@ -125,6 +125,7 @@ def test_diagnostic_failure_has_safe_code_reference_and_logs(diagnostic_app, cap
     response = client.get("/api/graph/test" if kind == "graph" else "/api/mail/test")
     assert response.status_code == status
     assert response.get_json()["reference"] == response.headers["X-Request-ID"]
+    assert response.get_json()["reference"] in response.get_json()["error"]
     assert response.get_json()["code"].endswith("failed")
     assert_private(response.get_data(as_text=True))
     assert_private("\n".join(JsonLogFormatter().format(r) for r in caplog.records))
@@ -204,6 +205,7 @@ def test_admin_refresh_rejection_does_not_export_provider_value_error(diagnostic
                            headers={"X-Admin-CSRF": "synthetic-csrf"})
     assert response.status_code == 409
     assert response.get_json()["code"] == "admin_action_rejected"
+    assert response.get_json()["reference"] in response.get_json()["error"]
     assert_private(response.get_data(as_text=True))
 
 
@@ -291,3 +293,18 @@ def test_traceback_retains_line_and_type_without_path():
     record.stack_info = 'File "/app/src/x.py", line 10\nRuntimeError: failure'
     stack = json.loads(JsonLogFormatter().format(record))["stack"]
     assert "/app/src/x.py" not in stack and "line 10" in stack and "RuntimeError" in stack
+
+
+def test_worker_failure_preserves_private_evidence_and_safe_job_correlation(diagnostic_app, caplog):
+    queue = diagnostic_app[4]
+    identifier = make_job(queue, status="running")
+    job = queue.status(identifier)
+    error = GraphMailConfigurationError("A aplicação não possui Mail.Send. " + DETAIL)
+    caplog.set_level(logging.ERROR)
+    queue._record_job_failure(job, error)
+    row = next(r for r in caplog.records if getattr(r, "event", None) == "graph_job_failed")
+    exported = json.loads(JsonLogFormatter().format(row))
+    assert exported["job_id"] == identifier
+    assert exported["cause"] == "missing_mail_send"
+    assert_private(json.dumps(exported))
+    assert queue.status(identifier)["last_error"] == str(error)

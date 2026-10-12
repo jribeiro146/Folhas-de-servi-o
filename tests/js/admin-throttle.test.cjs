@@ -7,7 +7,7 @@ const vm = require("node:vm");
 const source = fs.readFileSync(path.join(__dirname, "../../src/web/static/js/admin.js"), "utf8");
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-async function panel(job, { documents = [], section = "admin-jobs" } = {}) {
+async function panel(job, { documents = [], section = "admin-jobs", failure = null } = {}) {
     const element = () => ({
         textContent: "", children: [], dataset: {}, disabled: false,
         classList: { add() {} }, addEventListener() {},
@@ -24,7 +24,7 @@ async function panel(job, { documents = [], section = "admin-jobs" } = {}) {
         getElementById: get, createElement: element,
     };
     const fetch = async () => ({
-        ok: true, json: async () => ({ success: true, documents, jobs: job ? [job] : [], audit: [],
+        ok: !failure, json: async () => failure || ({ success: true, documents, jobs: job ? [job] : [], audit: [],
             refresh: null, queue_summary: { pending: 0 } }),
     });
     vm.runInNewContext(source, { document, fetch, Date });
@@ -34,6 +34,25 @@ async function panel(job, { documents = [], section = "admin-jobs" } = {}) {
 }
 
 const job = { id: "synthetic", kind: "notify_teams", status: "failed", attempts: 3 };
+
+for (const [code, label] of [
+    ["job_reconciliation_required", /Resultado incerto; é necessária reconciliação/],
+    ["job_invalid_state", /Estado inválido; é necessária recuperação/],
+    ["job_failed", /Falha de processamento/],
+]) {
+    test("admin displays the safe diagnostic category " + code, async () => {
+        const text = await panel({ ...job, error_code: code, last_error: "Falha registada.", can_retry: false });
+        assert.match(text, label);
+        assert.match(text, /Operação: synthetic/);
+        assert.doesNotMatch(text, /Repetir trabalho/);
+    });
+}
+
+test("admin displays the request reference returned in a rejection message", async () => {
+    const text = await panel(null, { section: "admin-status", failure: { success: false,
+        error: "Pedido recusado. Referência: ref-sintetica.", reference: "ref-sintetica" } });
+    assert.match(text, /ref-sintetica/);
+});
 
 test("admin explains a future throttle deadline without offering premature retry", async () => {
     const text = await panel({ ...job, retry_not_before: Date.now() / 1000 + 86400, can_retry: false });

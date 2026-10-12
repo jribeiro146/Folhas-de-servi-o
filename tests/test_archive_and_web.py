@@ -991,6 +991,7 @@ def test_send_checks_mail_credentials_before_archiving(isolated_dirs, monkeypatc
     assert response.status_code == 503
     assert response.get_json()["code"] == "mail_preflight_configuration_failed"
     assert response.get_json()["reference"] == response.headers["X-Request-ID"]
+    assert response.get_json()["reference"] in response.get_json()["error"]
     failure = next(record for record in caplog.records if getattr(record, "event", None) == "mail_preflight_configuration_failed")
     assert failure.event_fields["cause"] == "missing_mail_send"
     assert source.exists()

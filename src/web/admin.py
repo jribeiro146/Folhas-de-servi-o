@@ -24,6 +24,12 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
     def allowed():
         return authenticated_microsoft() and can_administer(g.get("current_user"))
 
+    def action_rejected(error):
+        reference = g.get("request_id", "indisponível")
+        return jsonify(success=False,
+                       error=redact_diagnostic_text(error) + " Referência: " + reference + ".",
+                       code="admin_action_rejected", reference=reference), 409
+
     @app.context_processor
     def admin_context():
         return {"special_admin": allowed()}
@@ -150,8 +156,7 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
         except KeyError:
             return jsonify(success=False, error="Reserva não encontrada."), 404
         except (ValueError, EditingStateError) as exc:
-            return jsonify(success=False, error=redact_diagnostic_text(exc), code="admin_action_rejected",
-                           reference=g.get("request_id")), 409
+            return action_rejected(exc)
 
     @bp.post("/api/admin/jobs/<job_id>/retry")
     @bp.post("/api/graph/jobs/<job_id>/retry")
@@ -175,8 +180,7 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
         except KeyError:
             return jsonify(success=False, error="Trabalho não encontrado."), 404
         except ValueError as exc:
-            return jsonify(success=False, error=redact_diagnostic_text(exc), code="admin_action_rejected",
-                           reference=g.get("request_id")), 409
+            return action_rejected(exc)
 
     @bp.post("/api/admin/refresh")
     def refresh_graph():
@@ -190,7 +194,6 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
             result = refresh.request_refresh(force=True)
             return jsonify(success=True, refresh=safe_refresh_status(result)), 202
         except ValueError as exc:
-            return jsonify(success=False, error=redact_diagnostic_text(exc), code="admin_action_rejected",
-                           reference=g.get("request_id")), 409
+            return action_rejected(exc)
 
     app.register_blueprint(bp)

@@ -35,6 +35,7 @@ from src.services.runtime_contract import ContractError, ContractBusy
 from src.services.sqlite_storage_format import initialize_store, validate_store, StorageFormatError
 from src.services.editing_state_format import decode_editing_state
 from src.services.graph_job_visibility import normalize_job_owner
+from src.services.diagnostic_views import safe_provider_failure
 
 
 LOGGER = logging.getLogger(__name__)
@@ -1144,6 +1145,7 @@ class GraphSyncQueue:
                 job_kind=job.get("kind"),
                 attempt=job.get("attempts"),
                 will_retry=will_retry,
+                **safe_provider_failure(error),
                 exc_info=(type(error), error, error.__traceback__),
             )
         except GraphJobNoLongerActiveError:

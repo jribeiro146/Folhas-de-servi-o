@@ -474,6 +474,7 @@ def _create_app(
         g.response_error_code = code
         message = ("Diagnóstico reservado ao administrador." if status == 403 else
                    "Não foi possível concluir o pedido. Contacte o administrador com a referência indicada.")
+        message += " Referência: " + g.get("request_id", "indisponível") + "."
         if status >= 500:
             log_event(app.logger, logging.ERROR, "Pedido interrompido; consultar o código e a referência.",
                       event=code, **(safe_provider_failure(error) if error is not None else {}))
