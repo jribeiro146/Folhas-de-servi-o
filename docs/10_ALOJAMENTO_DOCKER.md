@@ -78,7 +78,9 @@ HTTP, login, reservas, SADI privada e diagnóstico da fila. Reconciliar trabalho
 retidos/incertos antes de repetir. Não ligar um worker por cron se o Compose já
 processa a fila. Nenhum destes passos foi executado na instalação real.
 
-Rollback respeita contrato/formatos e trabalho posterior. [M07](BACKUP_RESTAURO.md)
+Para reversão de uma instalação sem contrato, seguir a secção
+[Reverter uma instalação legada após M06](#reverter-uma-instalação-legada-após-m06).
+Nas versões com contrato, rollback respeita formatos e trabalho posterior. [M07](BACKUP_RESTAURO.md)
 restaura com bloqueio global e fila retida, libertados após reconciliação. Se
 leitores de diagnóstico criarem locks/journals, parar os processos e diagnosticar;
 não apagar journals em uso para fazer passar uma recusa.
@@ -229,6 +231,42 @@ Esperado: state=released; os trabalhos individuais não concluídos continuam
 retidos. Conservar backup, workspace e decisão. Rollback para outra imagem requer
 também compatibilidade/ativação explícita; trocar apenas a etiqueta não basta.
 
+### Reverter uma instalação legada após M06
+
+**Nunca arrancar a imagem ou o código legado sobre o volume migrado.** Versões sem
+contrato ignoram runtime-contract.sqlite3 e podem escrever nas bases convertidas
+ou repetir trabalhos; nem o contrato nem restore_hold as conseguem proteger.
+Trocar só a etiqueta, repor um bind src antigo ou usar activate não reverte M06.
+
+1. Parar todos os escritores, incluindo web, worker, cron e versões anteriores.
+   Manter a imagem legada parada durante todo o procedimento.
+2. Preservar o conjunto atual completo num local privado, com as raízes externas,
+   bases/WAL, recibos e trabalho posterior. Se estiver íntegro e com contrato atual,
+   M07 pode capturá-lo usando a imagem correspondente; uma migração interrompida
+   exige preservação offline pelo instalador. Não sobrepor a cópia pré-M06.
+3. Repor **todo o conjunto original** a partir da cópia offline independente feita
+   antes de M06, nos mesmos destinos internos e com donos/permissões originais.
+   Apresentar destinos vazios após preservar o estado atual, sem misturar bases
+   antigas com contratos, WAL ou recibos convertidos. Não restaurar só a SQLite.
+   O snapshot original do workspace M06 continua evidência separada; não é um
+   backup M07 nem um mecanismo automático de reversão.
+4. Recuperar em conjunto a imagem, configuração privada, chave e código src
+   anteriores que tenham sido conservados. Confirmar que correspondem ao conjunto
+   original restaurado. Não reconstruir uma versão antiga a partir do código novo.
+5. Antes de reabrir qualquer escritor, reconciliar efeitos externos desde a
+   migração: emails/Teams aceites, movimentos Graph, cancelamentos e documentos
+   finalizados. Abrange trabalhos já presentes no backup e trabalho criado depois.
+   A reposição local não desfaz esses efeitos; nunca reenviar para os confirmar.
+   Se não houver prova de que reabrir o legado evita repetição ou incoerência,
+   manter tudo parado e pedir recuperação assistida, preservando a evidência.
+
+O trabalho posterior a M06 **não é transferido automaticamente** para a versão
+antiga. Conservá-lo no conjunto atual preservado para recuperação deliberada;
+reverter pode fazê-lo desaparecer da interface antiga, não pode justificar
+apagá-lo. Só o profissional pode escolher/executar a reposição real após esta
+reconciliação. Para versões já com contrato, aplicam-se os procedimentos
+activate/M07 acima; não confundir esse caso com a recuperação legada.
+
 ## Reconciliação da fila e marcadores antigos
 
 A atualização não altera os JSON SADI. Na fila existente, uma publicação posterior
@@ -313,7 +351,10 @@ envia email quando a publicação do arquivo falha. Não retirar `If-Match` nem
 forçar a remoção para contornar conflitos. Contenção temporária de estado responde
 503 com `Retry-After: 2`; repetir o pedido após esse intervalo.
 
-Para reverter, parar todos os escritores e avaliar contrato/formatos antes de
+Para reverter para uma versão legada sem contrato, usar a
+[reposição do conjunto original](#reverter-uma-instalação-legada-após-m06), nunca
+a imagem antiga sobre dados migrados. Entre versões com contrato, parar todos
+os escritores e avaliar contrato/formatos antes de
 ativar a versão anterior. Repor apenas a imagem não muda a versão aceite pelos
 dados. Seguir PREPARACAO_RUNTIME.md e BACKUP_RESTAURO.md; preservar trabalho
 posterior e reconciliar efeitos externos antes de libertar um restauro.

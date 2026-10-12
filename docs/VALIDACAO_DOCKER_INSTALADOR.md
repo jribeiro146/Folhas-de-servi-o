@@ -99,6 +99,8 @@ qa_offline() {
     --mount "type=volume,src=$QA_WORK,dst=/maintenance" \
     "$QA_IMAGE" python -B "$@"
 }
+# Cópia independente ANTES do M06; este volume sintético só contém legacy.txt.
+qa_offline -c 'from pathlib import Path; import shutil; p=Path("/app/data"); assert {f.name for f in p.iterdir()}=={"legacy.txt"}; shutil.copytree(p, "/maintenance/pre-m06")'
 qa_offline tools/migrate_runtime.py prepare --data-dir /app/data \
   --workspace /maintenance/m06 --writers-stopped --roots-complete | tee "evidence-$QA_RUN/migrate-prepare.json"
 qa_offline tools/migrate_runtime.py apply --workspace /maintenance/m06 \
@@ -115,6 +117,44 @@ montagem e o CLI da imagem. Para backup/verify/activate/restauro, o
 inclui os wrappers, chave separada só de leitura e seleção da imagem correta.
 Adaptar esses comandos exclusivamente a volumes/chave fictícios durante ensaios;
 os testes locais não autorizam operações no servidor.
+
+## 3c. Reposição sintética do conjunto pré-M06
+
+Este ensaio usa a cópia independente guardada **antes** do prepare na secção 3b.
+O volume migrado QA_LEGACY fica intacto. Monta-se um quarto volume fictício vazio
+no mesmo destino /app/data, só para verificar a reposição do conjunto original.
+Não se executa a aplicação ou imagem legada: não há operações externas a reconciliar.
+
+~~~bash
+QA_ROLLBACK="$QA_RUN-rollback"
+docker run -i --rm --network none \
+  --mount "type=volume,src=$QA_ROLLBACK,dst=/app/data" \
+  --mount "type=volume,src=$QA_WORK,dst=/maintenance,readonly" \
+  "$QA_IMAGE" python -B - <<'PY'
+from pathlib import Path
+import shutil
+original = Path('/maintenance/pre-m06')
+data = Path('/app/data')
+assert not list(data.iterdir())
+# O conjunto original deste ensaio contém exatamente um ficheiro fictício.
+assert {p.name for p in original.iterdir()} == {'legacy.txt'}
+assert (original / 'legacy.txt').read_bytes() == b'synthetic legacy evidence'
+shutil.copytree(original, data, dirs_exist_ok=True)
+assert {p.name for p in data.iterdir()} == {'legacy.txt'}
+assert (data / 'legacy.txt').read_bytes() == b'synthetic legacy evidence'
+assert not (data / 'runtime-contract.sqlite3').exists()
+assert not list(data.rglob('*.sqlite3'))
+print('PASS: conjunto pré-M06 reposto no mesmo destino; volume migrado preservado')
+PY
+~~~
+
+Esperado: PASS/exit 0, bytes originais e ausência de contrato/bases convertidas.
+É uma verificação sintética de cópia e montagem, não um ensaio do procedimento de
+backup escolhido pelo profissional para produção. A
+[reversão legada real](10_ALOJAMENTO_DOCKER.md#reverter-uma-instalação-legada-após-m06)
+exige preservar todo o estado posterior, recuperar o conjunto completo anterior
+com imagem/configuração/código correspondentes e reconciliar efeitos externos
+antes de reabrir qualquer escritor. Sem essa prova, manter parado.
 
 ## 4. Ferramenta adulterada detetada
 
@@ -214,12 +254,13 @@ são fixos. O ensaio de execução acima usa apenas docker run e volumes QA úni
 | Web e worker / identidade / HTTP | Pendente |
 | Legado recusado / bytes preservados | Pendente |
 | Migração prepare/apply no volume / caminho preservado | Pendente |
+| Reposição pré-M06 no mesmo destino / conjunto migrado preservado | Pendente |
 | Adulteração recusada | Pendente |
 | Pytest / skips explicados / POSIX | Pendente |
 | PDF real / páginas / sandbox | Pendente |
 | Compose / montagens / logs | Pendente |
 
-Preservar evidências e os três volumes fictícios identificados por QA_RUN.
+Preservar evidências e os quatro volumes fictícios identificados por QA_RUN.
 Limpeza posterior é deliberada e apenas desses recursos. Uma falha suspende a
 aceitação Linux; não apagar filas, relaxar proteções ou repetir operações reais
 para obter resultado verde.
