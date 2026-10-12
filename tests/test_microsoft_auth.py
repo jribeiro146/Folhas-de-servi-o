@@ -2,15 +2,16 @@
 import base64
 import io
 import json
+import logging
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
 from src.services import microsoft_auth_service as auth_module
-from src.services.microsoft_auth_service import MicrosoftAuthError, MicrosoftAuthService
+from src.services.microsoft_auth_service import CLAIM_CLOCK_SKEW_SECONDS, MicrosoftAuthError, MicrosoftAuthService
 
 TENANT = "11111111-1111-4111-8111-111111111111"
-CLIENT = "22222222-2222-4222-8222-222222222222"
+CLIENT = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 OBJECT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 OTHER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 NOW = 1000
@@ -73,7 +74,8 @@ def test_required_claim_missing_refuses_before_graph(identity, claim):
     ("tid", OTHER), ("tid", "common"), ("tid", None), ("oid", "email@sensorpoint.pt"),
     ("oid", []), ("exp", NOW), ("exp", NOW - 1), ("exp", str(NOW + 60)),
     ("exp", True), ("exp", float("nan")), ("exp", float("inf")), ("exp", None),
-    ("nbf", NOW + 1), ("nbf", "0"), ("nbf", False), ("iat", NOW + 1),
+    ("nbf", NOW + CLAIM_CLOCK_SKEW_SECONDS + 1), ("nbf", "0"), ("nbf", False),
+    ("iat", NOW + CLAIM_CLOCK_SKEW_SECONDS + 1),
     ("iat", []), ("iat", float("nan")),
 ])
 def test_invalid_claim_refuses_before_graph(identity, claim, value):
@@ -93,6 +95,20 @@ def test_expected_nonce_must_exist(identity, nonce):
     with pytest.raises(MicrosoftAuthError):
         authenticate(auth, nonce=nonce)
     assert not calls
+
+
+@pytest.mark.parametrize("offset", [2, CLAIM_CLOCK_SKEW_SECONDS])
+def test_small_clock_offset_accepts_fresh_response(identity, offset):
+    auth, claims, tokens, _, _ = identity
+    claims.update(iat=NOW + offset, nbf=NOW + offset)
+    tokens["id_token"] = synthetic_jwt(claims)
+    assert authenticate(auth).id == OBJECT
+
+
+def test_client_guid_casing_does_not_change_audience(identity):
+    auth = identity[0]
+    auth.client_id = CLIENT.upper()
+    assert authenticate(auth).id == OBJECT
 
 
 @pytest.mark.parametrize("token", [None, "", "a.b", "a.b.c.d", "a..c", "a.!!!.c", "a.é.c",
@@ -198,3 +214,26 @@ def test_authorization_request_keeps_state_nonce_and_v2_scope(identity):
     assert query["nonce"] == [NONCE] and query["state"] == ["synthetic-state"]
     assert query["response_type"] == ["code"]
     assert query["scope"] == ["openid profile email User.Read"]
+
+
+def test_callback_records_only_safe_time_failure_code(identity, monkeypatch, caplog):
+    import src.web.application as web
+    from src.logging_config import JsonLogFormatter
+    auth, claims, tokens, _, calls = identity
+    claims["nbf"] = NOW + CLAIM_CLOCK_SKEW_SECONDS + 1
+    tokens["id_token"] = synthetic_jwt(claims)
+    monkeypatch.setattr(web, "ACTIVE_AUTH_PROVIDER", "microsoft")
+    monkeypatch.setattr(web, "AUTH_ENABLED", True)
+    client = web.create_app(microsoft_auth_service=auth).test_client()
+    with client.session_transaction() as session:
+        session.update(microsoft_auth_state="synthetic-state", microsoft_auth_nonce=NONCE)
+    caplog.set_level(logging.ERROR)
+    response = client.get("/auth/microsoft/callback?state=synthetic-state&code=synthetic-code")
+    assert response.status_code == 302 and not calls
+    fields = [r.event_fields for r in caplog.records if getattr(r, "event", None) == "auth_callback_failed"]
+    assert fields == [{"error_type": "MicrosoftAuthError", "auth_error_code": "identity_claim_time_invalid"}]
+    output = "\n".join(JsonLogFormatter().format(record) for record in caplog.records)
+    for marker in (NONCE, tokens["id_token"], tokens["access_token"], OBJECT, TENANT, "untrusted@sensorpoint.pt"):
+        assert marker not in output
+    with client.session_transaction() as session:
+        assert "microsoft_user" not in session

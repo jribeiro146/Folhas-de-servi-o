@@ -796,6 +796,7 @@ def _create_app(
                 "Autenticação Microsoft falhou.",
                 event="auth_callback_failed",
                 error_type=type(exc).__name__,
+                auth_error_code=exc.code,
             )
             return redirect(url_for("login", error=str(exc)))
 

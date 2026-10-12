@@ -26,10 +26,15 @@ AUTHORIZE_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant_id}/oauth2/v
 TOKEN_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
 GRAPH_ME_URL = "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName"
 INVALID_IDENTITY = "Resposta Microsoft inválida. Tente iniciar sessão novamente."
+CLAIM_CLOCK_SKEW_SECONDS = 60
 
 
 class MicrosoftAuthError(Exception):
     """Raised when Microsoft login cannot be completed."""
+
+    def __init__(self, message: str, *, code: str = "microsoft_auth_failed"):
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -138,21 +143,22 @@ class MicrosoftAuthService:
         if tenant_id != self._identity_uuid(self.tenant_id):
             raise MicrosoftAuthError(INVALID_IDENTITY)
         if (claims.get("iss") != f"https://login.microsoftonline.com/{tenant_id}/v2.0"
-                or claims.get("aud") != self.client_id
+                or self._identity_uuid(claims.get("aud")) != self._identity_uuid(self.client_id)
                 or not isinstance(nonce, str) or not nonce
                 or claims.get("nonce") != nonce):
             raise MicrosoftAuthError(INVALID_IDENTITY)
         now = time.time()
         # No expiry grace: an expired response must initiate a fresh login.
-        # Optional nbf/iat receive the same strict numeric/type checks.
+        # Optional nbf/iat tolerate a small clock offset to avoid rejecting a
+        # fresh Microsoft response when the local clock is slightly behind.
         for name in ("exp", "nbf", "iat"):
             if name != "exp" and name not in claims:
                 continue
             value = claims.get(name)
             if (type(value) not in (int, float) or (isinstance(value, float) and not math.isfinite(value))
                     or (name == "exp" and value <= now)
-                    or (name != "exp" and value > now)):
-                raise MicrosoftAuthError(INVALID_IDENTITY)
+                    or (name != "exp" and value > now + CLAIM_CLOCK_SKEW_SECONDS)):
+                raise MicrosoftAuthError(INVALID_IDENTITY, code="identity_claim_time_invalid")
         return tenant_id, self._identity_uuid(claims.get("oid"))
 
     @staticmethod
