@@ -1,5 +1,49 @@
 # Validação Linux/Docker e rastreabilidade
 
+**Resultado confirmado em 12/10/2026:** validação sintética Linux/Docker aprovada
+para o commit `0869bfa810794d80dbde6494cd603f6a3d764597`.
+[Run 38243794527](https://github.com/jribeiro146/Folhas-de-servi-o/actions/runs/38243794527)
+concluído com os três jobs verdes, depois de duas revisões reais do Claude.
+
+| Ensaio | Resultado |
+|---|---|
+| Python, UID/GID 10001:10001, Compose 5.6.0 | 1094 aprovados, 3 ignorados, zero falhas; 66.84 s |
+| Python, UID/GID 100:101, Compose 2.27.0 | 1094 aprovados, 3 ignorados, zero falhas; 68.09 s |
+| JavaScript, Node 22 | 79 aprovados, zero falhas |
+| Init, factories, recusa legada, migração e reposição pré-M06 | PASS nas duas imagens |
+| Backup, verify, activate, restore com retenção e release sintético | PASS nas duas imagens |
+| PDF Chromium | Duas páginas verificadas em cada imagem; utilizador correto |
+| Compose válido e recusa de create_host_path=true | PASS nas duas versões |
+| Permissões POSIX SADI, migração e backup | Executados e aprovados nas duas imagens |
+
+Os três skips de cada imagem são específicos de Windows: dois casos UNC e um de
+junções. O teste de finalização SADI que apresentou WinError 5 em Windows passou
+nas duas imagens Linux; isso não demonstra a causa nem resolve o episódio Windows.
+
+A [evidência resumida permanente](EVIDENCIA_CI_2026-10-12.json) guarda hashes,
+identidades, versões, revisão Claude, limites e resultados. Os anexos completos
+foram também descarregados e conferidos por SHA256 no registo local do projeto.
+Os dois runners produziram o mesmo ZIP SHA256:
+`15705b9df70dbd07a86655b48d97321d50a6937fcf15f22619adab74249646e0`.
+O source_sha256 é
+`49a3dd6fcda4597be22b9d203590d21d8a2942755a88eed15397cdefc4048522`.
+
+**Nota de empacotamento entre plataformas:** o builder Windows escreve CRLF no
+único fim de linha do manifesto e produz ZIP SHA256
+`618a768d477ab7fdce8309533dd7dc174aefc43b0c6c159d50e8c0350aebd92e`.
+Normalizar apenas esse fim de linha para LF, preservando todas as outras entradas
+e metadados, reproduziu exatamente o hash dos dois runners. A cópia local
+`ci-validated-0869bfa-linux-identical.zip` foi assim conferida byte a byte por hash.
+Não houve alteração do código ou da identidade operacional. Comparar sempre o
+checksum do ZIP efetivamente entregue; não prometer igualdade binária entre
+plataformas com o builder atual. A uniformização automática desse fim de linha é
+uma melhoria de empacotamento registada, sem impacto no funcionamento da aplicação.
+
+A publicação posterior deste resultado altera apenas documentação e usa `[skip ci]`
+para evitar repetir o mesmo ensaio. O SHA testado continua a ser o indicado acima;
+não confundir um commit de documentação posterior com uma nova execução.
+
+
 ## Objetivo e autorização
 
 Em 12/10/2026, João autorizou publicar uma branch de testes e usar GitHub Actions,
@@ -64,6 +108,8 @@ observados; o link do run é a evidência, não uma promessa de resultado.
 | 12/10/2026 | Verificador e pacote, Windows | 52 aprovados / 1 ignorado; Node: 79 aprovados; actionlint e Bash sem erros |
 | 12/10/2026 | Bateria Python Windows | 1084 aprovados / 4 ignorados / 1 falha: WinError 5 ao renomear o bundle privado SADI; código desse fluxo inalterado |
 | 12/10/2026 | Diagnóstico SADI sem alteração | Grupo completo: 24 aprovados / 1 ignorado. Falha não reproduzida; causa do bloqueio Windows por confirmar, log original preservado |
+| 12/10/2026 | Claude segunda revisão / commit 0869bfa | approve, sem achados/contexto em falta; check exit 0 |
+| 12/10/2026 | Run 38243794527 | Três jobs aprovados; evidência conferida na tabela inicial |
 
 Segunda preparação após o parecer Claude 20261012T112630Z_38671394_87a3e4:
 20 testes CLI aprovados. Confirmado com os binários oficiais portáteis Compose
