@@ -81,7 +81,10 @@
                     ? "O Teams indicou um prazo muito distante. A repetição está bloqueada."
                     : "A repetição está bloqueada pelo Teams até " + date(job.retry_not_before) + ".", card);
             }
-            if (job.reconciliation_required || job.invalid_state) node("p", "Requer revisão. A repetição está bloqueada.", card);
+            if (job.error_code === "job_reconciliation_required" || job.invalid_state ||
+                (job.status === "failed" && job.reconciliation_required)) {
+                node("p", "Requer revisão. A repetição está bloqueada.", card);
+            }
             if (job.can_retry) action(card, "Repetir trabalho", "/api/admin/jobs/" + encodeURIComponent(job.id) + "/retry", {},
                 "Repetir apenas esta operação. Se incluir um envio recusado, pode originar um envio de e-mail.");
         }

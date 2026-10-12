@@ -88,17 +88,22 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
             if row["kind"] == "notify_teams" and "accepted" in result and not isinstance(result["accepted"], bool):
                 raise ValueError()
             uncertain = delivery_uncertain(row["kind"], result)
+            # A conservative retry guard is not evidence that a queued mail
+            # was sent. Report uncertainty only from delivery evidence or a
+            # failed attempt whose outcome cannot be established.
+            reported_uncertain = uncertain
             deadline = teams_retry_deadline(row["kind"], result)
             has_mail = row["kind"] == "archive_and_mail_local" or bool(payload.get("mail"))
             if has_mail and mail.get("accepted") is not True and result.get("phase") not in ("generating_pdf", "pdf_ready", "mail_rejected"):
                 uncertain = True
+                reported_uncertain = reported_uncertain or row["status"] == "failed"
             invalid = bool(result.get("invalid_state"))
         except (TypeError, ValueError):
-            result, uncertain, invalid = {}, True, True
+            result, uncertain, reported_uncertain, invalid = {}, True, True, True
         return {"id": row["id"], "kind": row["kind"], "status": row["status"],
                 "attempts": row["attempts"], "updated_at": row["updated_at"],
                 "last_error": "Falha registada; consultar a referência do trabalho." if row["last_error"] else None,
-                "error_code": "job_invalid_state" if invalid else "job_reconciliation_required" if uncertain else
+                "error_code": "job_invalid_state" if invalid else "job_reconciliation_required" if reported_uncertain else
                               "job_failed" if row["last_error"] else None,
                 "phase": result.get("phase") if result.get("phase") in PHASES else None,
                 "retry_not_before": deadline,

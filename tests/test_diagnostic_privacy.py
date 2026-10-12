@@ -308,3 +308,29 @@ def test_worker_failure_preserves_private_evidence_and_safe_job_correlation(diag
     assert exported["cause"] == "missing_mail_send"
     assert_private(json.dumps(exported))
     assert queue.status(identifier)["last_error"] == str(error)
+
+
+@pytest.mark.parametrize("status", ["held", "pending", "running"])
+@pytest.mark.parametrize("phase", [None, "message_ready", "removing_active", "active_removed"])
+@pytest.mark.parametrize("kind", ["archive_and_mail_local", "archive_and_remove"])
+def test_admin_does_not_report_unsent_preparation_as_uncertain(diagnostic_app, status, phase, kind):
+    app, _, _, _, queue, _ = diagnostic_app
+    identifier = make_job(queue, status=status, result={"phase": phase} if phase else {})
+    with queue._connect() as db:
+        db.execute("UPDATE graph_sync_jobs SET kind=?,last_error=NULL WHERE id=?", (kind, identifier))
+    response = login(app, oid=ADMIN_ID, email=admin_access.ADMIN_EMAIL).get("/api/admin/overview")
+    assert response.status_code == 200
+    job = response.get_json()["jobs"][0]
+    assert job["status"] == status and job["error_code"] is None
+    assert job["reconciliation_required"] is True  # Existing conservative guard is unchanged.
+    assert job["can_retry"] is False
+    assert queue.status(identifier)["status"] == status
+
+
+@pytest.mark.parametrize("phase", [None, "sending_mail", "mail_unknown"])
+def test_admin_still_reports_failed_mail_without_acceptance_as_uncertain(diagnostic_app, phase):
+    app, _, _, _, queue, _ = diagnostic_app
+    make_job(queue, result={"phase": phase} if phase else {})
+    job = login(app, oid=ADMIN_ID, email=admin_access.ADMIN_EMAIL).get("/api/admin/overview").get_json()["jobs"][0]
+    assert job["error_code"] == "job_reconciliation_required"
+    assert job["reconciliation_required"] is True and job["can_retry"] is False

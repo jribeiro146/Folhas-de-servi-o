@@ -35,6 +35,15 @@ async function panel(job, { documents = [], section = "admin-jobs", failure = nu
 
 const job = { id: "synthetic", kind: "notify_teams", status: "failed", attempts: 3 };
 
+for (const status of ["held", "pending", "running"]) {
+    test("admin does not call an unsent " + status + " mail uncertain", async () => {
+        const text = await panel({ ...job, status, kind: "archive_and_mail_local", attempts: 0,
+            error_code: null, last_error: null, reconciliation_required: true, can_retry: false });
+        assert.match(text, /A aguardar processamento/);
+        assert.doesNotMatch(text, /Resultado incerto|Requer revisão|Repetir trabalho/);
+    });
+}
+
 for (const [code, label] of [
     ["job_reconciliation_required", /Resultado incerto; é necessária reconciliação/],
     ["job_invalid_state", /Estado inválido; é necessária recuperação/],

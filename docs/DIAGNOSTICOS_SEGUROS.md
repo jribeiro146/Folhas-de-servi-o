@@ -38,6 +38,12 @@ Não há uma garantia de reconhecer qualquer segredo arbitrário em texto livre.
 
 ## Verificação e manutenção
 
+### Correção do rótulo administrativo após a terceira revisão
+
+João autorizou até três novas rondas por cada um dos dois achados em 12/10/2026. O primeiro é a distinção entre espera e resultado incerto. `safe_job` mantém a guarda conservadora `reconciliation_required` e `can_retry`, mas calcula separadamente a categoria apresentada. Trabalhos `held`/`pending`/`running` sem evidência de envio, nas fases de preparação, não recebem `job_reconciliation_required`; a interface também não lhes apresenta o aviso genérico de revisão. Evidência de envio incerto ou falha sem prova suficiente conserva a categoria e o bloqueio. Estados inválidos continuam a exigir recuperação. Não há alteração de persistência, schema ou reenvio.
+
+Validação dirigida: 150 Python aprovados em 24,74 s (`test_diagnostic_privacy`, `test_operational_admin`, `test_admin_identity`, `test_graph_job_visibility`; log `p2-m09-label-r1.txt`), incluindo as duas espécies de trabalho de email e os estados/fases de preparação. JavaScript completo: 90 aprovados em 0,72 s (`p2-m09-label-node-r1.txt`). A recusa de domínio é o segundo achado, ainda por corrigir nesta revisão isolada. Esta aprovação isolada, se obtida, não fecha o M09 sem rever cumulativamente o conjunto.
+
 Testes sintéticos com `tests/conftest.py`/`tools/test_runtime.py`: diretórios temporários novos, rede bloqueada, mail/Teams/worker no web desativados. Com `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`, executar `python -B -m pytest -p no:cacheprovider` nos grupos relevantes.
 
 - Regressão de diagnóstico, logging, Microsoft, admin, arquivo/web, visibilidade de trabalhos, identidade administrativa e atualização Graph/lista: 255 aprovados, 71,29 s (`qa-output/consolidacao-20261007/p2-m09-regression-final.txt`, relativo à raiz Migração).
