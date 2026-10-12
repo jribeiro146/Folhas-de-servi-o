@@ -20,7 +20,7 @@ Em modo local sem autenticação Microsoft, os dois testes de fornecedor ficam r
 
 As falhas de diagnóstico devolvem `code`, `reference` e mensagem segura; a referência corresponde a `X-Request-ID` e integra também o texto de `error`, para aparecer nos toasts existentes. O mesmo se aplica às recusas `admin_action_rejected`. Falhas Microsoft redirecionam com estes campos na query e a página de login mostra a referência. Eventos estruturados permitem procurar a referência/código sem guardar tokens nem corpos de resposta do fornecedor. Exemplos: `graph_diagnostic_failed`, `mail_diagnostic_configuration_failed`, `mail_diagnostic_failed`, `auth_graph_preflight_failed`, `auth_start_failed`, `auth_callback_failed`, `mail_preflight_failed`.
 
-Os logs conservam causas enumeradas (`missing_mail_send`, `invalid_client_secret`, `invalid_access_token`, `configuration_missing`, `identity_invalid`, `token_rejected`, `access_denied`, `rate_limited`, `unavailable`, `configuration_invalid` ou `provider_rejected`) e o status HTTP numérico obtido da cadeia explícita de exceções. São pistas de diagnóstico, não uma decisão de repetição nem prova de entrega. Códigos OAuth do callback só entram no log se pertencem à lista conhecida; a descrição não entra. Para classificar a falha Microsoft, lê-se no máximo 64 KiB do corpo em memória e conserva-se só a causa enumerada. Não são enviadas mensagens livres do fornecedor ao log por este mecanismo.
+Os logs conservam causas enumeradas (`missing_mail_send`, `invalid_client_secret`, `invalid_access_token`, `configuration_missing`, `identity_invalid`, `account_domain_not_allowed`, `token_rejected`, `access_denied`, `rate_limited`, `unavailable`, `configuration_invalid` ou `provider_rejected`) e o status HTTP numérico obtido da cadeia explícita de exceções. São pistas de diagnóstico, não uma decisão de repetição nem prova de entrega. Códigos OAuth do callback só entram no log se pertencem à lista conhecida; a descrição não entra. Para classificar a falha Microsoft, lê-se no máximo 64 KiB do corpo em memória e conserva-se só a causa enumerada. Não são enviadas mensagens livres do fornecedor ao log por este mecanismo.
 
 Falhas inesperadas das operações de documentos devolvem `operation_failed`. Mensagens de validação/conflito existentes continuam úteis, passando por sanitização limitada a 4096 caracteres. Nem todas estas respostas antigas têm `reference` no corpo; o cabeçalho de correlação mantém-se. A informação de conflito e os dados funcionais necessários à edição mantêm o contrato existente.
 
@@ -37,6 +37,14 @@ O cartão administrativo mostra a referência `job.id` e distingue falha de proc
 Não há uma garantia de reconhecer qualquer segredo arbitrário em texto livre. As respostas de fornecedor usam mensagens fixas/projeções, enquanto a sanitização textual cobre os formatos explicitamente testados e complementa a proibição de registar conteúdo privado. Não acrescentar novos campos brutos às projeções.
 
 ## Verificação e manutenção
+
+### Recusa de domínio e revisão cumulativa final
+
+O segundo achado autorizado foi corrigido depois da aprovação isolada do rótulo no commit `84e4cd31` (parecer `20261012T152826Z_84e4cd31_77dd2b`, approve/check válido). Uma conta cujo email do perfil Graph não pertence aos domínios permitidos recebe `account_domain_not_allowed`. O callback seleciona uma mensagem fixa pelo código: «A conta escolhida não pertence a um domínio permitido. Inicie sessão com a sua conta de trabalho da Sensorpoint.» A página apresenta a referência de suporte. O log mantém o evento `auth_callback_failed` com `auth_error_code` e causa `account_domain_not_allowed`; não inclui a conta escolhida nem mensagens livres do fornecedor.
+
+A autorização por domínio e a precedência do perfil Graph sobre claims não mudam. Perfil sem email continua a ser identidade inválida, sem alegar uso de domínio errado. A mensagem não enumera configuração dinâmica nem revela o email rejeitado. Outros erros continuam no percurso genérico seguro.
+
+Primeira nova ronda do domínio: regressão cumulativa **340 Python aprovados, 99,28 s**, nos treze módulos usados em `p2-m09-domain-r1.txt`; inclui callback real sobre troca/perfil simulados, recusa sem sessão criada, referência visível e marcadores ausentes de Location/HTML/log. JavaScript sem alterações desde os **93 aprovados** de `p2-m09-label-node-r3.txt`. O pacote de revisão deste ponto abrange o M09 inteiro desde `a1e65afd`; só um parecer cumulativo válido encerra M09. Não houve login ou envio real.
 
 ### Correção do rótulo administrativo após a terceira revisão
 

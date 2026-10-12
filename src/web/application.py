@@ -101,7 +101,9 @@ from src.services.admin_access import can_administer
 from src.services.graph_job_visibility import can_read_job, microsoft_job_owner, normalize_job_owner, public_job_status
 from src.services.diagnostic_views import OAUTH_ERRORS, safe_provider_failure, safe_queue_summary, safe_refresh_status, safe_service_status
 from src.services.local_pdf_service import LocalPdfService
-from src.services.microsoft_auth_service import MicrosoftAuthError, MicrosoftAuthService
+from src.services.microsoft_auth_service import (
+    DOMAIN_NOT_ALLOWED_CODE, DOMAIN_NOT_ALLOWED_MESSAGE, MicrosoftAuthError, MicrosoftAuthService,
+)
 from src.services.photo_attachment_service import PhotoAttachmentError, PhotoAttachmentService
 from src.services.signature_service import CLIENT_SIGNATURE_LABEL, SignatureService
 from src.services.teams_notification_service import (
@@ -834,6 +836,8 @@ def _create_app(
                 auth_error_code=exc.code,
                 **safe_provider_failure(exc),
             )
+            if exc.code == DOMAIN_NOT_ALLOWED_CODE:
+                return login_failure(DOMAIN_NOT_ALLOWED_CODE, DOMAIN_NOT_ALLOWED_MESSAGE)
             return login_failure("auth_callback_failed")
 
         session.clear()

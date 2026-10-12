@@ -55,6 +55,44 @@ def test_valid_login_uses_graph_identity_and_preserves_tenant_in_session(identit
     assert restored == user
 
 
+def test_domain_rejection_callback_explains_the_correct_account_without_exposing_it(identity, monkeypatch, caplog):
+    import src.web.application as web
+    from src.logging_config import JsonLogFormatter
+    from urllib.parse import unquote
+    auth, _, _, profile, _ = identity
+    profile["mail"] = "private-person@example.invalid"
+    monkeypatch.setattr(web, "ACTIVE_AUTH_PROVIDER", "microsoft")
+    monkeypatch.setattr(web, "AUTH_ENABLED", True)
+    client = web.create_app(microsoft_auth_service=auth).test_client()
+    with client.session_transaction() as session:
+        session.update(microsoft_auth_state="synthetic-state", microsoft_auth_nonce=NONCE)
+    caplog.set_level(logging.ERROR)
+    response = client.get("/auth/microsoft/callback?state=synthetic-state&code=synthetic-code")
+    assert response.status_code == 302
+    query = parse_qs(urlsplit(response.location).query)
+    assert query["code"] == [auth_module.DOMAIN_NOT_ALLOWED_CODE]
+    assert query["error"] == [auth_module.DOMAIN_NOT_ALLOWED_MESSAGE]
+    assert query["reference"] == [response.headers["X-Request-ID"]]
+    page = client.get(response.location).get_data(as_text=True)
+    assert "conta de trabalho da Sensorpoint" in page and response.headers["X-Request-ID"] in page
+    row = next(record for record in caplog.records if getattr(record, "event", None) == "auth_callback_failed")
+    assert row.event_fields["cause"] == "account_domain_not_allowed"
+    assert row.event_fields["auth_error_code"] == "account_domain_not_allowed"
+    for exported in (unquote(response.location), page, JsonLogFormatter().format(row)):
+        assert profile["mail"] not in exported and "synthetic-access" not in exported
+    with client.session_transaction() as session:
+        assert "microsoft_user" not in session
+
+
+def test_missing_profile_email_remains_invalid_identity_without_domain_hint(identity):
+    auth, _, _, profile, _ = identity
+    profile.pop("mail")
+    with pytest.raises(MicrosoftAuthError) as caught:
+        authenticate(auth)
+    assert caught.value.code != auth_module.DOMAIN_NOT_ALLOWED_CODE
+    assert str(caught.value) == auth_module.INVALID_IDENTITY
+
+
 @pytest.mark.parametrize("email,role", [("jribeiro@sensorpoint.pt", "special_admin"),
                                        ("acarvalho@sensorpoint.pt", "technician")])
 def test_login_and_session_derive_role_from_configured_stable_identity(identity, monkeypatch, email, role):

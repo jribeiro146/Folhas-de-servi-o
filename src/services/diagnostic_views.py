@@ -29,7 +29,8 @@ def safe_provider_failure(error):
     Exceptions retain their private cause internally. Do not serialize a cause,
     URL, body or arbitrary OAuth string just to make a public reference useful.
     """
-    cause = ("identity_invalid" if str(getattr(error, "code", "")).startswith("identity_")
+    cause = ("account_domain_not_allowed" if getattr(error, "code", None) == "account_domain_not_allowed" else
+             "identity_invalid" if str(getattr(error, "code", "")).startswith("identity_")
              else known_provider_cause(error))
     result = {"error_type": type(error).__name__}
     current = error

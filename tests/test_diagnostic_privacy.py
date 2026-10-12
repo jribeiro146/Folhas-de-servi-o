@@ -288,6 +288,26 @@ def test_login_sanitizes_external_error_and_rejects_malformed_reference(diagnost
     assert_private(response.get_data(as_text=True))
 
 
+def test_domain_hint_is_selected_by_code_and_never_by_raw_exception_text(diagnostic_app, monkeypatch, caplog):
+    app, _, _, _, _, auth = diagnostic_app
+    def reject(**_kwargs):
+        raise MicrosoftAuthError(DETAIL, code=auth_module.DOMAIN_NOT_ALLOWED_CODE)
+    monkeypatch.setattr(auth, "authenticate_code", reject)
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session.update(microsoft_auth_state="state", microsoft_auth_nonce="nonce")
+    caplog.set_level(logging.ERROR)
+    response = client.get("/auth/microsoft/callback?state=state&code=synthetic")
+    query = parse_qs(urlsplit(response.location).query)
+    assert query["error"] == [auth_module.DOMAIN_NOT_ALLOWED_MESSAGE]
+    assert query["code"] == [auth_module.DOMAIN_NOT_ALLOWED_CODE]
+    assert query["reference"] == [response.headers["X-Request-ID"]]
+    row = next(r for r in caplog.records if getattr(r, "event", None) == "auth_callback_failed")
+    assert row.event_fields["cause"] == "account_domain_not_allowed"
+    assert_private(response.location)
+    assert_private(JsonLogFormatter().format(row))
+
+
 def test_traceback_retains_line_and_type_without_path():
     record = logging.LogRecord("synthetic", logging.ERROR, __file__, 1, "failure", (), None)
     record.stack_info = 'File "/app/src/x.py", line 10\nRuntimeError: failure'

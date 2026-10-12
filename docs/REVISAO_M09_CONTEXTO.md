@@ -1,8 +1,8 @@
-# Contexto da revisão M09 — terceira ronda, 12/10/2026
+# Contexto da revisão cumulativa M09 — fecho dos dois achados, 12/10/2026
 
 A revisão recebe a fila completa, incluindo a escrita de last_error e os logs de falha. A única alteração M09 na fila acrescenta campos seguros ao evento graph_job_failed: não muda persistência, repetição nem reconciliação. O job_id já integrava o evento e permanece a chave de correlação exibida no cartão administrativo.
 
-Busca `rg /api/graph/status src/web/static` confirmou um único consumidor: document-editor.js. field-app.js e mail-job-monitor.js são fornecidos integralmente. As ações de admin_change_access são release_sheet e restore_sheet_access; o serviço de edição completo comprova a correspondência.
+Busca `rg /api/graph/status src/web/static` confirmou um único consumidor: document-editor.js, fornecido integralmente, assim como mail-job-monitor.js. O legado field-app.js, já fornecido nas revisões anteriores e sem alterações M09, não usa esse endpoint; foi omitido desta cópia de contexto para incluir o teste completo da autenticação dentro do limite do pacote. As ações de admin_change_access são release_sheet e restore_sheet_access; o serviço de edição completo comprova a correspondência.
 
 Para caber no limite do pacote, os excertos abaixo substituem apenas o contexto integral de graph_storage_service.py, que não mudou em M09. Incluem as duas classes de erro e os sete métodos completos de configuração, diagnóstico e transporte que produzem os estados/erros consumidos por M09. Foram extraídos por AST do código local, igual à base a1e65afd nestas funções. Os imports relevantes no módulo são urllib.error/parse/request, json e time. As alterações são fornecidas integralmente no diff, sem caminhos excluídos. Ficheiros novos e documentação integral já estão no diff e não precisam de cópia duplicada em target_context.
 

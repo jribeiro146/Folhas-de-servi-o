@@ -27,6 +27,11 @@ AUTHORIZE_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant_id}/oauth2/v
 TOKEN_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
 GRAPH_ME_URL = "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName"
 INVALID_IDENTITY = "Resposta Microsoft inválida. Tente iniciar sessão novamente."
+DOMAIN_NOT_ALLOWED_CODE = "account_domain_not_allowed"
+DOMAIN_NOT_ALLOWED_MESSAGE = (
+    "A conta escolhida não pertence a um domínio permitido. "
+    "Inicie sessão com a sua conta de trabalho da Sensorpoint."
+)
 CLAIM_CLOCK_SKEW_SECONDS = 60
 
 
@@ -121,9 +126,12 @@ class MicrosoftAuthService:
         )
         display_name = self._first_value(profile.get("displayName"), claims.get("name"), email)
 
-        if not email or not self._is_allowed_email(email):
-            allowed = ", ".join(f"@{domain}" for domain in self.allowed_domains)
-            raise MicrosoftAuthError(f"Acesso limitado a contas {allowed}.")
+        if not email:
+            raise MicrosoftAuthError(INVALID_IDENTITY)
+        if not self._is_allowed_email(email):
+            # This fixed, actionable message never includes the chosen account
+            # or dynamic provider/configuration text. Authorization is unchanged.
+            raise MicrosoftAuthError(DOMAIN_NOT_ALLOWED_MESSAGE, code=DOMAIN_NOT_ALLOWED_CODE)
 
         return MicrosoftAuthUser(
             id=object_id,
