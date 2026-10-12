@@ -13,7 +13,7 @@ def require(condition):
         raise ValueError("Compose configuration differs from the delivery contract")
 
 
-def validate(config, expected_image):
+def validate(config, expected_image, compose_version=""):
     services = config["services"]
     require(set(services) == {"app", "worker", "prepare"})
     prepare = services["prepare"]
@@ -32,11 +32,12 @@ def validate(config, expected_image):
         summary[name] = {"image": expected_image, "targets": targets}
         if name != "prepare":
             logs = next(v for v in mounts if v["target"] == "/app/logs")
-            # Compose 2.27 / compose-go 2.1 serializes this bool with omitempty.
-            # In its NORMALIZED JSON, absent means false. Short bind syntax
-            # normalizes to explicit true and is rejected, as are strings/null.
+            # ONLY Compose 2.27.0 / compose-go 2.1 has the confirmed old bool
+            # serialization here. Recent OptOut versions omit TRUE instead.
+            # Unknown versions therefore require an explicit JSON false.
             require(logs["type"] == "bind")
-            require(logs.get("bind", {}).get("create_host_path", False) is False)
+            absent = False if compose_version in {"2.27.0", "v2.27.0"} else None
+            require(logs.get("bind", {}).get("create_host_path", absent) is False)
             summary[name]["create_host_path"] = False
     summary["prepare"]["network_mode"] = "none"
     return {"status": "PASS", "services": summary}
@@ -45,9 +46,11 @@ def validate(config, expected_image):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-image", required=True)
+    parser.add_argument("--compose-version", default="",
+                        help="Actual config producer version; only 2.27.0 permits omitted false")
     args = parser.parse_args()
     try:
-        result = validate(json.load(sys.stdin), args.expected_image)
+        result = validate(json.load(sys.stdin), args.expected_image, args.compose_version)
     except (ValueError, TypeError, KeyError, AttributeError, StopIteration):
         # Do not echo arbitrary input, which could contain expanded credentials.
         print('{"status":"FAIL","error":"compose_contract_mismatch"}', file=sys.stderr)

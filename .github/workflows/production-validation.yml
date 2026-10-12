@@ -51,7 +51,7 @@ jobs:
           - identity: default
             uid: '10001'
             gid: '10001'
-            compose: ''
+            compose: v5.6.0
           - identity: hs4
             uid: '100'
             gid: '101'
@@ -83,7 +83,7 @@ jobs:
           RESULT: ${{ job.status }}
           IDENTITY: ${{ matrix.identity }}
         run: |
-          printf '### Linux/Docker %s\n\nCommit: `%s` — job: **%s**\n\n' "$IDENTITY" "$GITHUB_SHA" "$RESULT" >> "$GITHUB_STEP_SUMMARY"
+          printf '### Linux/Docker %s\n\nCommit: `%s` â€” job: **%s**\n\n' "$IDENTITY" "$GITHUB_SHA" "$RESULT" >> "$GITHUB_STEP_SUMMARY"
           printf 'Synthetic data only. Production AlmaLinux kernel/PDF remains an installer check. See attached evidence.\n' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()

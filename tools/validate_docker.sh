@@ -163,7 +163,7 @@ QA_COMPOSE=$(mktemp -d)
 cp docker-compose.yml "$QA_COMPOSE/docker-compose.yml"
 mkdir "$QA_COMPOSE/logs"
 printf 'FS_IMAGE=%s\nFS_LOG_HOST_DIR=%s\n' "$QA_IMAGE" "$QA_COMPOSE/logs" > "$QA_COMPOSE/.env"
-docker compose --env-file "$QA_COMPOSE/.env" -f "$QA_COMPOSE/docker-compose.yml" -p "$QA_RUN" --profile maintenance config --format json | python3 tools/check_compose.py --expected-image "$QA_IMAGE" | tee "$QA_EVIDENCE/compose-check.json"
+docker compose --env-file "$QA_COMPOSE/.env" -f "$QA_COMPOSE/docker-compose.yml" -p "$QA_RUN" --profile maintenance config --format json | python3 tools/check_compose.py --expected-image "$QA_IMAGE" --compose-version "$(docker compose version --short)" | tee "$QA_EVIDENCE/compose-check.json"
 # Prove that normalized true is still refused on each actual Compose version.
 python3 - "$QA_COMPOSE/docker-compose.yml" <<'PY'
 from pathlib import Path
@@ -176,7 +176,7 @@ PY
 # Separate normalization from the expected refusal: a Compose failure is not a
 # successful negative test. This temporary JSON contains only synthetic values.
 docker compose --env-file "$QA_COMPOSE/.env" -f "$QA_COMPOSE/docker-compose.yml" -p "$QA_RUN" --profile maintenance config --format json > "$QA_COMPOSE/unsafe.json"
-if python3 tools/check_compose.py --expected-image "$QA_IMAGE" < "$QA_COMPOSE/unsafe.json"; then
+if python3 tools/check_compose.py --expected-image "$QA_IMAGE" --compose-version "$(docker compose version --short)" < "$QA_COMPOSE/unsafe.json"; then
   echo 'ERRO: bind inseguro foi aceite'; exit 1
 else
   test "$?" -eq 2

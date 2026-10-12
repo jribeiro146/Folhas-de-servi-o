@@ -20,7 +20,7 @@ Também admite PR e execução manual; esta última depende de o workflow existi
 branch por defeito. Não é necessário criar um PR ou alterar main para este ensaio.
 
 - JavaScript: bateria Node 22, uma vez por execução.
-- Imagem padrão: UID/GID 10001:10001, Compose do runner.
+- Imagem padrão: UID/GID 10001:10001, Compose 5.6.0.
 - Imagem compatível com o dono dos dados comunicado: UID/GID 100:101, Compose 2.27.0.
 - Cada imagem usa o ZIP gerado do HEAD limpo e valida o manifesto no build.
 - `tools/validate_docker.sh` verifica identidade, init vazio, factories web/worker,
@@ -65,6 +65,13 @@ observados; o link do run é a evidência, não uma promessa de resultado.
 | 12/10/2026 | Bateria Python Windows | 1084 aprovados / 4 ignorados / 1 falha: WinError 5 ao renomear o bundle privado SADI; código desse fluxo inalterado |
 | 12/10/2026 | Diagnóstico SADI sem alteração | Grupo completo: 24 aprovados / 1 ignorado. Falha não reproduzida; causa do bloqueio Windows por confirmar, log original preservado |
 
+Segunda preparação após o parecer Claude 20261012T112630Z_38671394_87a3e4:
+20 testes CLI aprovados. Confirmado com os binários oficiais portáteis Compose
+2.27.0 e 5.6.0, usando apenas `config`, sem Docker Engine: false aceite e true
+recusado nas duas versões. O verificador anterior aceitava incorretamente a
+omissão produzida por true no 5.6.0; a reprodução e a correção estão registadas.
+Isto valida a normalização, não constitui execução de containers.
+
 ## Reprodução pelo instalador e limites
 
 Partindo de um ZIP verificado e extraído, executar no host isolado:
@@ -75,10 +82,11 @@ bash tools/validate_docker.sh /caminho/absoluto/release /tmp/evidencia-nova 1000
 bash tools/validate_docker.sh /caminho/absoluto/release /tmp/evidencia-hs4-nova 100 101
 ```
 
-A máquina precisa de Bash, Python 3 e Docker/Compose v2. Não usar o daemon de
+A máquina precisa de Bash, Python 3 e Docker/Compose v2 ou superior. Não usar o daemon de
 produção. O roteiro detalhado está em [VALIDACAO_DOCKER_INSTALADOR.md](VALIDACAO_DOCKER_INSTALADOR.md).
-O verificador aceita o false omitido pelo compose-go 2.1/Compose 2.27 no JSON
-**normalizado**, sem aceitar true, strings, null ou código montado por bind.
+O verificador aceita o false omitido pelo compose-go 2.1/Compose 2.27.0 identificado no JSON
+**normalizado**. Nas restantes versões exige false explícito, pois as versões
+recentes omitem true. Nunca aceita true, strings, null ou código montado por bind.
 
 Ubuntu no GitHub não reproduz kernel 4.18, cgroups v1 e seccomp do AlmaLinux de
 produção. O profissional ainda confirma o smoke PDF nesse destino, com HOME
@@ -86,3 +94,8 @@ gravável e FS_PDF_BROWSER_NO_SANDBOX=true conforme reportado, mais acessos Micr
 volumes reais, backup e procedimento de instalação. Não se declara produção
 validada por um run sintético. Builds futuros podem descarregar dependências
 mais recentes; guardar os IDs das imagens e repetir a validação da imagem a instalar.
+
+Referências: [setup-compose v2](https://github.com/docker/setup-compose-action/tree/v2)
+existe e suporta a seleção explícita de versão. A matriz fixa 5.6.0 (compose-go
+2.16.1) e 2.27.0 (compose-go 2.1.0), evitando depender da versão pré-instalada
+do runner. A versão efetiva fica em compose-version.txt.

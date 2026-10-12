@@ -212,12 +212,13 @@ mkdir "$QA_COMPOSE/logs"
 printf 'FS_IMAGE=%s\nFS_LOG_HOST_DIR=%s\n' "$QA_IMAGE" "$QA_COMPOSE/logs" > "$QA_COMPOSE/.env"
 docker compose --env-file "$QA_COMPOSE/.env" -f "$QA_COMPOSE/docker-compose.yml" \
   -p "$QA_RUN" --profile maintenance config --format json \
-  | python3 tools/check_compose.py --expected-image "$QA_IMAGE" | tee "evidence-$QA_RUN/compose-check.json"
+  | python3 tools/check_compose.py --expected-image "$QA_IMAGE" --compose-version "$(docker compose version --short)" | tee "evidence-$QA_RUN/compose-check.json"
 ~~~
 
 Esperado: PASS, mesma imagem em todos os serviços, destinos /app/data e /app/logs
 (só data em prepare), network_mode=none e create_host_path=false. O verificador aceita false explícito e false omitido no JSON normalizado do
-Compose 2.27; true ou valores de outro tipo são recusados. Não é um ensaio
+Compose 2.27.0 identificado pelo próprio comando. Nas restantes versões exige
+false explícito; true, ausência ou valores de outro tipo são recusados. Não é um ensaio
 de arranque Compose. Não executar up/run aqui: os nomes de containers de produção
 são fixos. O ensaio de execução acima usa apenas docker run e volumes QA únicos.
 
