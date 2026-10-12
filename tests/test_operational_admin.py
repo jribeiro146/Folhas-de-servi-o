@@ -4,13 +4,20 @@ import time
 from types import SimpleNamespace
 import pytest
 from src.services.admin_access import account_role, can_administer
+from src.services import admin_access
 from src.services.editing_state_service import (EditingStateService, EditorIdentity,
     EditingSessionRevokedError, RevisionConflictError, OperationInProgressError)
 from src.services.file_mutex import file_mutex
 from src.services.microsoft_auth_service import MicrosoftAuthService
 import src.web.application as web
 
-ADMIN = SimpleNamespace(id="admin-id", email="jribeiro@sensorpoint.pt", display_name="Administrador fictício")
+ADMIN = SimpleNamespace(id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", tenant_id="11111111-1111-4111-8111-111111111111",
+                        email="jribeiro@sensorpoint.pt", display_name="Administrador fictício")
+
+@pytest.fixture(autouse=True)
+def configured_synthetic_admin(monkeypatch):
+    monkeypatch.setattr(admin_access, "ADMIN_TENANT_ID", ADMIN.tenant_id)
+    monkeypatch.setattr(admin_access, "ADMIN_OBJECT_ID", ADMIN.id)
 
 def document(tmp_path):
     directory = tmp_path / "synthetic"
@@ -27,7 +34,7 @@ def version(service):
 
 def test_role_is_derived_from_exact_account_not_stored_role():
     auth = MicrosoftAuthService(tenant_id="synthetic", client_id="synthetic", client_secret="synthetic")
-    base = {"id":"synthetic-id","username":"synthetic","display_name":"Synthetic"}
+    base = {"id":ADMIN.id,"tenant_id":ADMIN.tenant_id,"username":"synthetic","display_name":"Synthetic"}
     for email, expected in [("jribeiro@sensorpoint.pt","special_admin"), (" JRIBEIRO@SENSORPOINT.PT ","special_admin"),
                             ("acarvalho@sensorpoint.pt","technician"), ("jribeiro@sensorpoint.pt.attacker.invalid","technician")]:
         user = auth.user_from_session({**base,"email":email,"role":"special_admin"})
@@ -124,7 +131,8 @@ def admin_app(tmp_path, monkeypatch):
 def login(app, email, *, csrf=True):
     client = app.test_client()
     with client.session_transaction() as session:
-        session["microsoft_user"] = {"id":"synthetic-"+email,"email":email,"display_name":"Synthetic","role":"special_admin"}
+        session["microsoft_user"] = {"id":ADMIN.id,"tenant_id":ADMIN.tenant_id,"email":email,
+                                     "display_name":"Synthetic","role":"special_admin"}
         if csrf:
             session["admin_csrf"] = "synthetic-csrf"
     return client

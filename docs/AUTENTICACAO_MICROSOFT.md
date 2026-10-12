@@ -52,10 +52,10 @@ Os significados de aud, iss, exp, nonce, tid e oid constam da
 As referências foram consultadas em 12/10/2026. A verificação de assinatura é
 uma opção separada no âmbito da passagem P2, não um ensaio executado aqui.
 
-M02 ainda tem de vincular o administrador a tenant/oid configurados. Nesta
-etapa a regra administrativa anterior por email permanece; sessões antigas
-sem tenant são reconstruídas com tenant vazio. M02 deve recusar esse privilégio
-elevado, preservando o acesso próprio SADI. M09 ainda tem de sanitizar erros
+O M02 complementa este contrato com a configuração de tenant/oid do administrador,
+documentada em [IDENTIDADE_ADMINISTRATIVA.md](IDENTIDADE_ADMINISTRATIVA.md).
+Sessões antigas sem tenant são reconstruídas com tenant vazio e não obtêm o
+privilégio elevado, preservando o acesso próprio SADI. M09 ainda tem de sanitizar erros
 HTTP/Graph/callback preexistentes. Não interpretar M01 como fecho desses pontos.
 
 ## Validação sintética

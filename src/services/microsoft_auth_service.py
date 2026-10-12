@@ -129,7 +129,7 @@ class MicrosoftAuthService:
             initials=self._initials_from_name(display_name or email),
             display_name=display_name or email,
             email=email,
-            role=account_role(email),
+            role=account_role(email, tenant_id=tenant_id, object_id=object_id),
             tenant_id=tenant_id,
         )
 
@@ -183,7 +183,7 @@ class MicrosoftAuthService:
                 initials=str(payload.get("initials") or ""),
                 display_name=str(payload["display_name"]),
                 email=str(payload["email"]),
-                role=account_role(str(payload["email"])),
+                role=account_role(payload["email"], tenant_id=payload.get("tenant_id", ""), object_id=payload["id"]),
                 tenant_id=str(payload.get("tenant_id") or ""),
             )
         except (KeyError, TypeError, ValueError):

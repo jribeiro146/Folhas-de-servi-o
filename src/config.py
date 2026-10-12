@@ -131,6 +131,9 @@ GRAPH_CLIENT_SECRET: str = os.environ.get("GRAPH_CLIENT_SECRET", "").strip()
 # ---------------------------------------------------------------------------
 
 AUTH_PROVIDER: str = os.environ.get("FS_AUTH_PROVIDER", "none").strip().lower()
+# Explicit administrator identity; never enroll the first matching email.
+ADMIN_TENANT_ID: str = os.environ.get("FS_ADMIN_TENANT_ID", "").strip()
+ADMIN_OBJECT_ID: str = os.environ.get("FS_ADMIN_OBJECT_ID", "").strip()
 MICROSOFT_AUTH_REDIRECT_URI: str = os.environ.get("MICROSOFT_AUTH_REDIRECT_URI", "").strip()
 MICROSOFT_AUTH_ALLOWED_DOMAINS: list[str] = [
     domain.strip().lower().lstrip("@")

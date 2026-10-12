@@ -1,16 +1,23 @@
 """Account-restricted operational tools; mutations require an administrator CSRF token."""
 import json
+import logging
 import secrets
 import time
 from urllib.parse import urlsplit
 from flask import Blueprint, g, jsonify, render_template, request, session
-from src.services.admin_access import can_administer
+from src.logging_config import log_event
+from src.services.admin_access import admin_configuration_error, can_administer
 from src.services.editing_state_service import EditingStateError, EditingStateQuarantinedError
 from src.services.graph_sync_queue import delivery_uncertain, teams_retry_deadline
 
 
 def register_admin(app, editing, queue, refresh, authenticated_microsoft):
     bp = Blueprint("admin", __name__)
+    configuration_error = admin_configuration_error()
+    if configuration_error:
+        log_event(app.logger, logging.WARNING,
+                  "Administração indisponível: configurar GUIDs FS_ADMIN_TENANT_ID e FS_ADMIN_OBJECT_ID.",
+                  event="admin_identity_configuration", error_code=configuration_error)
 
     def allowed():
         return authenticated_microsoft() and can_administer(g.get("current_user"))
@@ -27,7 +34,10 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
     @bp.before_request
     def protect_admin():
         if not allowed():
-            return jsonify(success=False, error="Acesso reservado ao administrador."), 403
+            error_code = admin_configuration_error() or "admin_access_denied"
+            message = ("Administração indisponível: o instalador deve conferir FS_ADMIN_TENANT_ID e FS_ADMIN_OBJECT_ID."
+                       if error_code != "admin_access_denied" else "Acesso reservado ao administrador.")
+            return jsonify(success=False, error=message, error_code=error_code), 403
         if request.method != "GET":
             supplied = request.headers.get("X-Admin-CSRF", "")
             origin = request.headers.get("Origin")

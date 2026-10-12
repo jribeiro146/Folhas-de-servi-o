@@ -55,6 +55,19 @@ def test_valid_login_uses_graph_identity_and_preserves_tenant_in_session(identit
     assert restored == user
 
 
+@pytest.mark.parametrize("email,role", [("jribeiro@sensorpoint.pt", "special_admin"),
+                                       ("acarvalho@sensorpoint.pt", "technician")])
+def test_login_and_session_derive_role_from_configured_stable_identity(identity, monkeypatch, email, role):
+    from src.services import admin_access
+    auth, _, _, profile, _ = identity
+    monkeypatch.setattr(admin_access, "ADMIN_TENANT_ID", TENANT)
+    monkeypatch.setattr(admin_access, "ADMIN_OBJECT_ID", OBJECT)
+    profile["mail"] = email
+    user = authenticate(auth)
+    assert user.role == role
+    assert auth.user_from_session(auth.user_to_session(user)).role == role
+
+
 @pytest.mark.parametrize("claim", ["iss", "aud", "exp", "nonce", "tid", "oid"])
 def test_required_claim_missing_refuses_before_graph(identity, claim):
     auth, claims, tokens, _, calls = identity

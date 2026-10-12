@@ -186,6 +186,13 @@ MICROSOFT_AUTH_REDIRECT_URI=https://service.sensorpoint.pt/auth/microsoft/callba
 MICROSOFT_AUTH_ALLOWED_DOMAINS=sensorpoint.pt,sensorpoint.com
 ```
 
+Para a administração operacional exclusiva de João, configurar ainda
+`FS_ADMIN_TENANT_ID` e `FS_ADMIN_OBJECT_ID` com os GUIDs do tenant e do utilizador.
+Sem os dois valores válidos, o privilégio é recusado; o login normal e SADI
+próprio mantêm acesso. Sessões antigas precisam de novo login para administrar.
+Ver [IDENTIDADE_ADMINISTRATIVA.md](IDENTIDADE_ADMINISTRATIVA.md) para obtenção,
+diagnóstico e validação, sem colocar os valores reais no pacote ou Git.
+
 `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID` e `GRAPH_CLIENT_SECRET` são a única origem de
 credenciais da App Registration. A aplicação reutiliza-as no SharePoint, conversão PDF,
 login Microsoft e envio de email. Variáveis antigas `GRAPH_MAIL_*` ou credenciais
