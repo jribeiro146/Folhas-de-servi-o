@@ -63,6 +63,13 @@ test("admin displays the request reference returned in a rejection message", asy
     assert.match(text, /ref-sintetica/);
 });
 
+test("admin explains an automatic retry without claiming an uncertain send", async () => {
+    const text = await panel({ ...job, kind: "archive_and_remove", error_code: null,
+        last_error: "Falha registada.", reconciliation_required: true, will_retry: true, can_retry: false });
+    assert.match(text, /Nova tentativa automática agendada/);
+    assert.doesNotMatch(text, /Resultado incerto|Requer revisão|Repetir trabalho/);
+});
+
 test("admin explains a future throttle deadline without offering premature retry", async () => {
     const text = await panel({ ...job, retry_not_before: Date.now() / 1000 + 86400, can_retry: false });
     assert.match(text, /bloqueada pelo Teams até/);

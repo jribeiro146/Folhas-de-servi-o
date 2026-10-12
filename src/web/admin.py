@@ -73,6 +73,7 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
     def safe_job(row):
         invalid = False
         deadline = None
+        will_retry = False
         try:
             payload = object_json(row["payload_json"])
             for key in ("mail", "teams", "notification", "_commit_guard"):
@@ -87,26 +88,30 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
                 raise ValueError()
             if row["kind"] == "notify_teams" and "accepted" in result and not isinstance(result["accepted"], bool):
                 raise ValueError()
-            uncertain = delivery_uncertain(row["kind"], result)
+            delivery_unknown = delivery_uncertain(row["kind"], result)
+            uncertain = delivery_unknown
             # A conservative retry guard is not evidence that a queued mail
             # was sent. Report uncertainty only from delivery evidence or a
-            # failed attempt whose outcome cannot be established.
+            # terminal failure whose outcome cannot be established.
             reported_uncertain = uncertain
             deadline = teams_retry_deadline(row["kind"], result)
             has_mail = row["kind"] == "archive_and_mail_local" or bool(payload.get("mail"))
             if has_mail and mail.get("accepted") is not True and result.get("phase") not in ("generating_pdf", "pdf_ready", "mail_rejected"):
                 uncertain = True
-                reported_uncertain = reported_uncertain or row["status"] == "failed"
+                reported_uncertain = reported_uncertain or (row["status"] == "failed" and not row["retryable"])
             invalid = bool(result.get("invalid_state"))
+            # Match queue._serialize, not the stricter manual-retry guard.
+            will_retry = row["status"] == "failed" and bool(row["retryable"]) and not delivery_unknown and not invalid
         except (TypeError, ValueError):
             result, uncertain, reported_uncertain, invalid = {}, True, True, True
         return {"id": row["id"], "kind": row["kind"], "status": row["status"],
                 "attempts": row["attempts"], "updated_at": row["updated_at"],
                 "last_error": "Falha registada; consultar a referência do trabalho." if row["last_error"] else None,
                 "error_code": "job_invalid_state" if invalid else "job_reconciliation_required" if reported_uncertain else
-                              "job_failed" if row["last_error"] else None,
+                              "job_failed" if row["last_error"] and not will_retry else None,
                 "phase": result.get("phase") if result.get("phase") in PHASES else None,
                 "retry_not_before": deadline,
+                "will_retry": will_retry,
                 "reconciliation_required": uncertain, "invalid_state": invalid,
                 "can_retry": row["status"] == "failed" and not row["retryable"] and not uncertain and not invalid
                     and (deadline is None or time.time() >= deadline)}

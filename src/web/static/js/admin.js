@@ -74,7 +74,8 @@
             const card = node("article", "", root);
             node("h3", (kinds[job.kind] || job.kind) + " · " + (statuses[job.status] || job.status), card);
             node("p", "Operação: " + job.id + " · Tentativas: " + job.attempts, card);
-            node("p", jobErrors[job.error_code] || job.last_error || job.phase || "A aguardar processamento.", card);
+            node("p", jobErrors[job.error_code] || (job.will_retry ? "Nova tentativa automática agendada." :
+                job.last_error || job.phase || "A aguardar processamento."), card);
             if (job.retry_not_before > Date.now() / 1000) {
                 const deadline = new Date(job.retry_not_before * 1000);
                 node("p", Number.isNaN(deadline.getTime())
@@ -82,7 +83,7 @@
                     : "A repetição está bloqueada pelo Teams até " + date(job.retry_not_before) + ".", card);
             }
             if (job.error_code === "job_reconciliation_required" || job.invalid_state ||
-                (job.status === "failed" && job.reconciliation_required)) {
+                (job.status === "failed" && job.reconciliation_required && !job.will_retry)) {
                 node("p", "Requer revisão. A repetição está bloqueada.", card);
             }
             if (job.can_retry) action(card, "Repetir trabalho", "/api/admin/jobs/" + encodeURIComponent(job.id) + "/retry", {},

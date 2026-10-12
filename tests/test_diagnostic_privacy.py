@@ -334,3 +334,29 @@ def test_admin_still_reports_failed_mail_without_acceptance_as_uncertain(diagnos
     job = login(app, oid=ADMIN_ID, email=admin_access.ADMIN_EMAIL).get("/api/admin/overview").get_json()["jobs"][0]
     assert job["error_code"] == "job_reconciliation_required"
     assert job["reconciliation_required"] is True and job["can_retry"] is False
+
+
+@pytest.mark.parametrize("phase", [None, "removing_active"])
+@pytest.mark.parametrize("kind", ["archive_and_mail_local", "archive_and_remove"])
+def test_admin_reports_scheduled_retry_after_real_transient_failure(diagnostic_app, phase, kind):
+    app, _, _, _, queue, _ = diagnostic_app
+    identifier = make_job(queue, status="running", result={"phase": phase} if phase else {})
+    with queue._connect() as db:
+        db.execute("UPDATE graph_sync_jobs SET kind=? WHERE id=?", (kind, identifier))
+    queue._record_job_failure(queue.status(identifier), GraphStorageError("Falha transitória fictícia"))
+    before = queue.status(identifier)
+    job = login(app, oid=ADMIN_ID, email=admin_access.ADMIN_EMAIL).get("/api/admin/overview").get_json()["jobs"][0]
+    assert before["status"] == job["status"] == "failed"
+    assert before["will_retry"] is job["will_retry"] is True
+    assert job["error_code"] is None
+    assert job["reconciliation_required"] is True and job["can_retry"] is False
+    assert queue.status(identifier) == before
+
+
+@pytest.mark.parametrize("phase", ["sending_mail", "mail_unknown"])
+def test_admin_never_labels_uncertain_send_as_automatic_retry(diagnostic_app, phase):
+    app, _, _, _, queue, _ = diagnostic_app
+    make_job(queue, retryable=1, result={"phase": phase})
+    job = login(app, oid=ADMIN_ID, email=admin_access.ADMIN_EMAIL).get("/api/admin/overview").get_json()["jobs"][0]
+    assert job["will_retry"] is False
+    assert job["error_code"] == "job_reconciliation_required" and job["can_retry"] is False
