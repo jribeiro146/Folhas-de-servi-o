@@ -1,7 +1,7 @@
 # Nota ao instalador — ensaio Linux/Docker M14
 
-**Pendente de execução.** Não há resultado real de build ou execução Linux.
-João está a obter um ambiente. Executar estes critérios com dados fictícios e
+**Execução e resultados:** consultar [o registo CI](VALIDACAO_CI.md).
+Este roteiro mantém os passos reproduzíveis para o instalador. Executar estes critérios com dados fictícios e
 registar saídas/falhas sem segredos. Testes Windows e revisão estática não
 substituem esta validação.
 
@@ -210,38 +210,14 @@ QA_COMPOSE=$(mktemp -d)
 cp docker-compose.yml "$QA_COMPOSE/docker-compose.yml"
 mkdir "$QA_COMPOSE/logs"
 printf 'FS_IMAGE=%s\nFS_LOG_HOST_DIR=%s\n' "$QA_IMAGE" "$QA_COMPOSE/logs" > "$QA_COMPOSE/.env"
-cat > "$QA_COMPOSE/check.py" <<'PY'
-import json, sys
-c = json.load(sys.stdin)
-services = c["services"]
-app, worker, prepare = (services[n] for n in ("app", "worker", "prepare"))
-assert app["image"] == worker["image"] == prepare["image"]
-assert prepare["profiles"] == ["maintenance"] and prepare["network_mode"] == "none"
-assert not prepare.get("env_file") and not prepare.get("environment")
-assert prepare["command"] == ["python", "-B", "tools/prepare_runtime.py", "init", "--data-dir", "/app/data"]
-summary = {}
-for name, service in services.items():
-    mounts = service["volumes"]
-    targets = sorted(v["target"] for v in mounts)
-    assert targets == (["/app/data"] if name == "prepare" else ["/app/data", "/app/logs"])
-    data = next(v for v in mounts if v["target"] == "/app/data")
-    assert data["type"] == "volume" and data["source"] == "app-data"
-    assert "prepare" not in service.get("depends_on", {})
-    summary[name] = {"image": service["image"], "targets": targets}
-    if name != "prepare":
-        logs = next(v for v in mounts if v["target"] == "/app/logs")
-        assert logs["type"] == "bind" and logs["bind"]["create_host_path"] is False
-        summary[name]["create_host_path"] = False
-summary["prepare"]["network_mode"] = prepare["network_mode"]
-print(json.dumps({"status": "PASS", "services": summary}, sort_keys=True))
-PY
 docker compose --env-file "$QA_COMPOSE/.env" -f "$QA_COMPOSE/docker-compose.yml" \
   -p "$QA_RUN" --profile maintenance config --format json \
-  | python3 "$QA_COMPOSE/check.py" | tee "evidence-$QA_RUN/compose-check.json"
+  | python3 tools/check_compose.py --expected-image "$QA_IMAGE" | tee "evidence-$QA_RUN/compose-check.json"
 ~~~
 
 Esperado: PASS, mesma imagem em todos os serviços, destinos /app/data e /app/logs
-(só data em prepare), network_mode=none e create_host_path=false. Não é um ensaio
+(só data em prepare), network_mode=none e create_host_path=false. O verificador aceita false explícito e false omitido no JSON normalizado do
+Compose 2.27; true ou valores de outro tipo são recusados. Não é um ensaio
 de arranque Compose. Não executar up/run aqui: os nomes de containers de produção
 são fixos. O ensaio de execução acima usa apenas docker run e volumes QA únicos.
 

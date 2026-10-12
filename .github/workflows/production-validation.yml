@@ -1,70 +1,95 @@
 name: Production reconciliation
 on:
   push:
-    branches: [codex/producao-melhorias-20260928]
+    branches: [codex/producao-melhorias-20260928, 'codex/validacao-linux-*']
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# Preserve command failures through tee; GitHub's implicit shell lacks pipefail.
+defaults:
+  run:
+    shell: bash
+
+# A newer commit cancels obsolete work on this branch; failures never auto-rerun.
+concurrency:
+  group: validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  tests:
-    runs-on: ubuntu-latest
+  javascript:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: python -m pip install -r requirements-server.txt -r requirements-smoke.txt pytest
-      - name: Synthetic Python tests including legacy SADI and POSIX permissions
-        env:
-          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-          PYTHONDONTWRITEBYTECODE: '1'
-        run: python -B -m pytest tests -q -p no:cacheprovider --tb=short
-      - run: node --test tests/js/*.test.cjs
+      - name: Synthetic browser logic
+        run: |
+          mkdir "$RUNNER_TEMP/js-evidence"
+          git rev-parse HEAD > "$RUNNER_TEMP/js-evidence/commit.txt"
+          node --test tests/js/*.test.cjs | tee "$RUNNER_TEMP/js-evidence/node.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: javascript-${{ github.sha }}
+          path: ${{ runner.temp }}/js-evidence/
+          retention-days: 30
+
   image:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
-        identity: [default, hs4]
+        include:
+          - identity: default
+            uid: '10001'
+            gid: '10001'
+            compose: ''
+          - identity: hs4
+            uid: '100'
+            gid: '101'
+            compose: v2.27.0
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Package the exact clean commit before building images
-        run: |
-          python -B tools/build_release.py --revision "$(git rev-parse HEAD)" --output "$RUNNER_TEMP/release.zip"
-          python -m zipfile -e "$RUNNER_TEMP/release.zip" "$RUNNER_TEMP/release"
-      - name: Build candidate (default 10001 or existing hs4 100:101)
-        env:
-          IDENTITY: ${{ matrix.identity }}
-        run: |
-          if [ "$IDENTITY" = hs4 ]; then
-            docker build --build-arg APP_UID=100 --build-arg APP_GID=101 -t folhas-candidate "$RUNNER_TEMP/release"
-          else
-            docker build -t folhas-candidate "$RUNNER_TEMP/release"
-          fi
-      - name: Verify image identity and actual Chromium PDF without network
-        env:
-          IDENTITY: ${{ matrix.identity }}
-        run: |
-          set -o pipefail
-          mkdir -p evidence
-          git rev-parse HEAD | tee evidence/commit.txt
-          docker image inspect folhas-candidate --format '{{.Id}}' | tee evidence/image.txt
-          expected=10001:10001
-          if [ "$IDENTITY" = hs4 ]; then expected=100:101; fi
-          actual=$(docker run --rm --network none folhas-candidate sh -c 'printf "%s:%s" "$(id -u)" "$(id -g)"')
-          test "$actual" = "$expected"
-          docker run --rm --network none folhas-candidate python -B -c 'import json; from src.services.release_identity import get_release_info; info=get_release_info(); assert info["verified"]; print(json.dumps(info))' | tee evidence/release.json
-          docker run --rm --network none -e FS_PDF_BROWSER_NO_SANDBOX=true folhas-candidate python -B tools/smoke_pdf.py | tee evidence/smoke-pdf.json
-      - uses: actions/upload-artifact@v4
+      - uses: docker/setup-compose-action@v2
         with:
-          name: image-evidence-${{ matrix.identity }}
-          path: evidence/
+          version: ${{ matrix.compose }}
+      - name: Package the exact clean commit
+        run: |
+          mkdir "$RUNNER_TEMP/package-evidence"
+          python -B tools/build_release.py --revision "$(git rev-parse HEAD)" --output "$RUNNER_TEMP/release.zip" | tee "$RUNNER_TEMP/package-evidence/package.json"
+          sha256sum "$RUNNER_TEMP/release.zip" > "$RUNNER_TEMP/package-evidence/zip-sha256.txt"
+          python -m zipfile -e "$RUNNER_TEMP/release.zip" "$RUNNER_TEMP/release"
+      - name: Build and run synthetic Linux acceptance without runtime network
+        env:
+          APP_UID: ${{ matrix.uid }}
+          APP_GID: ${{ matrix.gid }}
+        run: bash tools/validate_docker.sh "$RUNNER_TEMP/release" "$RUNNER_TEMP/evidence" "$APP_UID" "$APP_GID"
+      - name: Record execution in the run summary
+        if: always()
+        env:
+          RESULT: ${{ job.status }}
+          IDENTITY: ${{ matrix.identity }}
+        run: |
+          printf '### Linux/Docker %s\n\nCommit: `%s` — job: **%s**\n\n' "$IDENTITY" "$GITHUB_SHA" "$RESULT" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Synthetic data only. Production AlmaLinux kernel/PDF remains an installer check. See attached evidence.\n' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-${{ matrix.identity }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/evidence/
+            ${{ runner.temp }}/package-evidence/
+          retention-days: 30

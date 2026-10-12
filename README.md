@@ -109,3 +109,7 @@ anónima, código de erro e contagens de campos em falta/inválidos, quando disp
 Não são registados valores do documento, nomes de clientes, anexos ou tokens.
 Os HTTP 400 históricos de rascunho/envio ainda exigem a mensagem vista pelo técnico.
 Estas alterações locais não confirmam uma instalação ou correção no servidor.
+
+## Validação Linux/Docker
+
+Procedimento, âmbito e resultados em [docs/VALIDACAO_CI.md](docs/VALIDACAO_CI.md).
