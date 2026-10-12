@@ -1,6 +1,8 @@
 FROM python:3.13-slim AS runtime
 
-WORKDIR /app
+# Offline migration/backup require data outside the verified code artifact.
+# Keep historical data paths (/app/data) and move only the image's code root.
+WORKDIR /opt/folhas
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends chromium fonts-dejavu-core fonts-liberation \

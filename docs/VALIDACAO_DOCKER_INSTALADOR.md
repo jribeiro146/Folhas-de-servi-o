@@ -82,16 +82,51 @@ docker run --rm --network none --mount "type=volume,src=$QA_LEGACY,dst=/app/data
 Esperado: exit 2/erro JSON, bytes preservados, nenhum contrato criado.
 Um volume real legado exige M06; não usar init para o adotar.
 
+## 3b. Migração sintética no mesmo caminho
+
+Continuar sobre QA_LEGACY, nunca sobre um volume operacional. O código está em
+/opt/folhas e o volume mantém /app/data. Um workspace novo e separado guarda o
+plano e as cópias. O único uso de root aqui prepara **a raiz vazia desse volume
+fictício**, sem alterar dados ou donos de ficheiros existentes.
+
+~~~bash
+QA_WORK="$QA_RUN-migration"
+docker run --rm --network none --user 0 \
+  --mount "type=volume,src=$QA_WORK,dst=/maintenance" "$QA_IMAGE" python -B -c 'import os,pwd; from pathlib import Path; p=Path("/maintenance"); assert not list(p.iterdir()); u=pwd.getpwnam("appuser"); os.chown(p,u.pw_uid,u.pw_gid); p.chmod(0o700)'
+qa_offline() {
+  docker run --rm --network none \
+    --mount "type=volume,src=$QA_LEGACY,dst=/app/data" \
+    --mount "type=volume,src=$QA_WORK,dst=/maintenance" \
+    "$QA_IMAGE" python -B "$@"
+}
+qa_offline tools/migrate_runtime.py prepare --data-dir /app/data \
+  --workspace /maintenance/m06 --writers-stopped --roots-complete | tee "evidence-$QA_RUN/migrate-prepare.json"
+qa_offline tools/migrate_runtime.py apply --workspace /maintenance/m06 \
+  --writers-stopped | tee "evidence-$QA_RUN/migrate-apply.json"
+qa_offline tools/prepare_runtime.py inspect --data-dir /app/data | tee "evidence-$QA_RUN/migrate-inspect.json"
+qa_offline -c 'from pathlib import Path; assert (Path("/app/data")/"legacy.txt").read_bytes()==b"synthetic legacy evidence"'
+~~~
+
+Esperado: prepared, complete e inspect com matches_release=true/epoch=1; bytes
+legados preservados, plano fora do artefacto/dados. As fixtures da bateria cobrem
+os formatos legados de edição/fila, WAL e interrupções; este exemplo testa a
+montagem e o CLI da imagem. Para backup/verify/activate/restauro, o
+[guia Docker](10_ALOJAMENTO_DOCKER.md#ferramentas-offline-dentro-do-contentor)
+inclui os wrappers, chave separada só de leitura e seleção da imagem correta.
+Adaptar esses comandos exclusivamente a volumes/chave fictícios durante ensaios;
+os testes locais não autorizam operações no servidor.
+
 ## 4. Ferramenta adulterada detetada
 
 O root abaixo só altera a camada descartável deste container, sem volumes.
-O arranque normal e todos os outros ensaios usam appuser.
+O arranque e os comandos de manutenção usam appuser; só a preparação do workspace
+vazio na secção 3b também exige root.
 
 ~~~bash
 docker run -i --rm --network none --user 0 "$QA_IMAGE" python -B - <<'PY'
 from pathlib import Path
 from src.services.release_identity import get_release_info, ReleaseIdentityError
-path = Path('/app/tools/prepare_runtime.py')
+path = Path('/opt/folhas/tools/prepare_runtime.py')
 path.write_bytes(path.read_bytes() + b'\n# synthetic tamper\n')
 try:
     get_release_info()
@@ -113,6 +148,10 @@ docker run --rm --network none "$QA_TEST_IMAGE" | tee "evidence-$QA_RUN/pytest.t
 docker run --rm --network none -e FS_PDF_BROWSER_NO_SANDBOX=true "$QA_IMAGE" python -B tools/smoke_pdf.py | tee "evidence-$QA_RUN/pdf.json"
 ~~~
 
+Os testes de manifesto ausente criam uma raiz sintética explícita: não dependem
+de o checkout ou a imagem de testes terem manifesto. O código da imagem é de
+root, só de leitura para appuser; os testes escrevem em temporários próprios.
+
 Esperado: zero testes falhados; casos POSIX de migração/restauro/SADI efetivamente
 executados. Explicar os skips específicos de Windows. PDF: status=ok, duas páginas
 legíveis, UID/GID corretos. Sandbox desligado é explícito neste ensaio; não mudar
@@ -122,13 +161,49 @@ dependências de teste à mesma camada runtime
 
 ## 6. Compose e aceitação
 
-Conferir docker compose config --quiet numa cópia isolada com .env **fictício**,
-FS_IMAGE apontando à imagem construída e FS_LOG_HOST_DIR a pasta privada de teste
-existente/gravável pelo UID/GID escolhido. Não guardar a configuração real expandida.
-Confirmar mesma imagem app/worker, nenhuma montagem src/tools, prepare explícito
-e sem rede, logs sem criação silenciosa como root. run --rm --no-deps prepare só
-para volume vazio e projeto de teste escolhido. Nunca usar projeto/volume real
-neste ensaio nem executar down -v.
+Usar apenas .env fictício; este comando não cria containers nem volumes.
+A configuração expandida é enviada diretamente ao verificador, que emite
+somente os campos não sensíveis indicados. Não guardar a configuração real.
+
+~~~bash
+QA_COMPOSE=$(mktemp -d)
+cp docker-compose.yml "$QA_COMPOSE/docker-compose.yml"
+mkdir "$QA_COMPOSE/logs"
+printf 'FS_IMAGE=%s\nFS_LOG_HOST_DIR=%s\n' "$QA_IMAGE" "$QA_COMPOSE/logs" > "$QA_COMPOSE/.env"
+cat > "$QA_COMPOSE/check.py" <<'PY'
+import json, sys
+c = json.load(sys.stdin)
+services = c["services"]
+app, worker, prepare = (services[n] for n in ("app", "worker", "prepare"))
+assert app["image"] == worker["image"] == prepare["image"]
+assert prepare["profiles"] == ["maintenance"] and prepare["network_mode"] == "none"
+assert not prepare.get("env_file") and not prepare.get("environment")
+assert prepare["command"] == ["python", "-B", "tools/prepare_runtime.py", "init", "--data-dir", "/app/data"]
+summary = {}
+for name, service in services.items():
+    mounts = service["volumes"]
+    targets = sorted(v["target"] for v in mounts)
+    assert targets == (["/app/data"] if name == "prepare" else ["/app/data", "/app/logs"])
+    data = next(v for v in mounts if v["target"] == "/app/data")
+    assert data["type"] == "volume" and data["source"] == "app-data"
+    assert "prepare" not in service.get("depends_on", {})
+    summary[name] = {"image": service["image"], "targets": targets}
+    if name != "prepare":
+        logs = next(v for v in mounts if v["target"] == "/app/logs")
+        assert logs["type"] == "bind" and logs["bind"]["create_host_path"] is False
+        summary[name]["create_host_path"] = False
+summary["prepare"]["network_mode"] = prepare["network_mode"]
+print(json.dumps({"status": "PASS", "services": summary}, sort_keys=True))
+PY
+docker compose --env-file "$QA_COMPOSE/.env" -f "$QA_COMPOSE/docker-compose.yml" \
+  -p "$QA_RUN" --profile maintenance config --format json \
+  | python3 "$QA_COMPOSE/check.py" | tee "evidence-$QA_RUN/compose-check.json"
+~~~
+
+Esperado: PASS, mesma imagem em todos os serviços, destinos /app/data e /app/logs
+(só data em prepare), network_mode=none e create_host_path=false. Não é um ensaio
+de arranque Compose. Não executar up/run aqui: os nomes de containers de produção
+são fixos. O ensaio de execução acima usa apenas docker run e volumes QA únicos.
 
 | Verificação | Resultado real a preencher |
 |---|---|
@@ -138,12 +213,13 @@ neste ensaio nem executar down -v.
 | Manifesto / volume vazio / init | Pendente |
 | Web e worker / identidade / HTTP | Pendente |
 | Legado recusado / bytes preservados | Pendente |
+| Migração prepare/apply no volume / caminho preservado | Pendente |
 | Adulteração recusada | Pendente |
 | Pytest / skips explicados / POSIX | Pendente |
 | PDF real / páginas / sandbox | Pendente |
 | Compose / montagens / logs | Pendente |
 
-Preservar evidências e os dois volumes fictícios identificados por QA_RUN.
+Preservar evidências e os três volumes fictícios identificados por QA_RUN.
 Limpeza posterior é deliberada e apenas desses recursos. Uma falha suspende a
 aceitação Linux; não apagar filas, relaxar proteções ou repetir operações reais
 para obter resultado verde.

@@ -269,9 +269,12 @@ def test_verified_package_is_admitted_even_in_production(monkeypatch, verified_t
 
 @pytest.mark.parametrize("unsafe", ["FS_STORAGE_BACKEND", "FS_AUTH_PROVIDER", "FS_MAIL_ENABLED",
                                   "FS_TEAMS_NOTIFICATIONS_ENABLED", "FS_GRAPH_QUEUE_IN_WEB"])
-def test_incomplete_synthetic_profile_does_not_bypass_manifest(monkeypatch, unsafe):
+def test_incomplete_synthetic_profile_does_not_bypass_manifest(monkeypatch, tmp_path, unsafe):
     from src.services.runtime_admission import resolve_runtime
     from src.services.release_identity import ReleaseIdentityError
     monkeypatch.setenv(unsafe, "graph" if unsafe == "FS_STORAGE_BACKEND" else "true")
+    # This condition must be explicit: the suite also runs in a verified ZIP.
+    missing_manifest = tmp_path / "unpackaged"
+    (missing_manifest / "src").mkdir(parents=True)
     with pytest.raises(ReleaseIdentityError, match="manifesto"):
-        resolve_runtime(Path("synthetic-unused-data"))
+        resolve_runtime(tmp_path / "data", release_root=missing_manifest)
