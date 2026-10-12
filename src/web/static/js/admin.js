@@ -95,7 +95,7 @@
             for (const entry of data.audit) {
                 const card = node("article", "", history);
                 node("h3", (actions[entry.action] || entry.action) + " · " + date(entry.created_at), card);
-                node("p", entry.actor_email + " · " + entry.target, card);
+                node("p", (entry.actor_label || "Administrador") + " · " + entry.target, card);
                 node("p", entry.reason, card);
             }
             $("admin-refresh").hidden = !data.refresh;

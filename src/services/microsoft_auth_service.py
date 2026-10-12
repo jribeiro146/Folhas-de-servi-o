@@ -239,10 +239,11 @@ class MicrosoftAuthService:
             with request.urlopen(req, timeout=60) as response:
                 content = response.read()
         except error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise MicrosoftAuthError(f"Microsoft Login HTTP {exc.code}: {detail}") from exc
+            raise MicrosoftAuthError("O fornecedor Microsoft não concluiu o pedido de login.",
+                                     code="microsoft_http_failed") from exc
         except error.URLError as exc:
-            raise MicrosoftAuthError(f"Microsoft Login indisponível: {exc}") from exc
+            raise MicrosoftAuthError("Microsoft Login temporariamente indisponível.",
+                                     code="microsoft_unavailable") from exc
 
         try:
             payload = json.loads(content.decode("utf-8")) if content else {}

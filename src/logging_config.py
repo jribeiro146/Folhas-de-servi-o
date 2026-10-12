@@ -65,7 +65,10 @@ _SECRET_ASSIGNMENT = re.compile(
 )
 _BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 _DATA_URL = re.compile(r"data:[^;\s]+;base64,[A-Za-z0-9+/=]+", re.IGNORECASE)
-_URL_QUERY = re.compile(r"(https?://[^\s?#\"']+)\?[^\s\"']+", re.IGNORECASE)
+_URL = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+_EMAIL = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_QUOTED_PATH = re.compile(r"([\"'])(?:[A-Za-z]:[\\/]|\\\\|/)[^\r\n]*?\1")
+_ABSOLUTE_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\|(?<![\w/])/)[^\s\"'<>][^\r\n\"'<>]*")
 _REQUEST_ID = contextvars.ContextVar("fs_log_request_id", default="")
 _HTTP_METHOD = contextvars.ContextVar("fs_log_http_method", default="")
 _HTTP_ROUTE = contextvars.ContextVar("fs_log_http_route", default="")
@@ -109,10 +112,20 @@ def _redact_text(value: object, *, limit: int = _MAX_LOG_TEXT) -> str:
         text,
     )
     text = _DATA_URL.sub("<redacted-data-url>", text)
-    text = _URL_QUERY.sub(r"\1?<redacted-query>", text)
+    # Exported logs must not expose provider URLs, addresses or filesystem paths.
+    # Codes, request IDs and exception types remain available for correlation.
+    text = _URL.sub("<redacted-url>", text)
+    text = _EMAIL.sub("<redacted-email>", text)
+    text = _QUOTED_PATH.sub("'<redacted-path>'", text)
+    text = _ABSOLUTE_PATH.sub("<redacted-path>", text)
     if len(text) > limit:
         return f"{text[:limit]}…<truncated>"
     return text
+
+
+def redact_diagnostic_text(value: object) -> str:
+    """Bounded text for validation messages; provider diagnostics use codes."""
+    return _redact_text(value, limit=_MAX_FIELD_TEXT)
 
 
 def _safe_value(key: str, value: Any) -> Any:

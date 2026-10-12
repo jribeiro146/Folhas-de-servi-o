@@ -56,6 +56,7 @@ from src.services.file_diagnostics import diagnostic, file_fields, lookup_fields
 from src.logging_config import (
     bind_request_context,
     log_event,
+    redact_diagnostic_text,
     reset_request_context,
 )
 from src.services.archive_service import ArchiveService
@@ -98,6 +99,7 @@ from src.services.graph_sync_coordinator import GraphRefreshCoordinator
 from src.services.graph_sync_queue import GraphSyncQueue
 from src.services.admin_access import can_administer
 from src.services.graph_job_visibility import can_read_job, microsoft_job_owner, normalize_job_owner, public_job_status
+from src.services.diagnostic_views import safe_queue_summary, safe_refresh_status, safe_service_status
 from src.services.local_pdf_service import LocalPdfService
 from src.services.microsoft_auth_service import MicrosoftAuthError, MicrosoftAuthService
 from src.services.photo_attachment_service import PhotoAttachmentError, PhotoAttachmentService
@@ -309,7 +311,7 @@ def _create_app(
         try:
             guard.__enter__()
         except ContractError as exc:
-            response = jsonify({"success": False, "error": str(exc), "code": exc.code})
+            response = jsonify({"success": False, "error": redact_diagnostic_text(exc), "code": exc.code})
             response.status_code = 503
             response.headers["Retry-After"] = "2"
             response.headers["Cache-Control"] = "no-store"
@@ -350,7 +352,7 @@ def _create_app(
                     rejection.update(file_fields(name))
                 payload = response.get_json(silent=True) if response.is_json else None
                 payload = payload if isinstance(payload, dict) else {}
-                code = g.get("response_error_code") or payload.get("code")
+                code = g.get("response_error_code") or payload.get("code") or payload.get("error_code")
                 for field in ("missing_fields", "invalid_fields"):
                     if isinstance(payload.get(field), list):
                         rejection[field + "_count"] = len(payload[field])
@@ -397,7 +399,7 @@ def _create_app(
 
     def json_error(message: str, status: int = 400, *, code: str | None = None):
         g.response_error_code = code or "request_rejected"
-        return jsonify({"success": False, "error": message}), status
+        return jsonify({"success": False, "error": redact_diagnostic_text(message)}), status
 
     def retire_committed_source(document_id, operation_id, context):
         source = Path(str(context.get("source_path") or ""))
@@ -465,9 +467,20 @@ def _create_app(
         # Ownership is server metadata. Never accept a document's supplied owner.
         return graph_sync_queue.enqueue(kind, {**payload, "_owner": current_job_owner()}, job_id=job_id)
 
+    def operational_admin_allowed():
+        return AUTH_ENABLED and ACTIVE_AUTH_PROVIDER == "microsoft" and can_administer(g.get("current_user"))
+
+    def diagnostic_failure(code, status):
+        g.response_error_code = code
+        message = ("Diagnóstico reservado ao administrador." if status == 403 else
+                   "Não foi possível concluir o pedido. Contacte o administrador com a referência indicada.")
+        if status >= 500:
+            log_event(app.logger, logging.ERROR, "Pedido interrompido; consultar o código e a referência.", event=code)
+        return jsonify(success=False, error=message, code=code, reference=g.get("request_id")), status
+
     def editing_error_response(error: Exception):
         if isinstance(error, EditingStateQuarantinedError):
-            return jsonify({"success": False, "error": str(error), "code": "editing_state_quarantined"}), 423
+            return jsonify({"success": False, "error": redact_diagnostic_text(error), "code": "editing_state_quarantined"}), 423
         if isinstance(error, EditingStateWriteInvalidError):
             return json_error(str(error), 409, code="editing_state_write_invalid")
         if isinstance(error, EditingSessionMetadataError):
@@ -480,36 +493,36 @@ def _create_app(
             )
             return jsonify({
                 "success": False,
-                "error": str(error),
+                "error": redact_diagnostic_text(error),
                 "code": "editing_session_required",
             }), 409
         if isinstance(error, EditingSessionRevokedError):
-            return jsonify({"success": False, "error": str(error), "code": "lease_revoked"}), 423
+            return jsonify({"success": False, "error": redact_diagnostic_text(error), "code": "lease_revoked"}), 423
         if isinstance(error, LeaseConflictError):
             return jsonify({
                 "success": False,
-                "error": str(error),
+                "error": redact_diagnostic_text(error),
                 "code": "lease_conflict",
                 "editing": error.snapshot,
             }), 423
         if isinstance(error, LeaseRequiredError):
             return jsonify({
                 "success": False,
-                "error": str(error),
+                "error": redact_diagnostic_text(error),
                 "code": "lease_required",
                 "editing": error.snapshot,
             }), 423
         if isinstance(error, RevisionConflictError):
             return jsonify({
                 "success": False,
-                "error": str(error),
+                "error": redact_diagnostic_text(error),
                 "code": "revision_conflict",
                 "editing": error.snapshot,
             }), 409
         if isinstance(error, OperationInProgressError):
             return jsonify({
                 "success": False,
-                "error": str(error),
+                "error": redact_diagnostic_text(error),
                 "code": "operation_in_progress",
             }), 409
         return json_error(str(error), 400, code="editing_state_invalid")
@@ -601,6 +614,10 @@ def _create_app(
     def microsoft_redirect_uri() -> str:
         return MICROSOFT_AUTH_REDIRECT_URI or url_for("microsoft_auth_callback", _external=True)
 
+    def login_failure(code, message="Não foi possível iniciar sessão Microsoft. Tente novamente ou contacte o administrador."):
+        # Provider descriptions and exception messages are untrusted response data.
+        return redirect(url_for("login", error=message, code=code, reference=g.get("request_id")))
+
     def friendly_graph_login_error(error: GraphStorageError) -> str:
         detail = str(error)
         if "AADSTS7000215" in detail or "invalid_client" in detail:
@@ -609,7 +626,7 @@ def _create_app(
                 "Verifique se o GRAPH_CLIENT_SECRET contém o Secret Value do Entra ID, "
                 "não o Secret ID."
             )
-        return f"Microsoft Graph indisponível: {detail}"
+        return "Microsoft Graph temporariamente indisponível. Tente novamente ou contacte o administrador."
 
     def set_current_user() -> None:
         if ACTIVE_AUTH_PROVIDER == "microsoft":
@@ -736,9 +753,9 @@ def _create_app(
                     logging.ERROR,
                     "Pré-validação Graph do login Microsoft falhou.",
                     event="auth_graph_preflight_failed",
-                    exc_info=True,
+                    error_type=type(exc).__name__,
                 )
-                return redirect(url_for("login", error=friendly_graph_login_error(exc)))
+                return login_failure("auth_graph_preflight_failed", friendly_graph_login_error(exc))
 
         state = secrets.token_urlsafe(32)
         nonce = secrets.token_urlsafe(32)
@@ -760,7 +777,7 @@ def _create_app(
                 event="auth_start_failed",
                 error_type=type(exc).__name__,
             )
-            return redirect(url_for("login", error=str(exc)))
+            return login_failure("auth_start_failed")
 
         return redirect(authorization_url)
 
@@ -776,9 +793,11 @@ def _create_app(
                 logging.WARNING,
                 "O fornecedor Microsoft recusou o login.",
                 event="auth_provider_rejected",
-                provider_error_code=request.args.get("error"),
             )
-            return redirect(url_for("login", error=error))
+            session.pop("microsoft_auth_state", None)
+            session.pop("microsoft_auth_nonce", None)
+            session.pop("microsoft_auth_next", None)
+            return login_failure("auth_provider_rejected")
 
         state = request.args.get("state")
         code = request.args.get("code")
@@ -793,7 +812,7 @@ def _create_app(
                 "Callback Microsoft sem estado de sessão válido.",
                 event="auth_callback_invalid_state",
             )
-            return redirect(url_for("login", error="Sessão Microsoft inválida. Tente novamente."))
+            return login_failure("auth_callback_invalid_state", "Sessão Microsoft inválida. Tente novamente.")
 
         try:
             user = microsoft_auth_service.authenticate_code(
@@ -810,7 +829,7 @@ def _create_app(
                 error_type=type(exc).__name__,
                 auth_error_code=exc.code,
             )
-            return redirect(url_for("login", error=str(exc)))
+            return login_failure("auth_callback_failed")
 
         session.clear()
         session.permanent = True
@@ -1070,7 +1089,7 @@ def _create_app(
     def schedule_graph_refresh(*, force: bool = False) -> dict[str, object] | None:
         if graph_refresh_coordinator is None:
             return None
-        return graph_refresh_coordinator.request_refresh(force=force)
+        return safe_refresh_status(graph_refresh_coordinator.request_refresh(force=force))
 
     def build_document_html(
         *,
@@ -1264,49 +1283,38 @@ def _create_app(
             "requested_refresh_id": (requested_refresh or {}).get("refresh_id"),
             "requested_refresh_sequence": (requested_refresh or {}).get("refresh_sequence"),
             "requested_refresh_generation": (requested_refresh or {}).get("generation_id"),
-            "refresh": graph_refresh_coordinator.status() if graph_refresh_coordinator else None,
+            "refresh": safe_refresh_status(graph_refresh_coordinator.status()) if graph_refresh_coordinator else None,
         })
 
     @app.route("/api/graph/status")
     def graph_status():
-        if graph_service is None:
-            return jsonify({
-                "success": True,
-                "backend": STORAGE_BACKEND,
-                "graph_enabled": False,
-                "refresh": None,
-                "outbox": graph_sync_queue.summary() if graph_sync_queue else None,
-                "mail": mail_service.status() if mail_service else {"enabled": False},
-                "teams": (
-                    teams_notification_service.status()
-                    if teams_notification_service else {"enabled": False}
-                ),
-            })
-
-        status = graph_service.status()
-        return jsonify({
+        status = {
             "success": True,
             "backend": STORAGE_BACKEND,
-            "graph_enabled": True,
-            "graph": status,
-            "refresh": graph_refresh_coordinator.status() if graph_refresh_coordinator else None,
-            "outbox": graph_sync_queue.summary() if graph_sync_queue else None,
-            "mail": mail_service.status() if mail_service else {"enabled": False},
-            "teams": (
-                teams_notification_service.status()
-                if teams_notification_service else {"enabled": False}
-            ),
-        })
+            "graph_enabled": graph_service is not None,
+            "refresh": safe_refresh_status(graph_refresh_coordinator.status()) if graph_refresh_coordinator else None,
+        }
+        if operational_admin_allowed():
+            status.update(
+                graph=safe_service_status(graph_service.status()) if graph_service else None,
+                outbox=safe_queue_summary(graph_sync_queue.summary()) if graph_sync_queue else None,
+                mail=safe_service_status(mail_service.status()) if mail_service else {"enabled": False},
+                teams=safe_service_status(teams_notification_service.status()) if teams_notification_service else {"enabled": False},
+            )
+        return jsonify(status)
 
     @app.route("/api/graph/test")
     def graph_test():
+        if not operational_admin_allowed():
+            return diagnostic_failure("diagnostic_access_denied", 403)
         if graph_service is None:
             return json_error("Backend Graph não está ativo.", 400)
 
         try:
+            graph_service.test_connection()
             return jsonify({
                 "success": True,
-                "graph": graph_service.test_connection(),
+                "graph": {"authenticated": True},
             })
         except GraphStorageError as exc:
             log_event(
@@ -1314,18 +1322,20 @@ def _create_app(
                 logging.ERROR,
                 "Diagnóstico Graph falhou.",
                 event="graph_diagnostic_failed",
-                exc_info=True,
+                error_type=type(exc).__name__,
             )
-            return json_error(str(exc), 502)
+            return diagnostic_failure("graph_diagnostic_failed", 502)
 
     @app.route("/api/mail/test")
     def mail_test():
+        if not operational_admin_allowed():
+            return diagnostic_failure("diagnostic_access_denied", 403)
         if mail_service is None:
             return json_error("O envio de e-mail não está ativo.", 400)
         try:
             return jsonify({
                 "success": True,
-                "mail": mail_service.test_connection(),
+                "mail": safe_service_status(mail_service.test_connection()),
             })
         except GraphMailConfigurationError as exc:
             log_event(
@@ -1335,16 +1345,16 @@ def _create_app(
                 event="mail_diagnostic_configuration_failed",
                 error_type=type(exc).__name__,
             )
-            return json_error(str(exc), 503)
+            return diagnostic_failure("mail_diagnostic_configuration_failed", 503)
         except GraphMailError as exc:
             log_event(
                 app.logger,
                 logging.ERROR,
                 "Diagnóstico de e-mail falhou.",
                 event="mail_diagnostic_failed",
-                exc_info=True,
+                error_type=type(exc).__name__,
             )
-            return json_error(str(exc), 502)
+            return diagnostic_failure("mail_diagnostic_failed", 502)
 
     @app.route("/api/graph/sync", methods=["POST"])
     def graph_sync():
@@ -1360,7 +1370,7 @@ def _create_app(
         job = graph_sync_queue.status(job_id)
         if job is None:
             return json_error("Operação de sincronização não encontrada.", 404)
-        administrator = AUTH_ENABLED and ACTIVE_AUTH_PROVIDER == "microsoft" and can_administer(g.get("current_user"))
+        administrator = operational_admin_allowed()
         if not can_read_job(job, current_job_owner(), administrator=administrator):
             return json_error("Não tem autorização para consultar este trabalho.", 403, code="job_access_denied")
         return jsonify({"success": True, "job": public_job_status(job)})
@@ -1414,7 +1424,7 @@ def _create_app(
             return jsonify({
                 "success": False,
                 "editable": False,
-                "error": str(exc),
+                "error": redact_diagnostic_text(exc),
                 "code": "lease_conflict",
                 "file": name,
                 "is_draft": True,
@@ -1437,7 +1447,7 @@ def _create_app(
                 event="editor_bootstrap_failed",
                 exc_info=True,
             )
-            return json_error(str(exc), 500)
+            return diagnostic_failure("operation_failed", 500)
 
     @app.route("/api/file/<name>")
     def get_file_data(name: str):
@@ -1482,7 +1492,7 @@ def _create_app(
                 event="file_read_failed",
                 exc_info=True,
             )
-            return json_error(str(exc), 500)
+            return diagnostic_failure("operation_failed", 500)
     @app.route("/api/file/<name>/photos/<photo_id>")
     def get_file_photo(name: str, photo_id: str):
         path = file_service.get_file_by_name(name)
@@ -1704,7 +1714,7 @@ def _create_app(
                 event="document_preview_failed",
                 exc_info=True,
             )
-            return json_error(str(exc), 500)
+            return diagnostic_failure("operation_failed", 500)
 
     @app.route("/api/file/<name>/draft", methods=["POST"])
     @exclusive_operation
@@ -1849,7 +1859,7 @@ def _create_app(
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
             return jsonify({
                 "success": False,
-                "error": str(exc),
+                "error": redact_diagnostic_text(exc),
                 "code": "graph_conflict",
                 "editing": editing_state_service.snapshot_document(document_id) if document_id else None,
             }), 409
@@ -1868,7 +1878,7 @@ def _create_app(
                 document_id=document_id or None,
                 exc_info=True,
             )
-            return json_error(str(exc), 500)
+            return diagnostic_failure("operation_failed", 500)
 
     @app.route("/api/file/<name>/send", methods=["POST"])
     @exclusive_operation
@@ -2002,9 +2012,9 @@ def _create_app(
                 try:
                     mail_service.test_connection()
                 except GraphMailConfigurationError as exc:
-                    return json_error(str(exc), 503)
+                    return diagnostic_failure("mail_preflight_configuration_failed", 503)
                 except GraphMailError as exc:
-                    return json_error(str(exc), 502)
+                    return diagnostic_failure("mail_preflight_failed", 502)
 
                 if teams_notification_service is not None:
                     try:
@@ -2208,7 +2218,7 @@ def _create_app(
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
             return jsonify({
                 "success": False,
-                "error": str(exc),
+                "error": redact_diagnostic_text(exc),
                 "code": "graph_conflict",
                 "editing": editing_state_service.snapshot_document(document_id) if document_id else None,
             }), 409
@@ -2227,7 +2237,7 @@ def _create_app(
                 document_id=document_id or None,
                 exc_info=True,
             )
-            return json_error(str(exc), 500)
+            return diagnostic_failure("operation_failed", 500)
 
     @app.route("/api/file/<name>/cancel", methods=["POST"])
     @exclusive_operation
@@ -2348,7 +2358,7 @@ def _create_app(
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
             return jsonify({
                 "success": False,
-                "error": str(exc),
+                "error": redact_diagnostic_text(exc),
                 "code": "graph_conflict",
                 "editing": editing_state_service.snapshot_document(document_id) if document_id else None,
             }), 409
@@ -2363,7 +2373,7 @@ def _create_app(
                 document_id=document_id or None,
                 exc_info=True,
             )
-            return json_error(str(exc), 500)
+            return diagnostic_failure("operation_failed", 500)
 
     from src.web.admin import register_admin
     register_admin(app, editing_state_service, graph_sync_queue, graph_refresh_coordinator,

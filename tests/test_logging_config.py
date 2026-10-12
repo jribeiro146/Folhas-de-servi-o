@@ -133,7 +133,7 @@ def test_json_logging_redacts_secrets_and_carries_request_context(tmp_path):
     assert record["api_key"] == "<redacted>"
     assert record["nested"] == {"password": "<redacted>", "safe": "preserved"}
     assert record["safe_field"] == "visible"
-    assert "<redacted-query>" in record["exception"]
+    assert "<redacted-url>" in record["exception"]
 
 
 def test_request_log_uses_route_template_and_returns_request_id(tmp_path, monkeypatch):

@@ -5,10 +5,12 @@ import secrets
 import time
 from urllib.parse import urlsplit
 from flask import Blueprint, g, jsonify, render_template, request, session
-from src.logging_config import log_event
+from src.logging_config import log_event, redact_diagnostic_text
 from src.services.admin_access import admin_configuration_error, can_administer
 from src.services.editing_state_service import EditingStateError, EditingStateQuarantinedError
 from src.services.graph_sync_queue import delivery_uncertain, teams_retry_deadline
+from src.services.graph_job_visibility import PHASES
+from src.services.diagnostic_views import safe_queue_summary, safe_refresh_status
 
 
 def register_admin(app, editing, queue, refresh, authenticated_microsoft):
@@ -89,7 +91,10 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
             result, uncertain, invalid = {}, True, True
         return {"id": row["id"], "kind": row["kind"], "status": row["status"],
                 "attempts": row["attempts"], "updated_at": row["updated_at"],
-                "last_error": row["last_error"], "phase": result.get("phase"),
+                "last_error": "Falha registada; consultar a referência do trabalho." if row["last_error"] else None,
+                "error_code": "job_invalid_state" if invalid else "job_reconciliation_required" if uncertain else
+                              "job_failed" if row["last_error"] else None,
+                "phase": result.get("phase") if result.get("phase") in PHASES else None,
                 "retry_not_before": deadline,
                 "reconciliation_required": uncertain, "invalid_state": invalid,
                 "can_retry": row["status"] == "failed" and not row["retryable"] and not uncertain and not invalid
@@ -102,11 +107,20 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
             with queue._connect() as connection:
                 rows = connection.execute("SELECT * FROM graph_sync_jobs WHERE status != 'complete' ORDER BY updated_at DESC LIMIT 100").fetchall()
             jobs = [safe_job(row) for row in rows]
+        # The browser uses only these audit fields. Keep full evidence in the
+        # repository; never export details_json or arbitrary nested diagnostics.
+        audit = [{"action": entry["action"] if entry["action"] in {
+                    "release_sheet", "restore_sheet_access", "retry_job_requested", "retry_job_accepted", "refresh_requested"
+                  } else "admin_action",
+                  "created_at": entry["created_at"], "actor_label": "Administrador",
+                  "target": redact_diagnostic_text(entry["target"]),
+                  "reason": redact_diagnostic_text(entry["reason"])}
+                 for entry in editing.repository.admin_history()]
         return jsonify(success=True, documents=editing.admin_documents(), jobs=jobs,
                        release=app.config["RELEASE_INFO"],
-                       queue_summary=queue.summary() if queue is not None else None,
-                       refresh=refresh.status() if refresh is not None else None,
-                       audit=editing.repository.admin_history())
+                       queue_summary=safe_queue_summary(queue.summary()) if queue is not None else None,
+                       refresh=safe_refresh_status(refresh.status()) if refresh is not None else None,
+                       audit=audit)
 
     def received():
         data = request.get_json(silent=True)
@@ -132,11 +146,12 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
                                                   restore_user=restore_user)
             return jsonify(success=True, result=result)
         except EditingStateQuarantinedError as exc:
-            return jsonify(success=False, error=str(exc), code="editing_state_quarantined"), 423
+            return jsonify(success=False, error=redact_diagnostic_text(exc), code="editing_state_quarantined"), 423
         except KeyError:
             return jsonify(success=False, error="Reserva não encontrada."), 404
         except (ValueError, EditingStateError) as exc:
-            return jsonify(success=False, error=str(exc)), 409
+            return jsonify(success=False, error=redact_diagnostic_text(exc), code="admin_action_rejected",
+                           reference=g.get("request_id")), 409
 
     @bp.post("/api/admin/jobs/<job_id>/retry")
     @bp.post("/api/graph/jobs/<job_id>/retry")
@@ -160,7 +175,8 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
         except KeyError:
             return jsonify(success=False, error="Trabalho não encontrado."), 404
         except ValueError as exc:
-            return jsonify(success=False, error=str(exc)), 409
+            return jsonify(success=False, error=redact_diagnostic_text(exc), code="admin_action_rejected",
+                           reference=g.get("request_id")), 409
 
     @bp.post("/api/admin/refresh")
     def refresh_graph():
@@ -172,8 +188,9 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
                      "target": "graph", "reason": data["reason"], "details": {}}
             editing.repository.record_admin_action(audit)
             result = refresh.request_refresh(force=True)
-            return jsonify(success=True, refresh=result), 202
+            return jsonify(success=True, refresh=safe_refresh_status(result)), 202
         except ValueError as exc:
-            return jsonify(success=False, error=str(exc)), 409
+            return jsonify(success=False, error=redact_diagnostic_text(exc), code="admin_action_rejected",
+                           reference=g.get("request_id")), 409
 
     app.register_blueprint(bp)

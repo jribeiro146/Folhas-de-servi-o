@@ -883,7 +883,7 @@ def test_customer_email_is_optional_in_editor_when_mail_is_enabled(isolated_dirs
     assert '"key": "customer_email"' not in html
 
 
-def test_mail_diagnostic_endpoint_authenticates_without_sending(isolated_dirs):
+def test_mail_diagnostic_endpoint_refuses_anonymous_without_contacting_provider(isolated_dirs):
     class DiagnosticMail:
         calls = 0
 
@@ -916,16 +916,9 @@ def test_mail_diagnostic_endpoint_authenticates_without_sending(isolated_dirs):
 
     response = client.get("/api/mail/test")
 
-    assert response.status_code == 200
-    assert response.get_json() == {
-        "success": True,
-        "mail": {
-            "authenticated": True,
-            "mail_send_permission": True,
-            "sender": "service@sensorpoint.pt",
-        },
-    }
-    assert mail.calls == 1
+    assert response.status_code == 403
+    assert response.get_json()["code"] == "diagnostic_access_denied"
+    assert mail.calls == 0
 
 
 def test_send_checks_mail_credentials_before_archiving(isolated_dirs, monkeypatch):
@@ -996,7 +989,8 @@ def test_send_checks_mail_credentials_before_archiving(isolated_dirs, monkeypatc
     )
 
     assert response.status_code == 503
-    assert response.get_json()["error"] == "A permissão Mail.Send não está disponível."
+    assert response.get_json()["code"] == "mail_preflight_configuration_failed"
+    assert response.get_json()["reference"] == response.headers["X-Request-ID"]
     assert source.exists()
     assert queue.calls == []
 
