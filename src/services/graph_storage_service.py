@@ -12,6 +12,7 @@ import secrets
 import shutil
 import stat
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -546,13 +547,14 @@ class GraphStorageService:
             owner = {"temporary_name": temporary_name}
             self._atomic_write_json(ownership_path, owner)
         temporary_path = self._join_graph_path(root_path, temporary_name)
-        # An explicit POST conflict disproves creation by this attempt. Keep it
-        # durable so a later save cannot mistake the conflicting item for a
-        # lost response. A pre-existing random name alone is never ownership.
+        # A conflict on the first POST is terminal. After a prior durable
+        # attempt, 409 can instead be our own successful POST with a lost reply
+        # and delayed read visibility. A random name alone is never ownership.
         if owner.get("creation_conflict"):
             raise GraphConflictError("A criação da pasta temporária entrou em conflito; requer revisão.")
+        previous_attempt = owner.get("creation_attempted") is True
         remote = self._get_item_by_path(temporary_path)
-        if remote is not None and not owner.get("id") and not owner.get("creation_attempted"):
+        if remote is not None and not owner.get("id") and not previous_attempt:
             raise GraphConflictError("A pasta temporária já existe sem prova de criação local.")
         if remote is None:
             if owner.get("id"):
@@ -568,10 +570,17 @@ class GraphStorageService:
                         "@microsoft.graph.conflictBehavior": "fail"}).encode("utf-8"),
                     content_type="application/json",
                 )
-            except GraphConflictError:
-                owner["creation_conflict"] = True
-                self._atomic_write_json(ownership_path, owner)
-                raise
+            except GraphConflictError as exc:
+                if exc.status_code == 409 and previous_attempt:
+                    # Reuse the same proof that permits recovery on the first
+                    # GET. Eventual visibility must not turn it into rejection.
+                    remote = self._get_item_by_path(temporary_path)
+                    if remote is None:
+                        raise GraphStorageError("A pasta temporária ainda não pôde ser confirmada.") from exc
+                else:
+                    owner["creation_conflict"] = True
+                    self._atomic_write_json(ownership_path, owner)
+                    raise
         self._require_folder(remote, temporary_name, expected_id=owner.get("id"))
         owner["id"] = remote["id"]
         self._atomic_write_json(ownership_path, owner)
@@ -723,10 +732,19 @@ class GraphStorageService:
         return item
 
     def _require_folder(self, item: dict[str, Any], name: str | None = None, *,
-                        expected_id: str | None = None, parent_id: str | None = None) -> None:
+                        expected_id: str | None = None, parent_id: str | None = None,
+                        shared_name: bool = False) -> None:
+        actual_name = item.get("name") if isinstance(item, dict) else None
+        matches_name = name is None or actual_name == name
+        if shared_name and name is not None and isinstance(actual_name, str):
+            # Graph paths are case-insensitive but return stored capitalization.
+            # Only shared path segments use this comparison; operation names,
+            # opaque IDs and all version preconditions remain exact.
+            matches_name = (unicodedata.normalize("NFC", actual_name).casefold()
+                            == unicodedata.normalize("NFC", name).casefold())
         if (not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"].strip()
                 or not isinstance(item.get("folder"), dict) or any(key in item for key in ("file", "remoteItem", "deleted"))
-                or (name is not None and item.get("name") != name)
+                or not matches_name
                 or (expected_id is not None and item["id"] != expected_id)):
             raise GraphConflictError("O destino remoto não é a pasta esperada; foi preservado.")
         # The ID-based endpoint establishes the parent. Reject contradictory
@@ -749,12 +767,12 @@ class GraphStorageService:
                 raise
         item = read()
         if item is not None:
-            self._require_folder(item, name, parent_id=parent_id)
+            self._require_folder(item, name, parent_id=parent_id, shared_name=True)
             return item
         created_id = None
         try:
             created = self._create_folder(parent_id, name)
-            self._require_folder(created, name, parent_id=parent_id)
+            self._require_folder(created, name, parent_id=parent_id, shared_name=True)
             created_id = created["id"]
         except GraphConflictError as exc:
             if exc.status_code != 409:
@@ -764,7 +782,7 @@ class GraphStorageService:
         item = read()
         if item is None:
             raise GraphStorageError("A pasta remota ainda não pôde ser confirmada.")
-        self._require_folder(item, name, expected_id=created_id, parent_id=parent_id)
+        self._require_folder(item, name, expected_id=created_id, parent_id=parent_id, shared_name=True)
         return item
 
     def upload_file(

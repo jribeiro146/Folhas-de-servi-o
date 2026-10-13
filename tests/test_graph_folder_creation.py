@@ -246,3 +246,108 @@ def test_known_bundle_id_does_not_allow_file_in_place_of_folder(tmp_path):
     with pytest.raises(GraphConflictError):
         graph.upload_active_bundle(source)
     assert graph.writes == [] and graph.created == 0
+
+
+@pytest.mark.parametrize("visible", [False, True])
+@pytest.mark.parametrize("requested,actual", [("activas", "Activas"), ("OPERAC\u0327O\u0303ES", "Operações")])
+def test_shared_names_accept_case_and_canonical_unicode_variations(visible, requested, actual):
+    graph = FolderRace(item={"id": "shared-folder", "name": actual, "folder": {}})
+    graph.visible = visible
+    assert graph.ensure_folder_path(requested)["id"] == "shared-folder"
+    assert sum(m == "POST" for m, _, _ in graph.calls) == (0 if visible else 1)
+
+
+@pytest.mark.parametrize("archive", [False, True])
+def test_photo_folder_accepts_case_variation_but_writes_by_id(tmp_path, monkeypatch, archive):
+    source = draft(tmp_path)
+    PhotoAttachmentService(source).apply([photo_upload()], [])
+    graph = FolderRace(item={"id": "photos-id", "name": PHOTO_FOLDER_NAME.swapcase(), "folder": {}})
+    graph.visible = True
+    writes = []
+    def upload(local, remote, **kwargs):
+        assert kwargs["parent_item_id"] == "photos-id"
+        writes.append(local.name)
+        return {"id": "new-photo", "eTag": "v1"}
+    monkeypatch.setattr(graph, "upload_file", upload)
+    kwargs = {"archive_folder_id" if archive else "active_folder_id": "owned-parent"}
+    assert len(graph._upload_photo_folder(source.parent, "Activas/draft", **kwargs)) == 1
+    assert len(writes) == 1 and [m for m, _, _ in graph.calls] == ["GET"]
+
+
+@pytest.mark.parametrize("staging", [False, True])
+def test_owned_names_keep_exact_comparison_even_with_proven_id(tmp_path, staging):
+    source = draft(tmp_path)
+    graph = RecoverableCreation(None)
+    owner = source.parent / ".fs-upload-owner.json"
+    name = ".fs-upload-" + "a" * 32 if staging else source.parent.name
+    graph.items["Activas/" + name] = {"id": "known-id", "name": name.swapcase(), "folder": {}, "eTag": "v1"}
+    owner.write_text(json.dumps({"id": "known-id", "temporary_name": name} if staging else {"id": "known-id"}))
+    with pytest.raises(GraphConflictError):
+        graph.upload_active_bundle(source)
+    assert graph.writes == [] and graph.created == 0
+
+
+@pytest.mark.parametrize("archive", [False, True])
+@pytest.mark.parametrize("hidden_reads", [1, 2])
+def test_lost_creation_then_delayed_read_and_409_remains_recoverable(tmp_path, archive, hidden_reads):
+    source = draft(tmp_path)
+    owner = source.parent / (".fs-archive-owner.json" if archive else ".fs-upload-owner.json")
+    class DelayedCreation(RecoverableCreation):
+        def __init__(self):
+            super().__init__("POST")
+            self.hidden = hidden_reads
+            self.posts = 0
+            self.renames = 0
+
+        def _get_item_by_path(self, path):
+            if self.created and "/.fs-upload-" in path and self.hidden:
+                self.hidden -= 1
+                return None
+            return super()._get_item_by_path(path)
+
+        def _graph_json(self, method, path, **kwargs):
+            self.posts += 1
+            if self.created:
+                assert json.loads(kwargs["data"])["@microsoft.graph.conflictBehavior"] == "fail"
+                raise GraphConflictError("Already created by previous lost request", status_code=409)
+            return super()._graph_json(method, path, **kwargs)
+
+        def _graph_bytes(self, *args, **kwargs):
+            self.renames += 1
+            return super()._graph_bytes(*args, **kwargs)
+
+    graph = DelayedCreation()
+    with pytest.raises(GraphStorageError, match="Response lost"):
+        graph._create_owned_folder(source.parent, owner, "Activas")
+    if hidden_reads == 2:
+        with pytest.raises(GraphStorageError) as still_hidden:
+            graph._create_owned_folder(source.parent, owner, "Activas")
+        assert type(still_hidden.value) is GraphStorageError
+        assert not json.loads(owner.read_text()).get("creation_conflict")
+    recovered = graph._create_owned_folder(source.parent, owner, "Activas")
+    assert recovered["id"] == "created-folder"
+    assert graph.posts == 2 and graph.created == 1 and graph.renames == 1
+    assert not json.loads(owner.read_text()).get("creation_conflict")
+
+
+def test_cancellation_accepts_shared_root_case_variation_before_conditional_move(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from src.services.graph_cancellation import execute_cancellation
+    from tests.test_cancellation_recovery import CancellationGraph, plan, source_with_receipts
+    graph = CancellationGraph()
+    graph.config = replace(graph.config, archive_path="arquivadas")
+    remote_plan = plan(graph, source_with_receipts(tmp_path))
+    lookup = graph._get_item_by_path
+    monkeypatch.setattr(graph, "_get_item_by_path", lambda path: (
+        {"id": "canceled-root", "name": "canceladas", "folder": {}}
+        if path == "arquivadas/Canceladas" else lookup(path)))
+    monkeypatch.setattr(graph, "ensure_folder_path", GraphStorageService.ensure_folder_path.__get__(graph))
+    def read(method, path, **kwargs):
+        assert method == "GET"
+        if path == "/drives/drive/root:/arquivadas:":
+            return {"id": "archive-root", "name": "Arquivadas", "folder": {}}
+        assert path == "/drives/drive/items/archive-root:/Canceladas:"
+        return {"id": "canceled-root", "name": "canceladas", "folder": {}}
+    monkeypatch.setattr(graph, "_graph_json", read)
+    assert execute_cancellation(graph, remote_plan)["remote_preserved"] is True
+    assert len(graph.writes) == 1
