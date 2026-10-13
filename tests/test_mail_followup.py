@@ -85,3 +85,22 @@ def test_context_requires_auth_and_has_no_mutation_method(service):
     client = app.test_client()
     assert client.get("/api/graph/monitor-context").status_code == 401
     assert login(app).post("/api/graph/monitor-context").status_code == 405
+
+
+@pytest.mark.parametrize("email_status,has_header", [("pending", True), ("accepted", False), (None, False)])
+def test_post_reference_is_bound_to_actual_session_not_old_page(service, email_status, has_header):
+    from flask import jsonify
+    app, _ = service
+    client = login(app)
+    old_scope = scope(client)
+    # Stub only the business effect; exercise the real HTTP session/after_request
+    # binding without finalizing a document or sending anything.
+    app.view_functions["save_and_send"] = lambda name: jsonify(
+        success=True, email_status=email_status, graph_job_id="send:synthetic")
+    with client.session_transaction() as session:
+        session["microsoft_user"] = {**session["microsoft_user"], "id": OTHER_ID}
+    response = client.post("/api/file/synthetic/send", json={})
+    assert response.status_code == 200
+    assert ("X-Mail-Monitor-Scope" in response.headers) is has_header
+    if has_header:
+        assert response.headers["X-Mail-Monitor-Scope"] == scope(client) != old_scope

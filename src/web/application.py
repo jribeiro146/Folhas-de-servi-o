@@ -477,6 +477,18 @@ def _create_app(
         # signed session; including the principal also fences account changes.
         return hashlib.sha256((nonce + json.dumps(owner, sort_keys=True)).encode()).hexdigest()
 
+    @app.after_request
+    def bind_sent_job_monitor_scope(response):
+        # A page may predate a login in another tab. Bind the new reference to
+        # the session that actually made this POST, not to its old HTML scope.
+        if request.endpoint == "save_and_send" and 200 <= response.status_code < 300 and response.is_json:
+            payload = response.get_json(silent=True)
+            if isinstance(payload, dict) and payload.get("success") and payload.get("email_status") == "pending":
+                scope = mail_monitor_scope()
+                if scope is not None:
+                    response.headers["X-Mail-Monitor-Scope"] = scope
+        return response
+
     def enqueue_owned_job(kind, payload, *, job_id):
         # Ownership is server metadata. Never accept a document's supplied owner.
         return graph_sync_queue.enqueue(kind, {**payload, "_owner": current_job_owner()}, job_id=job_id)

@@ -13,6 +13,10 @@ continua a esperar pela aceitação e a navegar com a mensagem já existente.
 Numa consulta recuperada, a aceitação é mostrada no painel da página, sem navegar
 automaticamente nem descartar outra folha que esteja em edição.
 
+O primeiro plano usa diretamente o GET de estado com scope, conservando as
+repetições/prazos M03. Não depende de uma consulta adicional de contexto que
+possa interromper a espera por um503 ou uma perda momentânea de rede.
+
 ## Referência e prazo
 
 A chave sessionStorage sensorpoint-mail-followup-v1 contém apenas um scope
@@ -48,12 +52,23 @@ Uma aba antiga também é recusada se a nova conta for administradora.
 O consumidor original sem esse cabeçalho conserva as permissões M03.
 As duas rotas continuam sujeitas à admissão e a respostas no-store.
 
+O POST aceite devolve também X-Mail-Monitor-Scope com a sessão efetiva que
+produziu a referência. Assim uma página anterior a um novo login pode guardar
+o novo trabalho na sessão certa. Guardar uma referência com scope antigo não
+substitui um armazenamento de outro scope. Essa substituição só é admitida
+após confirmação atual por GET de contexto ou estado; referências do scope
+atual são preservadas ao acrescentar o novo id.
+
 Quando a página fica oculta ou sai, o painel é limpo e a geração das consultas
 é invalidada. Uma resposta tardia não pode confirmar um envio ou voltar a mostrar
 uma referência da geração anterior. Ao regressar de BFCache, a sessão é conferida
 de novo. Uma página antiga não apaga uma referência já guardada por uma sessão
 mais nova. Pedidos GET já em voo podem terminar; não originam novas consultas
 nem efeitos de envio depois da invalidação. O timeout do monitor continua limitado.
+
+Ocultar a página é uma suspensão normal: não é apresentada como erro ou mudança
+de sessão no formulário. Ao regressar, o painel continua a consulta e mostra
+o resultado, sem navegação automática.
 
 401/403 ou mudança de scope retiram o acompanhamento da sessão antiga e pedem
 atualização da página. Uma falha temporária na confirmação da sessão oculta as

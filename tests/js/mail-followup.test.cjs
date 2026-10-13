@@ -12,7 +12,7 @@ const reply = (data, status = 200, headers = {}) => ({ok: status === 200, status
     headers: {get: key => headers[key] || null}, json: async () => data});
 const accepted = id => reply({success: true, job: {id, status: "complete", result: {mail: {accepted: true}}}});
 function harness(t, {storage = memory(), scope = SCOPE, contextScope = SCOPE,
-    job = id => accepted(id), contextStatus = 200, now = Date.now, trackerMonitor = monitor} = {}) {
+    job = id => accepted(id), contextStatus = 200, jobScope = scope, now = Date.now, trackerMonitor = monitor} = {}) {
     const calls = [], views = [];
     const tracker = create({storage, scope, now, monitor: trackerMonitor,
         onChange: view => views.push(view),
@@ -22,8 +22,9 @@ function harness(t, {storage = memory(), scope = SCOPE, contextScope = SCOPE,
             assert.equal(options.body, undefined);
             assert.equal(options.cache, "no-store");
             if (url === "/api/graph/monitor-context")
-                return reply({success: true, scope: contextScope}, contextStatus);
-            assert.equal(options.headers["X-Mail-Monitor-Scope"], scope);
+                return reply({success: true, scope: contextScope},
+                    typeof contextStatus === "function" ? contextStatus() : contextStatus);
+            assert.equal(options.headers["X-Mail-Monitor-Scope"], jobScope);
             const id = decodeURIComponent(url.split("/").at(-1));
             return job(id, options);
         }});
@@ -249,4 +250,58 @@ test("limit warning survives verification when new foreground job cannot be pers
     await assert.rejects(h.tracker.waitForMailJob("send:overflow"), {code: "mail_scheduled"});
     assert.equal(h.views.at(-1).warning, "limit");
     assert.equal(JSON.parse(h.storage.getItem(KEY)).entries.length, LIMIT);
+});
+test("transient context failure does not interrupt foreground M03 GET retries", async t => {
+    let contexts = 0, attempts = 0;
+    const waits = [], h = harness(t, {contextStatus: () => ++contexts === 1 ? 503 : 200,
+        job: id => ++attempts === 1 ? reply(null, 503, {"Retry-After": "2"}) : accepted(id)});
+    h.tracker.remember("send:resilient");
+    await h.tracker.resume();
+    assert.equal(h.jobs().length, 0);
+    const result = await h.tracker.waitForMailJob("send:resilient", {waitFn: async delay => waits.push(delay)});
+    assert.equal(result.id, "send:resilient");
+    assert.equal(h.views.at(-1).warning, null);
+    assert.deepEqual(waits, [2000]);
+    assert.equal(h.jobs().length, 2);
+    await h.tracker.resume();
+    assert.equal(contexts, 2);
+    assert.equal(h.views.at(-1).entries[0].code, "accepted");
+});
+test("foreground network outages retain Portuguese diagnostic and exact reference", async t => {
+    const h = harness(t, {contextStatus: 503, job: () => {throw new TypeError("offline");}});
+    await assert.rejects(h.tracker.waitForMailJob("send:offline", {
+        maxPolls: 1, waitFn: async () => {},
+    }), error => error.code === "mail_status_timeout" && error.jobId === "send:offline" &&
+        /não foi possível confirmar/.test(error.message) && !/context_unavailable/.test(error.message));
+    assert.ok(h.calls.every(call => call.url.includes("/jobs/")));
+});
+test("normal suspension has its own message rather than claiming session change", async t => {
+    const h = harness(t, {job: id => reply({success: true, job: {id, status: "pending", result: {}}})});
+    await assert.rejects(h.tracker.waitForMailJob("send:mobile", {
+        waitFn: async () => h.tracker.suspend(),
+    }), error => error.code === "suspended" && /continua quando voltar/.test(error.message) &&
+        !/sessão.*mudou/.test(error.message) && !error.jobId);
+});
+test("old remember and rejected foreground never replace newer scope storage", async t => {
+    const storage = memory();
+    harness(t, {storage, scope: OTHER, contextScope: OTHER}).tracker.remember("send:newer");
+    const snapshot = storage.getItem(KEY);
+    const old = harness(t, {storage, contextScope: OTHER, job: () => reply(null, 403)});
+    old.tracker.remember("send:old-page");
+    assert.equal(storage.getItem(KEY), snapshot);
+    await assert.rejects(old.tracker.waitForMailJob("send:old-page"), {code: "session_changed"});
+    assert.equal(storage.getItem(KEY), snapshot);
+});
+test("POST response scope lets old HTML preserve current-session references and new ID", async t => {
+    const storage = memory(), now = Date.now();
+    harness(t, {storage, scope: OTHER, contextScope: OTHER}).tracker.remember("send:existing-new-session");
+    const old = harness(t, {storage, contextScope: OTHER, jobScope: OTHER,
+        job: id => reply({success: true, job: {id, status: "pending",
+            next_attempt_at: (now + 86400000) / 1000, result: {}}})});
+    old.tracker.remember("send:new-post", OTHER);
+    assert.equal(JSON.parse(storage.getItem(KEY)).scope, OTHER);
+    await assert.rejects(old.tracker.waitForMailJob("send:new-post"), {code: "mail_scheduled"});
+    assert.deepEqual(JSON.parse(storage.getItem(KEY)).entries.map(entry => entry.id),
+        ["send:existing-new-session", "send:new-post"]);
+    assert.equal(old.jobs().length, 1);
 });

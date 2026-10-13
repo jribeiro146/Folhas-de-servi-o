@@ -11,15 +11,21 @@
         let records = [], completed = [], hydrated = false, verified = false, epoch = 0;
         let checking = null, timer = null, warning = null;
         const active = new Map(), messages = new Map(), cancellations = new Map();
-        const validScope = typeof scope === "string" && /^[a-f0-9]{64}$/.test(scope);
+        const validScope = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
         const emit = () => onChange({verified, warning,
             entries: verified ? [...records.map(record => ({...record, code: messages.get(record.id) || "pending"})),
                 ...completed] : []});
-        const save = () => {
+        const save = (confirmedNow = false) => {
             try {
                 if (!storage) throw new Error();
+                const existing = storage.getItem(KEY);
+                if (existing && existing.length <= 16384 &&
+                    JSON.parse(existing)?.scope !== scope && !confirmedNow) {
+                    warning = "scope_unverified";
+                    return; // An old page must not replace a newer login's references.
+                }
                 storage.setItem(KEY, JSON.stringify({scope, entries: records}));
-                if (warning === "storage_unavailable") warning = null;
+                if (["storage_unavailable", "scope_unverified"].includes(warning)) warning = null;
             } catch (_) { warning = "storage_unavailable"; }
         };
         const hydrate = () => {
@@ -31,7 +37,7 @@
                 if (!raw) { records = []; return; }
                 if (raw.length > 16384) throw new Error();
                 const data = JSON.parse(raw);
-                if (data.scope !== scope) { records = []; storage.removeItem(KEY); return; }
+                if (data.scope !== scope) { records = []; return; }
                 if (!Array.isArray(data.entries) || data.entries.length > LIMIT) throw new Error();
                 const ids = new Set();
                 records = data.entries.filter(record => {
@@ -67,7 +73,10 @@
             emit();
         };
         const sessionError = code => {
-            const error = new Error("A sessão de acompanhamento mudou. Atualize a página.");
+            const error = new Error(code === "suspended"
+                ? "A consulta continua quando voltar a esta página; nenhum envio será repetido."
+                : code === "expired" ? "O prazo local de acompanhamento terminou; contacte o administrador."
+                : "A sessão de acompanhamento mudou. Atualize a página.");
             error.code = code;
             return error;
         };
@@ -78,7 +87,7 @@
                 let deadline;
                 const controller = typeof root.AbortController === "function" ? new root.AbortController() : null;
                 try {
-                    if (!validScope) throw sessionError("session_changed");
+                    if (!validScope(scope)) throw sessionError("session_changed");
                     const response = await Promise.race([
                         (async () => {
                             const response = await fetchFn("/api/graph/monitor-context", {
@@ -95,6 +104,9 @@
                     if (response.status === 401 || response.status === 403 ||
                         (response.ok && response.data?.scope !== scope)) {
                         clearOwnScope();
+                        suspend();
+                        warning = "session_changed";
+                        emit();
                         throw sessionError("session_changed");
                     }
                     if (!response.ok || !response.data?.success) throw new Error("context_unavailable");
@@ -113,8 +125,13 @@
             pending.finally(() => { if (checking === pending) checking = null; }).catch(() => {});
             return pending;
         };
-        const remember = id => {
-            if (!validScope || !validId(id)) return false;
+        const remember = (id, responseScope) => {
+            if (validScope(responseScope) && responseScope !== scope) {
+                suspend();
+                scope = responseScope;
+                records = []; completed = []; messages.clear(); warning = null;
+            }
+            if (!validScope(scope) || !validId(id)) return false;
             hydrate();
             if (!records.some(record => record.id === id)) {
                 records = records.filter(record => record.expiresAt > now());
@@ -162,7 +179,7 @@
             const generation = epoch;
             const cancellation = {cancelled: false};
             cancellations.set(id, cancellation);
-            const current = () => generation === epoch && !cancellation.cancelled && verified &&
+            const current = () => generation === epoch && !cancellation.cancelled &&
                 (!record || record.expiresAt > now());
             const denied = () => ({ok: false, status: 403});
             const guardedFetch = async (url, options) => {
@@ -181,6 +198,11 @@
                         const body = await response.json();
                         if (!current()) return {success: false};
                         const job = body?.job;
+                        if (body?.success && job?.id === id) {
+                            verified = true;
+                            if (warning === "context_unavailable") warning = null;
+                            save(true); // This scoped GET just confirmed the session server-side.
+                        }
                         if (job?.id === id && (job.will_retry || job.status === "pending") &&
                             validTime(job.next_attempt_at)) {
                             defer(record, Math.min(Number.MAX_VALUE, job.next_attempt_at * 1000), generation);
@@ -204,7 +226,7 @@
                     if (generation !== epoch || cancellation.cancelled) throw sessionError("suspended");
                     if (record?.expiresAt <= now()) { forget(id); throw sessionError("expired"); }
                     if (["mail_session_expired", "mail_access_denied"].includes(error.code)) {
-                        clearOwnScope(); verified = false; warning = "session_changed";
+                        clearOwnScope(); suspend(); warning = "session_changed";
                         emit();
                         // The foreground form must not reopen a modal with the
                         // previous account's reference after this rejection.
@@ -226,7 +248,9 @@
         };
         const waitForMailJob = async (id, options = {}) => {
             remember(id);
-            await verify();
+            // The POST supplied this reference. Its scoped status GET performs
+            // the session check itself and retains the M03 retry/time budget.
+            // A separate context preflight must not make this path less resilient.
             return start(id, options);
         };
         const resume = async () => {
@@ -234,7 +258,7 @@
                 await verify();
                 hydrate();
                 records = records.filter(record => record.expiresAt > now());
-                save(); emit(); schedule();
+                save(true); emit(); schedule();
                 await Promise.allSettled(records.map(record => start(record.id)));
             } catch (_) { /* Context failure is shown without exposing stored references. */ }
         };
@@ -254,6 +278,7 @@
         mail_status_timeout: "Ainda sem confirmação; pode voltar a consultar",
         status_response_invalid: "Resposta inválida; resultado por confirmar"};
     const warnings = {storage_unavailable: "Este navegador não guardou o acompanhamento para a próxima navegação.",
+        scope_unverified: "A gravação desta referência aguarda confirmação da sessão; a consulta atual pode continuar.",
         limit: "Limite de dez referências nesta aba. Remova um acompanhamento antigo para guardar outro.",
         session_changed: "A sessão de acompanhamento mudou. Atualize a página.",
         context_unavailable: "Não foi possível confirmar a sessão. Pode voltar a consultar; nenhum envio será repetido."};

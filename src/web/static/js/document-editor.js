@@ -1551,7 +1551,8 @@ document.addEventListener("DOMContentLoaded", () => {
             // Persist the reference before any asynchronous local bookkeeping.
             // A reload resumes GET only; it never repeats this send POST.
             if (result.email_status === "pending" && result.graph_job_id) {
-                window.SensorpointMailFollowup?.remember(result.graph_job_id);
+                window.SensorpointMailFollowup?.remember(result.graph_job_id,
+                    response.headers?.get?.("X-Mail-Monitor-Scope"));
             }
             commitPhotoState();
             await window.__EDITING_COORDINATOR__?.markCommitted(result, "send");
@@ -1580,6 +1581,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 navigateAfterCommit("/", result.message || "Folha concluída com sucesso.");
             }
         } catch (error) {
+            if (error?.code === "suspended") return; // Normal mobile/background navigation; the panel resumes.
             showToast(error.message, "error");
             if (error?.jobId && error instanceof window.SensorpointMailJobMonitor.MailJobMonitorError) {
                 const retryDate = new Date(error.retryAt);
