@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
+import sqlite3
 import time
 from pathlib import Path
 
@@ -25,19 +27,24 @@ from src.services.graph_sync_queue import GraphSyncQueue
 from src.services.local_pdf_service import LocalPdfService
 from src.services.teams_notification_service import TeamsNotificationService
 from src.services.runtime_admission import resolve_runtime, operation_for, admit_contract
-from src.services.runtime_contract import ContractBusy
-from src.services.sqlite_storage_format import preflight_stores
+from src.services.runtime_contract import ContractBusy, ContractError
+from src.services.sqlite_storage_format import preflight_stores, StorageFormatError
+from src.services.release_identity import ReleaseIdentityError
+from src.services.file_mutex import FileMutexBusy
+from src.services.worker_health import WorkerHealth, configured_channel
 
 
 LOGGER = logging.getLogger(__name__)
 
 
-def build_queue(*, release_root: Path | None = None, runtime_contract=None) -> GraphSyncQueue:
+def build_queue(*, release_root: Path | None = None, runtime_contract=None, health=None) -> GraphSyncQueue:
     """Cria a mesma fila da webapp sem arrancar threads dentro do WSGI."""
     release_info, contract = resolve_runtime(
         APP_DATA_DIR, release_root=release_root, runtime_contract=runtime_contract,
         storage_paths=(GRAPH_CACHE_DIR, LOG_DIR, EXCEL_ACTIVAS_DIR, EXCEL_ARQUIVADAS_DIR, EXCEL_CANCELADAS_DIR),
     )
+    if health is not None:
+        health.update(release=release_info)
     with admit_contract(contract):
         preflight_stores(APP_DATA_DIR)
         return _build_admitted_queue(release_info, contract)
@@ -95,16 +102,33 @@ def main(argv: list[str] | None = None, *, release_root: Path | None = None) -> 
         help="Segundos entre verificacoes no modo --watch (predefinido: 5).",
     )
     args = parser.parse_args(argv)
+    if not math.isfinite(args.interval) or not 1 <= args.interval <= 3600:
+        parser.error("--interval deve ficar entre 1 e 3600 segundos.")
 
     try:
-        queue = None
+        directory, identity = configured_channel(release_root=release_root)
+    except (OSError, ValueError):
+        LOGGER.warning("worker_health_configuration_invalid: conferir o diretório privado de diagnóstico.")
+        directory, identity = None, "0" * 64
+    try:
+        with WorkerHealth(directory, identity) as health:
+            return _run(args, health, release_root=release_root)
+    except FileMutexBusy:
+        LOGGER.warning("worker_health_owner_busy: já existe um worker neste canal de diagnóstico.")
+        return 1
+
+
+def _run(args, health, *, release_root):
+    queue = None
+    try:
         while True:
             try:
                 if queue is None:
-                    candidate = build_queue(release_root=release_root)
+                    candidate = build_queue(release_root=release_root, health=health)
                     with operation_for(candidate):
                         configure_logging("worker")
                     queue = candidate
+                    health.update(release=queue.release_info)
                     log_event(
                         LOGGER, logging.INFO, "Worker da fila iniciado.",
                         event="queue_worker_started",
@@ -112,14 +136,19 @@ def main(argv: list[str] | None = None, *, release_root: Path | None = None) -> 
                         source_sha256=queue.release_info["source_sha256"],
                         watch=args.watch, interval_seconds=max(args.interval, 1.0),
                     )
+                health.update("cycling")
                 result = process_once(queue)
             except ContractBusy:
+                health.update("waiting", code="contract_busy")
                 log_event(LOGGER, logging.WARNING, "Ciclo adiado: contrato temporariamente ocupado.",
                           event="queue_worker_admission_busy")
                 if not args.watch:
+                    health.update("stopped")
                     return 1
                 time.sleep(max(args.interval, 1.0))
                 continue
+            health.update("idle" if result["worker_acquired"] else "waiting",
+                          code="cycle_completed" if result["worker_acquired"] else "worker_busy")
             has_activity = (
                 result["before"] != result["after"]
                 or any(
@@ -137,9 +166,17 @@ def main(argv: list[str] | None = None, *, release_root: Path | None = None) -> 
                 after=result["after"],
             )
             if not args.watch:
+                health.update("stopped")
                 return 0
             time.sleep(max(args.interval, 1.0))
-    except Exception:
+    except (KeyboardInterrupt, SystemExit):
+        health.update("stopped", code="interrupted")
+        raise
+    except Exception as exc:
+        code = ("identity_refused" if isinstance(exc, ReleaseIdentityError) else
+                "storage_refused" if isinstance(exc, (StorageFormatError, sqlite3.Error, OSError)) else
+                "contract_refused" if isinstance(exc, ContractError) else "worker_error")
+        health.update("refused" if queue is None else "failed", code=code)
         log_event(
             LOGGER,
             logging.CRITICAL,

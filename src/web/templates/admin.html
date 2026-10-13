@@ -12,6 +12,7 @@
 <p id="admin-status" role="status" aria-live="polite">A carregar…</p>
 <p id="admin-graph" class="muted"></p>
 <p id="admin-queue-status" class="muted"></p>
+<section><h2>Worker independente</h2><p>O site estar acessível não confirma o processamento da fila. Este sinal pertence ao processo separado; a execução interna da web não publica neste canal.</p><div id="admin-worker"></div></section>
 <section><h2>Reservas de edição</h2><div id="admin-documents"></div></section>
 <section><h2>Trabalhos pendentes ou falhados</h2><p>Últimos 100 trabalhos. Envios incertos e dados inválidos exigem revisão; este painel não permite contornar essas proteções.</p><div id="admin-jobs"></div></section>
 <section><h2>Reconciliar uma operação</h2><p>Consulte uma operação pelo identificador, incluindo um e-mail já aceite cujo aviso Teams ficou em falta. A evidência é conferida pelo administrador e comparada com o registo guardado. A ausência de uma mensagem no fornecedor não prova uma recusa.</p><form id="admin-reconciliation-lookup"><label for="admin-job-id">Identificador da operação</label><input id="admin-job-id" required maxlength="200"><button type="submit">Consultar reconciliação</button></form></section>

@@ -11,6 +11,7 @@ from src.services.editing_state_service import EditingStateError, EditingStateQu
 from src.services.graph_sync_queue import delivery_uncertain, teams_retry_deadline
 from src.services.graph_job_visibility import PHASES
 from src.services.diagnostic_views import safe_queue_summary, safe_refresh_status
+from src.services.worker_health import configured_status
 
 
 def register_admin(app, editing, queue, refresh, authenticated_microsoft):
@@ -145,6 +146,8 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
                  for entry in editing.repository.admin_history()]
         return jsonify(success=True, documents=editing.admin_documents(), jobs=jobs,
                        release=app.config["RELEASE_INFO"],
+                       worker=configured_status(app.config["RELEASE_INFO"]),
+                       queue_backlog=queue.diagnostic_backlog() if queue is not None else None,
                        queue_summary=safe_queue_summary(queue.summary()) if queue is not None else None,
                        refresh=safe_refresh_status(refresh.status()) if refresh is not None else None,
                        audit=audit)

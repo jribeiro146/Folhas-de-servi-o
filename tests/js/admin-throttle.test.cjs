@@ -7,7 +7,7 @@ const vm = require("node:vm");
 const source = fs.readFileSync(path.join(__dirname, "../../src/web/static/js/admin.js"), "utf8");
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-async function panel(job, { documents = [], section = "admin-jobs", failure = null } = {}) {
+async function panel(job, { documents = [], section = "admin-jobs", failure = null, extra = {} } = {}) {
     const element = () => ({
         textContent: "", children: [], dataset: {}, disabled: false,
         classList: { add() {} }, addEventListener() {},
@@ -25,7 +25,7 @@ async function panel(job, { documents = [], section = "admin-jobs", failure = nu
     };
     const fetch = async () => ({
         ok: !failure, json: async () => failure || ({ success: true, documents, jobs: job ? [job] : [], audit: [],
-            refresh: null, queue_summary: { pending: 0 } }),
+            refresh: null, queue_summary: { pending: 0 }, ...extra }),
     });
     vm.runInNewContext(source, { document, fetch, Date });
     await settle();
@@ -34,6 +34,34 @@ async function panel(job, { documents = [], section = "admin-jobs", failure = nu
 }
 
 const job = { id: "synthetic", kind: "notify_teams", status: "failed", attempts: 3 };
+
+for (const [state, label] of [
+    ["never_seen", /Sem arranque registado/], ["idle", /Ativo, entre ciclos/],
+    ["cycling", /Ciclo em curso/], ["stopped", /Processo terminado/],
+    ["stale", /Sem sinal recente/], ["refused", /Arranque recusado/],
+    ["version_mismatch", /versão do worker difere/], ["not_configured", /Diagnóstico não configurado/],
+]) {
+    test("admin distinguishes independent worker state " + state, async () => {
+        const text = await panel(null, {section: "admin-worker", extra: {worker: {
+            state, observed_at: 1234, last_result_code: "contract_refused", last_result_at: 1234,
+        }}});
+        assert.match(text, label);
+        assert.match(text, /Contrato de execução recusado/);
+        assert.match(text, /Atualizar diagnóstico/);
+        assert.match(text, /não confirma entrega/);
+    });
+}
+
+test("admin shows backlog age and unresolved Teams separately", async () => {
+    const text = await panel(null, {section: "admin-worker", extra: {
+        worker: {state: "idle"}, queue_summary: {teams_missing: 2, teams_conflicts: 3},
+        queue_backlog: {oldest_unfinished_age_seconds: 600, teams_unfinished: 4},
+    }});
+    assert.match(text, /10 min/);
+    assert.match(text, /Teams por concluir: 4/);
+    assert.match(text, /Avisos em falta: 2/);
+    assert.match(text, /Conflitos Teams: 3/);
+});
 
 for (const status of ["held", "pending", "running"]) {
     test("admin does not call an unsent " + status + " mail uncertain", async () => {

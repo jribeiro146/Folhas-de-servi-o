@@ -254,8 +254,7 @@ class GraphSyncQueue:
             if self._worker_running:
                 return False
             self._worker_running = True
-        self._worker(schedule_follow_up=False)
-        return True
+        return self._worker(schedule_follow_up=False)
 
     def _job_max_attempts(self, kind: str, payload: dict[str, Any]) -> int | None:
         if kind == "notify_teams":
@@ -459,6 +458,20 @@ class GraphSyncQueue:
             result[str(row["status"])] = int(row["total"])
         return result
 
+    @admitted
+    def diagnostic_backlog(self) -> dict:
+        """Read backlog age independently of cycle counters (which must stay stable)."""
+        now = time.time()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT MIN(CASE WHEN typeof(created_at) IN ('integer','real') AND created_at>=0 "
+                "AND created_at<=? THEN created_at END) AS oldest, "
+                "COUNT(CASE WHEN kind='notify_teams' THEN 1 END) AS teams_unfinished "
+                "FROM graph_sync_jobs WHERE status!='complete'", (now,),
+            ).fetchone()
+        return {"oldest_unfinished_age_seconds": now - row["oldest"] if row["oldest"] is not None else None,
+                "teams_unfinished": int(row["teams_unfinished"])}
+
     def wait(self, job_id: str, *, timeout: float = 10) -> dict[str, Any] | None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -468,11 +481,12 @@ class GraphSyncQueue:
             time.sleep(0.025)
         return self.status(job_id)
 
-    def _worker(self, *, schedule_follow_up: bool = True) -> None:
+    def _worker(self, *, schedule_follow_up: bool = True) -> bool:
         admission_busy = False
         try:
             with operation_for(self), file_mutex(self._worker_mutex_path):
                 self._process_jobs()
+                return True
         except ContractBusy:
             if not schedule_follow_up:
                 raise
@@ -485,7 +499,7 @@ class GraphSyncQueue:
                 raise
             LOGGER.warning("Worker recusado pelo contrato de execução; reiniciar na versão ativa.")
         except FileMutexBusy:
-            return
+            return False
         finally:
             with self._worker_lock:
                 self._worker_running = False

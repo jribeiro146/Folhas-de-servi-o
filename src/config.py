@@ -102,6 +102,8 @@ LOG_ENABLED: bool = _env_flag("FS_LOG_ENABLED", True)
 LOG_LEVEL: str = os.environ.get("FS_LOG_LEVEL", "INFO").strip().upper() or "INFO"
 _LOG_DIR_VALUE = os.environ.get("FS_LOG_DIR", "").strip()
 LOG_DIR: Path = Path(_LOG_DIR_VALUE) if _LOG_DIR_VALUE else APP_DATA_DIR / "logs"
+# Explicit private directory, independent of data admission and shared with web.
+WORKER_HEALTH_DIR: str = os.environ.get("FS_WORKER_HEALTH_DIR", "").strip()
 LOG_FILE_NAME: str = (
     os.environ.get("FS_LOG_FILE_NAME", "folhas-servico.jsonl").strip()
     or "folhas-servico.jsonl"

@@ -24,6 +24,7 @@ x-runtime: &runtime
     FS_APP_DATA_DIR: /app/data
     GRAPH_CACHE_DIR: /app/data/graph-cache
     FS_LOG_DIR: /app/logs
+    FS_WORKER_HEALTH_DIR: /app/logs/worker-health
     FS_GRAPH_QUEUE_IN_WEB: "false"
 
 services:

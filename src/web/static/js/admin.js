@@ -124,12 +124,46 @@
             $("admin-reconciliation").showModal();
         } catch (error) { $("admin-status").textContent = error.message; }
     };
+    const renderWorker = (data) => {
+        const root = $("admin-worker");
+        root.replaceChildren();
+        const worker = data.worker || {state: "not_configured"};
+        const labels = {not_configured: "Diagnóstico não configurado.", configuration_invalid: "Configuração do diagnóstico inválida.",
+            never_seen: "Sem arranque registado neste canal; o worker pode nunca ter arrancado.",
+            unavailable: "Diagnóstico indisponível ou inválido.", wrong_storage: "O diagnóstico pertence a outro armazenamento.",
+            starting: "Arranque em curso.", cycling: "Ciclo em curso.", idle: "Ativo, entre ciclos.",
+            waiting: "Ativo, mas o ciclo ficou adiado.", refused: "Arranque recusado.", failed: "Terminou com erro.",
+            stopped: "Processo terminado.", stale: "Sem sinal recente; o worker pode estar parado.",
+            version_mismatch: "A versão do worker difere da versão do site.", clock_invalid: "Relógio do diagnóstico incoerente."};
+        const codes = {cycle_completed: "Ciclo concluído", worker_busy: "Fila ocupada por outro processador",
+            contract_busy: "Contrato temporariamente ocupado", identity_refused: "Identidade do código recusada",
+            contract_refused: "Contrato de execução recusado", storage_refused: "Armazenamento recusado ou inacessível",
+            worker_error: "Erro do worker", interrupted: "Interrupção do processo"};
+        node("p", labels[worker.state] || labels.unavailable, root);
+        if (worker.observed_at) node("p", "Observado em " + date(worker.observed_at) + ". Use «Atualizar diagnóstico» para obter um novo estado.", root);
+        if (worker.heartbeat_at) node("p", "Último sinal: " + date(worker.heartbeat_at) +
+            " · Início do ciclo: " + date(worker.cycle_started_at) + " · Fim do ciclo: " + date(worker.cycle_completed_at), root);
+        if (worker.last_result_code) node("p", "Último resultado: " + (codes[worker.last_result_code] || "Indisponível") +
+            " · " + date(worker.last_result_at) + ". Um ciclo concluído não confirma entrega de mensagens.", root);
+        if (worker.release) node("p", "Versão: " + worker.release.revision + " · SHA256: " + worker.release.source_sha256 +
+            (worker.version_mismatch ? " · Diferente do site" : "") +
+            (worker.release.verified ? " · Manifesto conferido" : " · Perfil sintético sem manifesto"), root);
+        if (data.queue_backlog) {
+            const age = data.queue_backlog.oldest_unfinished_age_seconds;
+            node("p", age == null ? "Sem idade válida de pendências." :
+                "Trabalho não concluído mais antigo: " + Math.floor(age / 60) + " min (inclui retenções e falhas).", root);
+            node("p", "Teams por concluir: " + data.queue_backlog.teams_unfinished +
+                " · Avisos em falta: " + (data.queue_summary?.teams_missing || 0) +
+                " · Conflitos Teams: " + (data.queue_summary?.teams_conflicts || 0), root);
+        }
+    };
     const load = async () => {
         $("admin-reload").disabled = true;
         try {
             const data = await request("/api/admin/overview");
             renderDocuments(data.documents);
             renderJobs(data.jobs);
+            renderWorker(data);
             const history = $("admin-audit");
             history.replaceChildren();
             if (!data.audit.length) node("p", "Ainda não existem intervenções administrativas.", history);
