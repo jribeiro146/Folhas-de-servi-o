@@ -16,6 +16,10 @@ Recolher uma assinatura nova e guardá-la remove apenas o aviso desse papel. Nã
 
 Os marcadores só contêm códigos conhecidos e não incluem chaves, imagens ou tokens. São metadados de apresentação, excluídos do conteúdo HMAC. Não dispensam a validação criptográfica nem alteram a assinatura válida do outro papel.
 
+Na retoma de uma página suspensa ou de uma reserva expirada, o formulário mais recente fica conservado em memória com a sua revisão original. Enquanto a verificação falhar, a página permanece só de consulta, as assinaturas apresentam «por confirmar» e o botão «Voltar a tentar» verifica novamente esse formulário. Não é substituído por uma recuperação local mais antiga. Uma revisão remota entretanto modificada continua a exigir a escolha de versão. Ao fechar a página durante a falha, as alterações locais são conservadas no dispositivo com a revisão original, mas o pedido de fecho apenas liberta a reserva, sem publicar o conteúdo por verificar.
+
+Uma aba que não conseguiu verificar a recuperação não se anuncia como editora ativa. Outra aba pode abrir e editar; quando a primeira repete a verificação, consulta novamente as outras abas e permanece só de consulta enquanto existir outra editora. Os testes executam duas instâncias reais do coordenador, com um canal de mensagens simulado partilhado, tanto na abertura como na retoma. Cobrem também a falha após `freeze/resume`, a reserva expirada detetada pelo heartbeat, o retry explícito, a cópia local anterior às últimas edições e o fecho durante a falha. Estes testes Node não substituem a matriz de navegadores do M16/M18.
+
 ## Documentos já finalizados e recuperação
 
 Os PDFs já finalizados são ficheiros emitidos. A mudança de chave não os regenera nem altera os seus bytes. Depois do novo login, continuam sujeitos às permissões SADI existentes e são servidos com `Cache-Control: no-store`. Esta garantia não equivale a validar novamente o HMAC do rascunho com a chave nova.

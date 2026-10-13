@@ -9,6 +9,7 @@
     const model = window.MaintenanceModel;
     let sites = [], active = 0, form, panel, tabs, servicePart, host, nav, notice, validationSummary, signatureNotice;
     let loaded = false, common = "", pendingPhotos = 0, validationVisible = false;
+    let verificationPending = false;
     const signatureJobs = new Map(), signatureMessages = new Map(), invalidatedSignatures = new Map();
     const esc = value => String(value ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[ch]));
     const uid = () => crypto.randomUUID();
@@ -117,7 +118,7 @@
         finally { pendingPhotos--; input.value = ''; delete input.dataset.mcBusy; syncReadOnly(); }
     }
     function renderStatus() {
-        nav.innerHTML = sites.map((site, index) => `<button type="button" class="mc-site ${index === active ? 'selected' : ''}" data-mc-site="${index}" aria-current="${index === active ? 'true' : 'false'}"><b>${esc(site.location || `Local ${index + 1}`)}</b><span>${model.status(site, def)} · ${siteIssues(site).length} pendências</span></button>`).join("");
+        nav.innerHTML = sites.map((site, index) => `<button type="button" class="mc-site ${index === active ? 'selected' : ''}" data-mc-site="${index}" aria-current="${index === active ? 'true' : 'false'}"><b>${esc(site.location || `Local ${index + 1}`)}</b><span>${verificationPending ? 'Por confirmar' : model.status(site, def)} · ${siteIssues(site).length} pendências</span></button>`).join("");
         renderSignatureCards();
         renderSignatureNotice();
         renderValidationSummary();
@@ -143,7 +144,7 @@
         sizeTextLines();
     }
     function siteIssues(site) {
-        return [...model.validateSiteDetails(site, def), ...model.signatureIssues(site, def)];
+        return [...model.validateSiteDetails(site, def), ...model.signatureIssues(verificationPending ? {...site,signatures:{}} : site, def)];
     }
     function allIssues() {
         if (!sites.length) return [{message: 'Indique o número de locais e preencha as checklists.', target: 'sites'}];
@@ -151,6 +152,11 @@
     }
     function renderSignatureNotice() {
         if (!signatureNotice) return;
+        if (verificationPending) {
+            signatureNotice.hidden = !sites.length;
+            signatureNotice.textContent = def.signature_pending_warning;
+            return;
+        }
         const requiresSignature = (site, role) => !model.signatureWaived(site, role, def) && invalidatedSignatures.has(`${site.id}:${role}`);
         const affected = sites.filter(site => ['technician', 'customer'].some(role => requiresSignature(site, role)));
         signatureNotice.hidden = !affected.length;
@@ -362,7 +368,7 @@
             card.querySelector('[data-mc-sign-clear]').hidden = waived;
             card.querySelectorAll('[data-mc-signer],[data-mc-sign-clear],[data-mc-sign-save]').forEach(input => {input.dataset.mcUnavailable = String(waived);});
             card.querySelectorAll('[data-mc-signer]').forEach(input => input.setAttribute('aria-required',String(!waived)));
-            card.querySelector('[data-mc-sign-status]').textContent = waived ? 'Assinatura dispensada neste local.' : signatureJobs.has(key) ? 'A guardar assinatura…' : signatureMessages.get(key) || (site.signatures?.[role]?.token ? 'Assinatura guardada.' : signatureInput(site, role).image ? 'Desenho por guardar. Complete o nome e a data e guarde a assinatura.' : invalidatedSignatures.get(key) || 'Assinatura por recolher');
+            card.querySelector('[data-mc-sign-status]').textContent = waived ? 'Assinatura dispensada neste local.' : verificationPending ? def.signature_pending_warning : signatureJobs.has(key) ? 'A guardar assinatura…' : signatureMessages.get(key) || (site.signatures?.[role]?.token ? 'Assinatura guardada.' : signatureInput(site, role).image ? 'Desenho por guardar. Complete o nome e a data e guarde a assinatura.' : invalidatedSignatures.get(key) || 'Assinatura por recolher');
             const save = card.querySelector('[data-mc-sign-save]');
             save.hidden = waived || Boolean(site.signatures?.[role]?.token);
             save.dataset.mcBusy = String(signatureJobs.has(key));
@@ -493,7 +499,8 @@
             new MutationObserver(syncReadOnly).observe(form,{attributes:true,attributeFilter:["class"]});
             host.addEventListener('toggle',sizeTextLines,true);
         },
-        hydrate(document) {sites=structuredClone(document.maintenance_checklists||[]);signatureMessages.clear();restoreSignatureWarnings();validationVisible=false;active=0;loaded=true;common="";notice.textContent="";render();sync();},
+        hydrate(document) {sites=structuredClone(document.maintenance_checklists||[]);verificationPending=false;signatureMessages.clear();restoreSignatureWarnings();validationVisible=false;active=0;loaded=true;common="";notice.textContent="";render();sync();},
+        setVerificationPending(value) {verificationPending=Boolean(value);if(loaded)renderStatus();},
         collect() {return structuredClone(sites);},
         verifyRecovery,
         pendingRecovery: model.pendingRecovery,
@@ -504,6 +511,7 @@
         previewTarget() {return panel && !panel.hidden && !tabs.hidden ? {siteId: current()?.id} : null;},
         validate(document) {
             if(!model.applicable(document))return [];
+            if(verificationPending)return [def.signature_pending_warning];
             if(signatureJobs.size)return ["Aguarde a gravação das assinaturas antes de finalizar."];
             if(pendingPhotos)return ['Aguarde a preparação das fotografias antes de finalizar.'];
             if(!sites.length)return ["SADI: indique o número de locais e preencha as checklists."];

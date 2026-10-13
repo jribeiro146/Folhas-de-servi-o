@@ -17,7 +17,7 @@ test('server verification warnings reappear after hydration and identify recolle
         signature_warnings:{technician:'verification_failed',customer:'verification_failed'}};
     const signatureNotice = {};
     const invalidatedSignatures = new Map([['previous-document:technician','stale']]);
-    const context = {sites:[site], signatureNotice, invalidatedSignatures, model,
+    const context = {sites:[site], signatureNotice, invalidatedSignatures, model, verificationPending:false,
         def:{signature_exceptions:{customer:{field:'customer_not_present'}},
             signature_verification_warning:'A chave de segurança pode ter mudado. Recolha e guarde uma nova assinatura.'}};
     vm.runInNewContext(`${functionSource('restoreSignatureWarnings')}\n${functionSource('renderSignatureNotice')}\nthis.restore=restoreSignatureWarnings;this.render=renderSignatureNotice;`, context);
@@ -49,7 +49,7 @@ test('absence removes invalidated customer notice while technician remains requi
     const site = {id:'synthetic-site', location:'Local fictício', customer_not_present:false};
     const signatureNotice = {};
     const invalidatedSignatures = new Set(['synthetic-site:technician', 'synthetic-site:customer']);
-    const context = {sites:[site], signatureNotice, invalidatedSignatures, model,
+    const context = {sites:[site], signatureNotice, invalidatedSignatures, model, verificationPending:false,
         def:{signature_exceptions:{customer:{field:'customer_not_present'}}}};
     vm.runInNewContext(`${editor.slice(start, end)}\nthis.render = renderSignatureNotice;`, context);
     context.render();

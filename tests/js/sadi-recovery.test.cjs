@@ -64,11 +64,20 @@ function database(records) {
     }};
 }
 
-function harness(t, {local, remote, failVerification=false, failBootstrap=false, deferSave=false}) {
+function broadcastBus() {
+    const channels=new Set();
+    return class {
+        constructor() {channels.add(this);}
+        postMessage(data) {for(const channel of channels)if(channel!==this)setImmediate(()=>channel.onmessage?.({data:structuredClone(data)}));}
+        close() {channels.delete(this);}
+    };
+}
+
+function harness(t, {local, remote, failVerification=false, failBootstrap=false, deferSave=false, BroadcastChannel}) {
     const records=new Map();
     if(local)records.set('user:doc',{key:'user:doc',userId:'user',fileName:'synthetic-draft',documentId:'doc',
         baseRevision:1,updatedAt:Date.now(),payload:structuredClone(local)});
-    const elements=new Map(), listeners=new Map(), timers=new Set();
+    const elements=new Map(), listeners=new Map(), timers=new Set(), intervals=new Map(), beacons=[];
     const classes=()=>{const values=new Set();return {add:name=>values.add(name),remove:name=>values.delete(name),
         toggle:(name,value)=>value ? values.add(name) : values.delete(name),contains:name=>values.has(name)};};
     const element=id=>{
@@ -76,19 +85,22 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
             addEventListener(name,fn){this.events.set(name,fn);},querySelectorAll:()=>[]});
         return elements.get(id);
     };
-    let payload={}, pendingSave, saveCount=0, verifyCount=0;
+    let payload={}, pendingSave, saveCount=0, verifyCount=0, heartbeatRequired=false, revision=1;
     const reply=value=>({ok:true,status:200,json:async()=>value});
     const fetch=async (url, options) => {
         if(url.includes('/bootstrap?')) {
             if(failBootstrap)throw new Error('synthetic bootstrap network failure');
             return reply({success:true,is_draft:true,document:remote,
-                editing:{document_id:'doc',revision:1,server_document:remote,lease:{token:'synthetic-lease'}}});
+                editing:{document_id:'doc',revision,server_document:remote,lease:{token:'synthetic-lease'}}});
         }
         if(url.endsWith('/maintenance/validate')) {
             verifyCount++;
             if(failVerification)throw new Error('synthetic network failure');
             return reply({success:true,maintenance_checklists:normalize(JSON.parse(options.body).document).maintenance_checklists});
         }
+        if(url.endsWith('/lease/heartbeat'))return heartbeatRequired
+            ? {ok:false,status:409,json:async()=>({success:false,code:'lease_required',editing:{revision}})}
+            : reply({success:true});
         assert.ok(url.endsWith('/autosave'),url);
         saveCount++;
         const submitted=JSON.parse(options.body).document;
@@ -97,7 +109,7 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
         return value;
     };
     const signatureNotice={}, invalidatedSignatures=new Map();
-    const view={sites:[],signatureNotice,invalidatedSignatures,model,
+    const view={sites:[],signatureNotice,invalidatedSignatures,model,verificationPending:false,
         def:{signature_exceptions:{},signature_verification_warning:'A chave de segurança pode ter mudado; recolha uma nova assinatura.',
             signature_pending_warning:'Assinatura por confirmar no servidor. Volte a tentar com ligação.'}};
     vm.runInNewContext(`${functionSource('restoreSignatureWarnings')}\n${functionSource('renderSignatureNotice')}\nthis.refresh=()=>{restoreSignatureWarnings();renderSignatureNotice();};`,view);
@@ -107,7 +119,8 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
     const indexedDB=database(records);
     const window={__FILES_APP__:{selectedFileName:'synthetic-draft',selectedFileIsDraft:true,editorUser:{id:'user'}},
         __FILES_EDITOR__:{collectFormData:()=>structuredClone(payload),
-            populateForm:(_name,value)=>{payload=structuredClone(value);refresh();},
+            populateForm:(_name,value)=>{payload=structuredClone(value);view.verificationPending=false;refresh();},
+            setVerificationPending:value=>{view.verificationPending=value;refresh();},
             verifyRecovery:verification.verify,
             pendingRecovery:model.pendingRecovery,
             reconcileSignatures:(submitted,verified)=>{
@@ -116,17 +129,20 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
             },showToast(){},renderAttachments(){},hasPendingPhotoChanges:()=>false},
         crypto:{randomUUID:()=>require('node:crypto').randomUUID()},indexedDB,
         setTimeout:(fn,delay)=>{const timer=setTimeout(fn,delay);timers.add(timer);return timer;},clearTimeout,
-        setInterval:()=>({unref(){}}),clearInterval(){},addEventListener:(name,fn)=>listeners.set(name,fn),location:{}};
+        setInterval:(fn,delay)=>{intervals.set(delay,fn);return {unref(){}};},clearInterval(){},addEventListener:(name,fn)=>listeners.set(name,fn),location:{}};
+    if(BroadcastChannel)window.BroadcastChannel=BroadcastChannel;
     const document={readyState:'complete',hidden:false,body:{classList:classes()},getElementById:element,
         querySelector:()=>null,addEventListener:(name,fn)=>listeners.set(name,fn)};
-    vm.runInNewContext(read('editing-coordinator.js'),{window,document,fetch,console,Blob,indexedDB,
-        IDBKeyRange:{only:value=>value},navigator:{onLine:true,sendBeacon:()=>true},
+    vm.runInNewContext(read('editing-coordinator.js'),{window,document,fetch,console,Blob,indexedDB,BroadcastChannel,
+        IDBKeyRange:{only:value=>value},navigator:{onLine:true,sendBeacon:(url,body)=>{beacons.push({url,body});return true;}},
         sessionStorage:{getItem:()=>null,setItem(){}},setTimeout,clearTimeout});
     t.after(()=>{for(const timer of timers)clearTimeout(timer);});
-    return {records,element,notice:signatureNotice,coordinator:window.__EDITING_COORDINATOR__,
+    return {records,element,beacons,notice:signatureNotice,coordinator:window.__EDITING_COORDINATOR__,
         payload:()=>payload,setPayload:value=>{payload=structuredClone(value);refresh();},
         saveCount:()=>saveCount,verifyCount:()=>verifyCount,finishSave:()=>pendingSave?.(),pendingSave:()=>Boolean(pendingSave),listeners,
-        recoverNetwork:()=>{failVerification=false;failBootstrap=false;}};
+        failVerification:()=>{failVerification=true;},
+        requireLease:(remoteRevision=revision)=>{heartbeatRequired=true;revision=remoteRevision;return intervals.get(15000)();},
+        recoverNetwork:()=>{failVerification=false;failBootstrap=false;heartbeatRequired=false;}};
 }
 
 test('IndexedDB recovery is verified before hydration; rejected proofs never return to the editor or recovery',async t=>{
@@ -226,6 +242,96 @@ test('resume checks the suspended page and refreshes its recovery without replac
     assert.equal(app.notice.hidden,false);
     assert.equal(app.payload().observations,'alteração local');
     assert.equal(Object.keys(app.records.get('user:doc').payload.maintenance_checklists[0].signatures).length,0);
+});
+
+test('failed resume is read-only and an explicit retry preserves the suspended form',async t=>{
+    const app=harness(t,{remote:signed('old')});
+    await waitFor(()=>app.element('btn-save-draft').disabled===false);
+    const latest=structuredClone(app.payload());latest.observations='edição mais recente nesta página';
+    app.setPayload(latest);
+    app.coordinator.markDirty();
+    app.listeners.get('freeze')();
+    await waitFor(()=>app.records.has('user:doc'));
+    const before=structuredClone(app.records.get('user:doc'));
+    app.failVerification();app.listeners.get('resume')();
+    await waitFor(()=>app.element('btn-retry-lease').hidden===false);
+    assert.equal(app.element('service-form').classList.contains('is-readonly'),true);
+    assert.equal(app.element('btn-save-draft').disabled,true);
+    assert.match(app.notice.textContent,/por confirmar no servidor/);
+    assert.deepEqual(app.payload(),latest);
+    assert.deepEqual(app.records.get('user:doc'),before);
+    assert.equal(app.saveCount(),0);
+    app.recoverNetwork();
+    await app.element('btn-retry-lease').events.get('click')();
+    assert.equal(app.verifyCount(),2);
+    assert.equal(app.element('btn-save-draft').disabled,false);
+    assert.equal(app.element('service-form').classList.contains('is-readonly'),false);
+    assert.equal(app.payload().observations,latest.observations);
+    assert.equal(Object.keys(app.payload().maintenance_checklists[0].signatures).length,0);
+    assert.equal(app.saveCount(),1);
+});
+
+test('heartbeat lease recovery keeps newer form edits and close never sends unverified content',async t=>{
+    const initial=signed('fresh-valid');
+    const app=harness(t,{local:initial,remote:initial});
+    await waitFor(()=>app.element('btn-save-draft').disabled===false);
+    const before=structuredClone(app.records.get('user:doc'));
+    const latest=structuredClone(app.payload());latest.observations='mais recente que IndexedDB';
+    app.setPayload(latest);app.coordinator.markDirty();app.failVerification();
+    await app.requireLease(3);
+    await waitFor(()=>app.element('btn-retry-lease').hidden===false);
+    assert.equal(app.element('service-form').classList.contains('is-readonly'),true);
+    assert.equal(app.element('btn-save-draft').disabled,true);
+    assert.deepEqual(app.payload(),latest);
+    assert.deepEqual(app.records.get('user:doc'),before);
+    assert.equal(app.saveCount(),0);
+    app.listeners.get('pagehide')();
+    assert.equal(app.beacons.length,1);
+    assert.equal(JSON.parse(await app.beacons[0].body.text()).document,null);
+    await waitFor(()=>app.records.get('user:doc').payload.observations===latest.observations);
+    assert.equal(app.records.get('user:doc').baseRevision,1);
+    app.recoverNetwork();
+    await app.element('btn-retry-lease').events.get('click')();
+    assert.equal(app.verifyCount(),3);
+    assert.equal(app.element('editing-recovery-panel').hidden,false);
+    assert.equal(app.element('btn-save-draft').disabled,true);
+    assert.equal(app.payload().observations,latest.observations);
+    assert.equal(app.saveCount(),0);
+});
+
+test('closing failed initial verification only releases the reservation and retains the original recovery',async t=>{
+    const local=signed('old');
+    const app=harness(t,{local,remote:normalize(local),failVerification:true});
+    await waitFor(()=>app.element('btn-retry-lease').hidden===false);
+    const before=structuredClone(app.records.get('user:doc'));
+    app.listeners.get('pagehide')();
+    assert.equal(app.beacons.length,1);
+    assert.equal(JSON.parse(await app.beacons[0].body.text()).document,null);
+    assert.deepEqual(app.records.get('user:doc'),before);
+});
+
+for(const stage of ['initial','resume'])test(`${stage} verification failure allows a second tab to edit, but retry waits for that tab`,async t=>{
+    const BroadcastChannel=broadcastBus(), remote=signed('fresh-valid');
+    const first=harness(t,{local:remote,remote,BroadcastChannel,failVerification:stage==='initial'});
+    if(stage==='resume') {
+        await waitFor(()=>first.element('btn-save-draft').disabled===false);
+        first.listeners.get('freeze')();first.failVerification();first.listeners.get('resume')();
+    }
+    await waitFor(()=>first.element('btn-retry-lease').hidden===false);
+    const second=harness(t,{remote,BroadcastChannel});
+    await waitFor(()=>second.element('btn-save-draft').disabled===false);
+    assert.equal(second.element('service-form').classList.contains('is-readonly'),false);
+    assert.equal(first.element('service-form').classList.contains('is-readonly'),true);
+    first.recoverNetwork();
+    await first.element('btn-retry-lease').events.get('click')();
+    assert.equal(first.element('btn-save-draft').disabled,true);
+    assert.equal(first.element('service-form').classList.contains('is-readonly'),true);
+    assert.equal(second.element('btn-save-draft').disabled,false);
+    assert.equal(first.saveCount(),0);
+    second.listeners.get('pagehide')();
+    await waitFor(()=>first.element('btn-save-draft').disabled===false);
+    assert.equal(first.element('service-form').classList.contains('is-readonly'),false);
+    assert.equal(second.element('btn-save-draft').disabled,true);
 });
 
 test('late rejection never erases a new unsigned capture or an unrelated site',()=>{

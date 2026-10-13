@@ -85,6 +85,8 @@ const startEditingCoordinator = () => {
     let resumePromise = null;
     let initializing = false;
     let initialRecoveryPending = false;
+    let resumeSnapshot = null;
+    let tabClaimPending = false;
     const operationKeys = new Map();
 
     const showToast = (message, variant = "info") => editor.showToast?.(message, variant);
@@ -112,7 +114,7 @@ const startEditingCoordinator = () => {
     };
 
     const setCommitActionsEnabled = (enabled) => {
-        enabled = enabled && !revoked;
+        enabled = enabled && !revoked && !initialRecoveryPending && !resumeSnapshot;
         const draftButton = document.getElementById("btn-save-draft");
         const sendButton = document.getElementById("btn-save-send");
         const cancelButton = document.getElementById("btn-cancel-file");
@@ -122,7 +124,7 @@ const startEditingCoordinator = () => {
     };
 
     const setFormReadOnly = (value, ownerName = "") => {
-        readOnly = revoked || initialRecoveryPending || Boolean(value);
+        readOnly = revoked || initialRecoveryPending || Boolean(resumeSnapshot) || Boolean(value);
         form.classList.toggle("is-readonly", readOnly);
         form.querySelectorAll("input, select, textarea, button").forEach((control) => {
             if (!control.dataset.editingInitialDisabled) {
@@ -224,7 +226,7 @@ const startEditingCoordinator = () => {
                 documentId: editing.document_id,
                 fileName: activeFileName,
                 clientId,
-                baseRevision: Number(editing.revision || 1),
+                baseRevision: Number(resumeSnapshot?.revision || editing.revision || 1),
                 payload: editor.collectFormData(),
                 updatedAt: Date.now(),
                 expiresAt: Date.now() + recoveryMaxAgeMs,
@@ -290,6 +292,7 @@ const startEditingCoordinator = () => {
         && !otherTabActive
         && !resumeConflictPending
         && !initialRecoveryPending
+        && !resumeSnapshot
         && editing.document_id
         && clientId
         && sessionToken
@@ -345,7 +348,9 @@ const startEditingCoordinator = () => {
             return true;
         }
         if (["editing_session_required", "lease_required"].includes(result?.code)) {
-            editing = { ...editing, ...(result.editing || {}) };
+            // The form still belongs to its old revision until resume checks
+            // the newly acquired server state for conflicting edits.
+            editing = { ...editing, ...(result.editing || {}), revision:editing.revision };
             sessionToken = "";
             syncCommitActions();
             resumeEditingSession();
@@ -544,9 +549,16 @@ const startEditingCoordinator = () => {
         ) return false;
         if (resumePromise) return resumePromise;
 
-        const previousRevision = Number(editing.revision || 1);
-        const localPayload = editor.collectFormData();
+        window.clearTimeout(localSaveTimer);
+        window.clearTimeout(serverSaveTimer);
+        window.clearTimeout(retryTimer);
+        // A retry must use the latest suspended form, not an older IndexedDB
+        // record. Keep its original revision until the conflict check succeeds.
+        resumeSnapshot ||= {payload:editor.collectFormData(), revision:Number(editing.revision || 1)};
+        const previousRevision = resumeSnapshot.revision;
+        const localPayload = resumeSnapshot.payload;
         setFormReadOnly(true);
+        editor.setVerificationPending?.(true);
         setCommitActionsEnabled(false);
         setAutosaveStatus("A retomar a sessão de edição…", "saving");
 
@@ -554,13 +566,17 @@ const startEditingCoordinator = () => {
             try {
                 const result = await loadBootstrap();
                 if (revoked) return false;
+                const resumedEditing = { ...(result.editing || {}) };
+                editing = { ...editing, ...resumedEditing, revision:previousRevision };
+                sessionToken = resumedEditing.lease?.token || "";
+                serverPayload = resumedEditing.server_document || result.document || result.source_document || {};
+                if (!sessionToken || !editing.document_id) throw new Error("Não foi possível retomar a sessão de edição.");
                 const verifiedLocal = editor.verifyRecovery ? await editor.verifyRecovery(localPayload) : localPayload;
                 if (revoked) return false;
                 const rejectedSignatures = editor.reconcileSignatures?.(localPayload, verifiedLocal);
                 // Keep the conflict choice and future autosaves free of rejected
                 // proofs, while retaining all edits made before suspension.
                 localPayload.maintenance_checklists = verifiedLocal.maintenance_checklists;
-                const resumedEditing = { ...(result.editing || {}) };
                 const remotePayload = result.document || result.source_document || {};
                 const revisionChanged = Number(resumedEditing.revision || 1) !== previousRevision;
                 const contentChanged = comparablePayload(remotePayload) !== comparablePayload(localPayload);
@@ -572,15 +588,18 @@ const startEditingCoordinator = () => {
                 sourcePhotos = result.photos || sourcePhotos;
                 if (rejectedSignatures) await persistLocalRecovery({ force:true });
 
-                if (!sessionToken || !editing.document_id) {
-                    throw new Error("Não foi possível retomar a sessão de edição.");
-                }
-
-                setFormReadOnly(false);
+                await checkOtherTab();
+                if (revoked) return false;
+                // Another tab may have started editing while this one could
+                // not verify its recovery. Never enable two editors on retry.
+                if (otherTabActive) return false;
+                editor.setVerificationPending?.(false);
                 if (revisionChanged && contentChanged) {
                     resumeConflictPending = true;
                     dirty = true;
                     await persistLocalRecovery({ force: true });
+                    resumeSnapshot = null;
+                    setFormReadOnly(false);
                     showConflictPanel(
                         {
                             payload: localPayload,
@@ -596,23 +615,21 @@ const startEditingCoordinator = () => {
                 }
 
                 resumeConflictPending = false;
+                resumeSnapshot = null;
+                setFormReadOnly(false);
                 syncCommitActions();
                 setAutosaveStatus("Sessão de edição retomada", "saved");
                 if (dirty) await runAutosave();
                 return hasActiveSession();
             } catch (error) {
+                if (revoked) return false;
                 const result = error.result || {};
-                if (handleConflict(result)) return false;
-                editing = { ...editing, ...(result.editing || {}) };
-                sessionToken = "";
-                if (error.status === 423) {
-                    setFormReadOnly(true, result.editing?.owner?.owner_name);
-                    setAutosaveStatus("Modo de consulta — rascunho aberto noutra sessão", "conflict");
-                } else {
-                    setFormReadOnly(false);
-                    setAutosaveStatus("Não foi possível retomar a sessão — tente novamente", "offline");
-                }
+                if (result.code === "lease_revoked") { handleConflict(result); return false; }
+                // Preserve both the acquired reservation and the unmodified
+                // form. No autosave/close may publish it before verification.
+                setFormReadOnly(true, result.editing?.owner?.owner_name);
                 setCommitActionsEnabled(false);
+                showVerificationRetry("O formulário mais recente continua nesta página. Volte a tentar antes de editar.");
                 showToast(error.message, "error");
                 return false;
             } finally {
@@ -621,6 +638,22 @@ const startEditingCoordinator = () => {
         })();
 
         return resumePromise;
+    };
+
+    const showVerificationRetry = (message) => {
+        setAutosaveStatus("Recuperação por confirmar — apenas consulta; volte a tentar", "offline");
+        if (lockTitle) lockTitle.textContent = "Não foi possível confirmar a recuperação";
+        if (lockMessage) lockMessage.textContent = message;
+        if (retryButton) { retryButton.hidden = false; retryButton.disabled = false; retryButton.textContent = "Voltar a tentar"; }
+    };
+
+    const checkOtherTab = async () => {
+        if (!selectedFileIsDraft || !tabChannel) return;
+        tabClaimPending = true;
+        try {
+            tabChannel.postMessage({type:"hello", fileName:activeFileName, userId:editorUser.id, instanceId:tabInstanceId});
+            await new Promise(resolve => window.setTimeout(resolve, 100));
+        } finally { tabClaimPending = false; }
     };
 
     const initialize = async () => {
@@ -648,15 +681,8 @@ const startEditingCoordinator = () => {
             if (revoked) return;
             sourceSignatures = result.signatures || {};
             sourcePhotos = result.photos || [];
-            if (selectedFileIsDraft && tabChannel) {
-                tabChannel.postMessage({
-                    type: "hello",
-                    fileName: activeFileName,
-                    userId: editorUser.id,
-                    instanceId: tabInstanceId,
-                });
-                await new Promise((resolve) => window.setTimeout(resolve, 100));
-            }
+            await checkOtherTab();
+            if (revoked) return;
 
 
             let initialPayload = result.document || result.source_document || {};
@@ -729,10 +755,7 @@ const startEditingCoordinator = () => {
             } else {
                 setFormReadOnly(true);
                 setCommitActionsEnabled(false);
-                setAutosaveStatus("Recuperação por confirmar — apenas consulta; volte a tentar", "offline");
-                if (lockTitle) lockTitle.textContent = "Não foi possível confirmar a recuperação";
-                if (lockMessage) lockMessage.textContent = "A cópia original deste dispositivo continua guardada. Volte a tentar antes de editar.";
-                if (retryButton) { retryButton.hidden = false; retryButton.disabled = false; retryButton.textContent = "Voltar a tentar"; }
+                showVerificationRetry("A cópia original deste dispositivo continua guardada. Volte a tentar antes de editar.");
                 showToast(error.message, "error");
             }
         } finally {
@@ -799,7 +822,7 @@ const startEditingCoordinator = () => {
         sessionToken = "";
         setCommitActionsEnabled(false);
         const payload = JSON.stringify({
-            document: dirty ? {
+            document: dirty && !initialRecoveryPending && !resumeSnapshot ? {
                 ...editor.collectFormData(),
                 "Assinatura Cliente": "",
                 "Assinatura Técnico": "",
@@ -879,7 +902,7 @@ const startEditingCoordinator = () => {
     window.addEventListener("pagehide", releaseOnPageExit);
     document.addEventListener("freeze", releaseOnPageExit);
     const resumeAfterPageRestore = () => {
-        if (initialized && !sessionToken && !otherTabActive) resumeEditingSession();
+        if (initialized && (!sessionToken || resumeSnapshot) && !otherTabActive) resumeEditingSession();
     };
     window.addEventListener("pageshow", resumeAfterPageRestore);
     document.addEventListener("resume", resumeAfterPageRestore);
@@ -892,7 +915,7 @@ const startEditingCoordinator = () => {
     });
     window.addEventListener("online", async () => {
         retryAttempt = 0;
-        if (!sessionToken) await resumeEditingSession();
+        if (!sessionToken || resumeSnapshot) await resumeEditingSession();
         syncCommitActions();
         if (dirty && !readOnly && !otherTabActive) runAutosave();
     });
@@ -907,7 +930,8 @@ const startEditingCoordinator = () => {
                 || message.userId !== editorUser.id
                 || message.instanceId === tabInstanceId
             ) return;
-            if (message.type === "hello" && sessionToken && !otherTabActive) {
+            const canClaim = tabClaimPending || (!initializing && !initialRecoveryPending && !resumeSnapshot);
+            if (message.type === "hello" && sessionToken && !otherTabActive && canClaim) {
                 tabChannel.postMessage({
                     type: "active",
                     fileName: activeFileName,
@@ -922,6 +946,7 @@ const startEditingCoordinator = () => {
             }
             if (message.type === "closing" && otherTabActive && sessionToken) {
                 otherTabActive = false;
+                if (resumeSnapshot) { resumeEditingSession(); return; }
                 setFormReadOnly(false);
                 syncCommitActions();
                 setAutosaveStatus("Rascunho pronto — esta aba pode editar", "saved");
