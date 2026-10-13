@@ -157,6 +157,7 @@ test("a temporary 503 with HTML waits for Retry-After and consults only the same
     const calls = [], waits = [];
     const job = { id: "send:temporary", status: "complete", result: { mail: { accepted: true } } };
     const result = await waitForMailJob(job.id, {
+        nowFn: () => Date.parse("2026-10-09T10:00:00Z"),
         fetchFn: async (url, options) => {
             calls.push({ url, method: options.method || "GET", body: options.body });
             if (calls.length === 1) return { ok: false, status: 503,

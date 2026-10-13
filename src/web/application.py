@@ -326,6 +326,15 @@ def _create_app(
         if guard is not None:
             guard.__exit__(None, None, None)
 
+    @app.before_request
+    def require_requested_asset_version():
+        if request.endpoint in {"static", "manifest"} and "v" in request.args:
+            if request.args.getlist("v") != [app.config["ASSET_VERSION"]]:
+                response = app.response_class("Esta versão do recurso já não está disponível no servidor.",
+                                              status=409, mimetype="text/plain")
+                response.headers["Cache-Control"] = "no-store"
+                return response
+
     @app.after_request
     def complete_request_logging(response):
         response.headers["X-App-Version"] = app.config["RELEASE_INFO"]["source_sha256"]
@@ -380,7 +389,7 @@ def _create_app(
 
     @app.after_request
     def apply_cache_headers(response):
-        if request.path.startswith(("/api/", "/work-folder/")) or request.path in {
+        if request.endpoint not in {"static", "manifest"} or request.path.startswith(("/api/", "/work-folder/")) or request.path in {
             "/",
             "/login",
             "/service-worker.js",
@@ -1300,7 +1309,9 @@ def _create_app(
 
     @app.route("/service-worker.js")
     def service_worker():
-        return send_from_directory(app.static_folder, "service-worker.js")
+        template = (Path(app.static_folder) / "service-worker.js").read_text(encoding="utf-8")
+        source = template.replace("__SENSORPOINT_RELEASE_SHA256__", app.config["RELEASE_INFO"]["source_sha256"])
+        return app.response_class(source, mimetype="application/javascript")
 
     @app.route("/api/files")
     def get_files():

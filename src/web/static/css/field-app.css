@@ -1212,6 +1212,15 @@ body.has-active-file .brand-logo {
     overflow-wrap: anywhere;
 }
 
+.pwa-update-notice {
+    padding: 14px 18px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--panel);
+    color: var(--text);
+    line-height: 1.5;
+}
+
 .mail-followup[hidden] { display: none; }
 .mail-followup p { margin: 8px 0; }
 .mail-followup button { margin: 4px 8px 4px 0; }
