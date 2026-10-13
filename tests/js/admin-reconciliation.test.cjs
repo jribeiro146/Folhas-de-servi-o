@@ -97,4 +97,7 @@ test("known retryable failure has no reconciliation button", async () => {
     assert.ok(texts(ui.get("admin-jobs")).includes("Repetir trabalho"));
     assert.ok(!texts(ui.get("admin-jobs")).includes("Consultar reconciliação"));
     assert.equal(ui.get("admin-reconciliation-submit").disabled, true);
+    await ui.submit();
+    assert.equal(ui.requests.filter(x => x.method === "POST").length, 0);
+    assert.equal(ui.get("admin-reconciliation-submit").disabled, true);
 });

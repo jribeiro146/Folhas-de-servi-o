@@ -19,8 +19,13 @@ usa os mesmos bytes fixados. Prazos 429 continuam a bloquear repetição antecip
 Indeterminado conserva bytes, evidência anterior e bloqueio. Não localizar uma
 mensagem, receber 500/408/425 ou ter apenas a opinião de que o envio falhou não
 comprova recusa. Estado inválido, migração/restauro incertos e falta de confirmação
-do commit local não são desbloqueados por esta ferramenta. Podem receber uma
-nota indeterminada, mas mantêm o procedimento de recuperação próprio.
+do commit local não são desbloqueados por esta ferramenta. Estado inválido e
+incertezas existentes podem receber uma nota indeterminada, mas mantêm o
+procedimento de recuperação próprio. A falta de confirmação local, por si só,
+não admite nota que acrescente retenção, mesmo na pesquisa por identificador e
+mesmo quando o trabalho tem email. Continua a usar a repetição/validação de commit
+prevista. Se também houver prova de um efeito externo incerto, a nota mantém
+esse bloqueio adicional.
 
 As decisões só estão disponíveis para efeitos incertos ou retenções existentes.
 Um arquivo sem email que falhou antes da publicação e um cancelamento recusado
@@ -30,6 +35,13 @@ devolve `allowed_decisions` e volta a conferir essa lista no POST. O painel
 desativa as opções inadmissíveis. Emails legados tentados sem fase permitem
 apenas nota indeterminada, pois falta o checkpoint para confirmar o envio neste
 procedimento. Sem GUID do último pedido, a recusa também fica indisponível.
+
+Limitação anterior a M08, identificada na revisão: um upload de arquivo com
+email pode falhar antes de gravar uma fase e ficar indistinguível de um envio
+legado incerto. Esta ferramenta mantém a classificação conservadora; não
+liberta esses registos sem prova. A introdução de um checkpoint de preparação
+para operações novas, com ajuste dos consumidores, ficou registada para uma
+alteração separada em M17. Não foi demonstrado que explique as queixas antigas.
 
 ## Evidência humana e verificações automáticas
 
@@ -199,3 +211,14 @@ de código (`p2-m08-visibility-confirm-r2.txt`). São 407 casos distintos aprova
 entre as duas execuções; não se afirma uma execução ampla sem falhas. A causa
 do acesso transitório no Windows não foi demonstrada. A matriz M16 mantém essa
 limitação visível. JavaScript: 99 aprovados em 2,81 s (`p2-m08-js-r2.txt`).
+
+Terceira ronda: a variante `commit_guard_required` foi reproduzida com três
+falhas esperadas e um caso incerto já correto (`p2-m08-reproduce-r3.txt`, 19,24 s).
+Após correção, 181 testes Python passaram em 114,58 s: reconciliação, administração,
+visibilidade, email durável, Teams durável, cancelamento e admissão do runtime
+(`p2-m08-regression-r3.txt`). Os restantes 230 casos anteriores continuam
+aplicáveis sem alteração desses contratos: 411 casos Python distintos no âmbito
+M08. JavaScript final: 99 aprovados em 1,77 s (`p2-m08-js-final-r3.txt`), incluindo
+submissão recusada no cliente e botão que permanece desativado sem decisões.
+Esta última alteração foi apenas JavaScript e validada depois dos testes Python;
+não houve mudança posterior no backend.

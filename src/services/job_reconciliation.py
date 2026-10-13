@@ -69,8 +69,12 @@ def inspection(row):
     recovery_hold = any(result.get(key) for key in
                         ("invalid_state", "restore_uncertain", "migration_uncertain", "commit_guard_required"))
     has_mail = row["kind"] == "archive_and_mail_local" or bool(payload.get("mail"))
-    legacy_mail = has_mail and row["attempts"] > 0 and not result.get("phase") and not accepted_mail
-    needs_review = delivery_uncertain(row["kind"], result) or recovery_hold or legacy_mail
+    legacy_mail = (has_mail and row["attempts"] > 0 and not result.get("phase") and not accepted_mail
+                   and not result.get("commit_guard_required"))
+    # A missing local commit alone proves no external attempt was admitted.
+    # Keep its existing retry/commit procedure; only a separate uncertainty or
+    # invalid-state signal justifies an indeterminate note here.
+    needs_review = delivery_uncertain(row["kind"], result) or bool(result.get("invalid_state")) or legacy_mail
     can_record = row["kind"] in KINDS and row["status"] == "failed" and not row["retryable"] and needs_review
     can_repair = (row["kind"] in {"archive_and_mail_local", "archive_and_remove"}
                   and accepted_mail and bool(payload.get("teams")) and row["status"] in {"failed", "complete"}

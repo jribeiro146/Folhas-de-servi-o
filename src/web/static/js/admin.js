@@ -104,10 +104,10 @@
         try {
             const url = "/api/admin/jobs/" + encodeURIComponent(id) + "/reconciliation";
             const data = (await request(url)).reconciliation;
-            reconciliation = {url, revision: data.revision};
+            const allowed = Array.isArray(data.allowed_decisions) ? data.allowed_decisions : [];
+            reconciliation = {url, revision: data.revision, allowed};
             $("admin-reconciliation-detail").textContent = "Operação: " + data.id + " · " + (kinds[data.kind] || data.kind) + " · " + (statuses[data.status] || data.status);
             if (data.request_id) $("admin-reconciliation-detail").textContent += " · Pedido externo: " + data.request_id;
-            const allowed = Array.isArray(data.allowed_decisions) ? data.allowed_decisions : [];
             for (const key of ["indeterminate", "accepted", "rejected"]) $("admin-" + key).disabled = !allowed.includes(key);
             $("admin-repair-teams").disabled = !allowed.includes("repair_teams");
             $("admin-decision").value = allowed[0] || "indeterminate";
@@ -168,6 +168,7 @@
         $("admin-reconciliation-submit").disabled = true;
         try {
             const decision = $("admin-decision").value;
+            if (!reconciliation.allowed.includes(decision)) throw new Error("Esta decisão não está disponível. Atualize o diagnóstico.");
             let evidence = null;
             if (decision === "accepted" || decision === "rejected") {
                 const file = $("admin-evidence").files?.[0];
@@ -182,7 +183,7 @@
             await load();
             $("admin-status").textContent += result.applied ? " Decisão registada." : " Decisão registada; retenção mantida.";
         } catch (error) { $("admin-reconciliation-error").textContent = error.message; }
-        finally { $("admin-reconciliation-submit").disabled = false; }
+        finally { $("admin-reconciliation-submit").disabled = !reconciliation?.allowed.length; }
     });
     $("admin-refresh").addEventListener("click", () => {
         pending = { url: "/api/admin/refresh", data: {} };

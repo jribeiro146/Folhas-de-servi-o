@@ -464,3 +464,31 @@ def test_legacy_mail_without_phase_only_offers_indeterminate(tmp_path):
     decide(queue, job, "indeterminate")
     with pytest.raises(ValueError):
         queue.retry(job)
+
+
+@pytest.mark.parametrize("kind,mail", [("remove_active", False), ("archive_and_remove", False), ("archive_and_remove", True)])
+def test_missing_local_commit_alone_cannot_create_an_uncertainty_hold(tmp_path, kind, mail):
+    queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", auto_start=False)
+    payload = {"mail": {"to": "customer@example.invalid"}} if mail else {}
+    job = queue.enqueue(kind, payload)["id"]
+    with queue._connect() as db:
+        db.execute("UPDATE graph_sync_jobs SET status='failed',retryable=0,attempts=1,result_json=? WHERE id=?",
+                   (json.dumps({"commit_guard_required": True}), job))
+    before = persisted(queue)
+    assert queue.reconciliation(job, actor=ADMIN)["allowed_decisions"] == []
+    with pytest.raises(ValueError):
+        decide(queue, job, "indeterminate")
+    assert persisted(queue) == before
+    assert queue.retry(job)["status"] == "held"
+
+
+def test_missing_commit_with_uncertain_cancellation_still_allows_indeterminate(tmp_path):
+    queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", auto_start=False)
+    job = queue.enqueue("remove_active", {})["id"]
+    with queue._connect() as db:
+        db.execute("UPDATE graph_sync_jobs SET status='failed',retryable=0,result_json=? WHERE id=?",
+                   (json.dumps({"commit_guard_required": True, "cancellation_started": True}), job))
+    assert queue.reconciliation(job, actor=ADMIN)["allowed_decisions"] == ["indeterminate"]
+    decide(queue, job, "indeterminate")
+    with pytest.raises(ValueError):
+        queue.retry(job)
