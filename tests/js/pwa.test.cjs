@@ -29,6 +29,7 @@ async function page({waiting = false, active = true, workspace = true} = {}) {
     await new Promise(resolve => setImmediate(resolve));
     return {field, notices, registration, found: () => registrationEvents.get("updatefound")(),
         installed() {candidate.state = "installed"; workerEvents.get("statechange")();},
+        redundant() {candidate.state = "redundant"; workerEvents.get("statechange")();},
         stats: () => ({updates, reloads, takeovers})};
 }
 test("waiting update informs the user without touching unsaved fields or forcing activation", async () => {
@@ -45,6 +46,19 @@ test("newly installed update produces one notice even for repeated state events"
     p.found(); p.installed(); p.installed();
     assert.equal(p.notices.length, 1);
     assert.equal(p.field.value, "Trabalho sintético por guardar");
+});
+test("an installation already in progress is observed without a later updatefound event", async () => {
+    const p = await page();
+    assert.equal(p.notices.length, 0);
+    p.installed(); p.installed();
+    assert.equal(p.notices.length, 1);
+    assert.equal(p.field.value, "Trabalho sintético por guardar");
+    assert.deepEqual(p.stats(), {updates: 1, reloads: 0, takeovers: 0});
+});
+test("a replaced or failed candidate does not announce an available update", async () => {
+    const p = await page();
+    p.redundant();
+    assert.equal(p.notices.length, 0);
 });
 test("first installation and login without a workspace require no update banner", async () => {
     for (const config of [{active: false}, {workspace: false}]) {

@@ -153,9 +153,11 @@ test("an old worker passes verified new-version assets online without contaminat
     const w = worker();
     await w.lifecycle("install");
     w.state.server = B;
-    const req = w.request("/static/js/pwa.js?v=" + B.slice(0, 16));
+    const req = w.request("/static/js/pwa.js?v=" + B.slice(0, 16), {mode: "no-cors"});
     assert.equal(await (await req.response).text(), "NETWORK-" + B);
     await Promise.all(req.pending);
+    assert.equal(w.requested.at(-1).options.cache, "no-store");
+    assert.equal(w.requested.at(-1).options.redirect, "error");
     assert.equal(w.stores.size, 1);
     assert.ok([...w.stores.get(prefix + A).keys()].every(url => url.endsWith("?v=" + V)));
     w.state.online = false;

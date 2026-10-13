@@ -97,12 +97,19 @@
     };
     const observeUpdate = registration => {
         if (registration.waiting) showUpdateNotice();
-        registration.addEventListener("updatefound", () => {
+        const watchInstalling = () => {
             const candidate = registration.installing;
-            candidate?.addEventListener("statechange", () => {
+            if (!candidate) return;
+            const showWhenInstalled = () => {
                 if (candidate.state === "installed" && registration.active) showUpdateNotice();
-            });
-        });
+            };
+            candidate.addEventListener("statechange", showWhenInstalled);
+            showWhenInstalled();
+        };
+        registration.addEventListener("updatefound", watchInstalling);
+        // Navigation can start installation before load/register resolves, so
+        // its updatefound event may already have happened. Observe that worker too.
+        watchInstalling();
         // Deliberately no skipWaiting message or controllerchange reload:
         // installing a release must not discard a form or pending photographs.
         return registration;
