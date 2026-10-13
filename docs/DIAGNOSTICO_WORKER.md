@@ -91,6 +91,32 @@ abrir SQLite, construir transportes ou escrever ficheiros:
 python -B tools/worker_health.py --health-dir /srv/folhas-private/worker-health --data-dir /srv/folhas-private/data
 ```
 
+O exemplo anterior corresponde a uma instalação direta com esses caminhos.
+**No Docker entregue, APP_DATA_DIR é /app/data**, e o hash guardado corresponde
+a esse caminho visto pelo worker; não corresponde ao caminho do volume no host.
+Se o contentor app ainda estiver em execução, a leitura usa:
+
+```bash
+docker compose exec app python -B tools/worker_health.py --health-dir /app/logs/worker-health --data-dir /app/data
+```
+
+Esse comando só executa o leitor; não inicia nem reinicia os serviços. Se o
+contentor não estiver disponível, o instalador pode executar o leitor entregue
+num host Linux, sem a app e sem montar/abrir o volume de dados:
+
+```bash
+python -B tools/worker_health.py --health-dir /var/www/vhosts/service.sensorpoint.pt/private/folhas-servico/logs/worker-health --data-dir /app/data
+```
+
+Substituir apenas o caminho de health-dir pelo FS_LOG_HOST_DIR efetivo seguido de
+worker-health. Neste segundo exemplo, data-dir é a identidade canónica vista no
+contentor, não uma indicação para procurar ou abrir dados no host. O cálculo usa
+Path.resolve: exige o mesmo sistema de caminhos (POSIX) e /app/data sem um
+redirecionamento diferente por symlink no host. Para ler uma cópia noutro sistema,
+usar o leitor num ambiente com a mesma interpretação do caminho. Usar o caminho
+do volume no host ou outro APP_DATA_DIR devolve wrong_storage/código 1, mesmo com
+o worker ativo; isso indica canal/identidade incompatíveis, não worker parado.
+
 Opcional: `--expected-sha256 HASH_COMPLETO` para comparar com a versão pretendida.
 Saída JSON sanitizada; código 0 apenas para idle/cycling da versão esperada
 (se fornecida), 1 nos restantes estados. Código 0 prova observação recente, não

@@ -288,6 +288,31 @@ def test_backlog_includes_held_failed_and_teams_but_not_complete(tmp_path):
     assert result["teams_unfinished"] == 1
 
 
+@pytest.mark.parametrize("scenario,expected,exit_code", [
+    ("idle", "idle", 0), ("cycling", "cycling", 0),
+    ("host_path", "wrong_storage", 1), ("stale", "stale", 1),
+    ("other_version", "version_mismatch", 1),
+])
+def test_cli_uses_worker_path_identity_and_refuses_stale_or_other_version(tmp_path, scenario, expected, exit_code):
+    # Only a path identity is calculated; /app/data is never opened/created.
+    # This is a local CLI test, not an assertion that Docker/Linux was run.
+    channel = tmp_path / "health"
+    with WorkerHealth(channel, storage_id(Path("/app/data"))) as reporter:
+        reporter.update("cycling" if scenario == "cycling" else "idle", release=RELEASE)
+    if scenario == "stale":
+        record = json.loads((channel / "worker.json").read_text(encoding="utf-8"))
+        record["heartbeat_at"] = time.time() - 100
+        (channel / "worker.json").write_text(json.dumps(record), encoding="utf-8")
+    actual_data = str(tmp_path / "host-volume") if scenario == "host_path" else "/app/data"
+    result = subprocess.run([sys.executable, "-B", "tools/worker_health.py",
+        "--health-dir", str(channel), "--data-dir", actual_data,
+        "--expected-sha256", ("d" if scenario == "other_version" else "b") * 64],
+        cwd=Path(__file__).resolve().parents[1], capture_output=True, timeout=15)
+    assert result.returncode == exit_code, result.stderr.decode(errors="replace")
+    assert json.loads(result.stdout)["state"] == expected
+    assert not (tmp_path / "host-volume").exists()
+
+
 def test_admin_reads_health_without_exposing_it_to_technicians(tmp_path, monkeypatch):
     from src import config
     from tests.test_diagnostic_privacy import diagnostic_app, assert_private
