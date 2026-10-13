@@ -158,7 +158,7 @@ def test_send_prepared_test_mode_overrides_a_stale_customer_recipient(tmp_path, 
     pdf_path.write_bytes(b"%PDF-1.7\nconteudo")
     captured = {}
 
-    def fake_graph_bytes(method, path, *, data=None, content_type=None):
+    def fake_graph_bytes(method, path, *, data=None, content_type=None, request_id=None):
         captured["payload"] = json.loads(data.decode("utf-8"))
         return b""
 
@@ -199,7 +199,7 @@ def test_send_prepared_posts_pdf_attachment_to_graph(tmp_path, monkeypatch):
     pdf_path.write_bytes(b"%PDF-1.7\nconteudo")
     captured = {}
 
-    def fake_graph_bytes(method, path, *, data=None, content_type=None):
+    def fake_graph_bytes(method, path, *, data=None, content_type=None, request_id=None):
         captured.update(
             method=method,
             path=path,
@@ -538,7 +538,7 @@ def test_archive_queue_converts_remote_html_and_sends_same_pdf_once(tmp_path):
 
     from tests.fixed_mail_fake import FixedMailFake
     class FakeMail(FixedMailFake):
-        def send_delivery(self, delivery):
+        def send_delivery(self, delivery, *, request_id=None):
             message = self.message(delivery)
             events.append(("mail", message["toRecipients"][0]["emailAddress"]["address"],
                            base64.b64decode(message["attachments"][0]["contentBytes"]), self.operation_id(delivery)))
@@ -583,7 +583,7 @@ def test_local_archive_queue_generates_pdf_and_sends_without_graph_storage(tmp_p
 
     from tests.fixed_mail_fake import FixedMailFake
     class FakeMail(FixedMailFake):
-        def send_delivery(self, delivery):
+        def send_delivery(self, delivery, *, request_id=None):
             message = self.message(delivery)
             events.append(("mail", message["toRecipients"][0]["emailAddress"]["address"],
                            message["attachments"][0]["name"], self.operation_id(delivery)))
@@ -738,7 +738,7 @@ def test_permanent_mail_failure_is_not_retried_automatically(tmp_path):
 
     from tests.fixed_mail_fake import FixedMailFake
     class RejectedMail(FixedMailFake):
-        def send_delivery(self, delivery):
+        def send_delivery(self, delivery, *, request_id=None):
             calls.append(self.operation_id(delivery))
             raise GraphMailError("A autenticação do serviço de e-mail foi rejeitada.")
 
@@ -784,7 +784,7 @@ def test_transient_mail_failure_stops_after_configured_attempt_limit(
 
     from tests.fixed_mail_fake import FixedMailFake
     class UnavailableMail(FixedMailFake):
-        def send_delivery(self, delivery):
+        def send_delivery(self, delivery, *, request_id=None):
             calls.append(self.operation_id(delivery))
             raise GraphMailTransientError("O serviço de e-mail está temporariamente indisponível.")
 
@@ -834,7 +834,7 @@ def test_terminal_mail_failure_only_runs_again_after_explicit_retry(tmp_path):
         available = False
         calls = 0
 
-        def send_delivery(self, delivery):
+        def send_delivery(self, delivery, *, request_id=None):
             self.validate_delivery(delivery)
             self.calls += 1
             if not self.available:
@@ -918,7 +918,7 @@ def test_legacy_pending_mail_requires_explicit_preparation_without_mutation(tmp_
     class UnexpectedMail:
         calls = 0
 
-        def send_delivery(self, delivery):
+        def send_delivery(self, delivery, *, request_id=None):
             self.calls += 1
             return {"accepted": True}
 

@@ -523,7 +523,7 @@ class GraphMailService:
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise GraphMailConfigurationError("A mensagem preparada está incompleta.") from exc
 
-    def send_delivery(self, delivery: GraphMailDelivery) -> dict[str, Any]:
+    def send_delivery(self, delivery: GraphMailDelivery, *, request_id: str | None = None) -> dict[str, Any]:
         """Send a fixed message; all metadata is checked before the POST."""
         metadata = self.validate_delivery(delivery)
         sender = parse.quote(delivery.sender, safe="@._-+")
@@ -532,6 +532,7 @@ class GraphMailService:
             f"/users/{sender}/sendMail",
             data=delivery.payload,
             content_type="application/json",
+            request_id=request_id,
         )
         return {"accepted": True, **metadata}
 
@@ -571,10 +572,14 @@ class GraphMailService:
         *,
         data: bytes | None = None,
         content_type: str | None = None,
+        request_id: str | None = None,
     ) -> bytes:
         headers = {"Accept": "application/json"}
         if content_type:
             headers["Content-Type"] = content_type
+        if request_id is not None:
+            from uuid import UUID
+            headers["client-request-id"] = str(UUID(request_id))
         return self._request_bytes(
             f"{GRAPH_ROOT}{path}",
             method=method,

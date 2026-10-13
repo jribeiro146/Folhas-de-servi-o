@@ -90,13 +90,13 @@ def test_queue_notifies_teams_in_a_separate_job_after_mail(tmp_path):
 
     from tests.fixed_mail_fake import FixedMailFake
     class FakeMail(FixedMailFake):
-        def send_delivery(self, delivery):
+        def send_delivery(self, delivery, *, request_id=None):
             events.append("mail")
             return {"accepted": True, "to": self.message(delivery)["toRecipients"][0]["emailAddress"]["address"]}
 
     class FakeTeams(TeamsNotificationService):
         @staticmethod
-        def send_prepared(prepared, *, operation_id):
+        def send_prepared(prepared, *, operation_id, request_id=None):
             events.append("teams")
             return {
                 "accepted": True,

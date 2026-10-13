@@ -94,7 +94,7 @@ def test_archive_and_mail_wait_for_commit_and_are_not_duplicated(tmp_path):
     from tests.fixed_mail_fake import FixedMailFake
     import base64
     class Mail(FixedMailFake):
-        def send_delivery(self, delivery):
+        def send_delivery(self, delivery, *, request_id=None):
             message = self.message(delivery)
             assert message["toRecipients"] == [{"emailAddress": {"address": "recipient@example.invalid"}}]
             assert not message.get("ccRecipients") and not message.get("bccRecipients")

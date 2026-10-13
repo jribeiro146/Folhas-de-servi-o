@@ -212,4 +212,20 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
         except ValueError as exc:
             return action_rejected(exc)
 
+    @bp.route("/api/admin/jobs/<job_id>/reconciliation", methods=["GET", "POST"])
+    def reconcile_job(job_id):
+        if queue is None:
+            return jsonify(success=False, error="A fila não está ativa."), 409
+        try:
+            if request.method == "GET":
+                return jsonify(success=True, reconciliation=queue.reconciliation(job_id, actor=g.current_user))
+            data = received()
+            result = queue.reconcile(job_id, actor=g.current_user, expected_revision=data.get("revision"),
+                                     decision=data.get("decision"), reason=data["reason"], evidence=data.get("evidence"))
+            return jsonify(success=True, result=result)
+        except KeyError:
+            return jsonify(success=False, error="Trabalho não encontrado."), 404
+        except ValueError as exc:
+            return action_rejected(exc)
+
     app.register_blueprint(bp)

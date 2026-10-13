@@ -164,7 +164,7 @@ class TeamsNotificationService:
         except (ValueError, TypeError, UnicodeError):
             raise TeamsNotificationError("A notificação Teams preparada não é válida.") from None
 
-    def send_prepared(self, prepared: dict[str, Any], *, operation_id: str) -> dict[str, Any]:
+    def send_prepared(self, prepared: dict[str, Any], *, operation_id: str, request_id: str | None = None) -> dict[str, Any]:
         encoded = self.validate_prepared(prepared)
         correlation_id = re.sub(r"[^A-Za-z0-9._:-]+", "-", str(operation_id))[:200]
         req = request.Request(
@@ -177,6 +177,9 @@ class TeamsNotificationService:
             },
             method="POST",
         )
+        if request_id is not None:
+            from uuid import UUID
+            req.add_header("X-Sensorpoint-Request-Id", str(UUID(request_id)))
         transport = self._transport or request.build_opener(_NoRedirect()).open
         try:
             with transport(req, timeout=30) as response:

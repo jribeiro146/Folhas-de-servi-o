@@ -617,7 +617,7 @@ def test_held_expiration_preserves_mail_receipt_and_recovery_never_resends(tmp_p
 
     from tests.fixed_mail_fake import FixedMailFake
     class Mail(FixedMailFake):
-        def send_delivery(self, delivery):
+        def send_delivery(self, delivery, *, request_id=None):
             self.validate_delivery(delivery)
             calls.append("mail")
             return {"accepted": True}

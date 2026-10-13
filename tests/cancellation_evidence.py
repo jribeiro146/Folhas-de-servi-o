@@ -26,7 +26,8 @@ def ready_cancellation(queue, root, *, name="synthetic.xlsx", on_move=None):
         return old_lookup(path)
     def transfer(method, path, *, data=None, content_type=None, headers=None):
         if path == f"/drives/{drive}/items/synthetic-cancel-id":
-            assert method == "PATCH" and headers == {"If-Match": "v1"}
+            assert method == "PATCH" and headers["If-Match"] == "v1"
+            assert set(headers) <= {"If-Match", "client-request-id"}
             body = json.loads(data)
             assert body["parentReference"]["id"] == "synthetic-cancel-parent"
             assert body["@microsoft.graph.conflictBehavior"] == "fail"

@@ -3,6 +3,9 @@
     const $ = (id) => document.getElementById(id);
     const csrf = document.body.dataset.adminCsrf;
     let pending = null;
+    let reconciliation = null;
+    const decisions = {accepted:"Aceitação comprovada", rejected:"Recusa comprovada",
+        indeterminate:"Indeterminado — bloqueio mantido", repair_teams:"Recuperação do aviso Teams"};
     const kinds = {upload_active:"Publicar rascunho",archive_and_remove:"Arquivar e publicar folha",
         archive_and_mail_local:"Enviar folha por e-mail",notify_teams:"Enviar aviso Teams",remove_active:"Retirar folha ativa"};
     const statuses = {pending:"Pendente",running:"Em processamento",failed:"Falhou",held:"Aguardar confirmação local",complete:"Concluído"};
@@ -78,17 +81,47 @@
                 job.last_error || job.phase || "A aguardar processamento."), card);
             if (job.retry_not_before > Date.now() / 1000) {
                 const deadline = new Date(job.retry_not_before * 1000);
+                const provider = job.kind === "notify_teams" ? "Teams" : "fornecedor";
                 node("p", Number.isNaN(deadline.getTime())
-                    ? "O Teams indicou um prazo muito distante. A repetição está bloqueada."
-                    : "A repetição está bloqueada pelo Teams até " + date(job.retry_not_before) + ".", card);
+                    ? "O " + provider + " indicou um prazo muito distante. A repetição está bloqueada."
+                    : "A repetição está bloqueada pelo " + provider + " até " + date(job.retry_not_before) + ".", card);
             }
             if (job.error_code === "job_reconciliation_required" || job.invalid_state ||
                 (job.status === "failed" && job.reconciliation_required && !job.will_retry)) {
                 node("p", "Requer revisão. A repetição está bloqueada.", card);
             }
+            if (job.kind === "remove_active" && job.status === "failed") node("p", "Cancelamento pendente de reconciliação. Confirme o estado remoto antes de intervir.", card);
             if (job.can_retry) action(card, "Repetir trabalho", "/api/admin/jobs/" + encodeURIComponent(job.id) + "/retry", {},
                 "Repetir apenas esta operação. Se incluir um envio recusado, pode originar um envio de e-mail.");
+            if (job.status === "failed" && job.kind !== "upload_active") {
+                const review = node("button", "Consultar reconciliação", card);
+                review.type = "button";
+                review.addEventListener("click", () => openReconciliation(job.id));
+            }
         }
+    };
+    const openReconciliation = async (id) => {
+        try {
+            const url = "/api/admin/jobs/" + encodeURIComponent(id) + "/reconciliation";
+            const data = (await request(url)).reconciliation;
+            reconciliation = {url, revision: data.revision};
+            $("admin-reconciliation-detail").textContent = "Operação: " + data.id + " · " + (kinds[data.kind] || data.kind) + " · " + (statuses[data.status] || data.status);
+            if (data.request_id) $("admin-reconciliation-detail").textContent += " · Pedido externo: " + data.request_id;
+            for (const key of ["indeterminate", "accepted", "rejected"]) $("admin-" + key).disabled = !data.can_record;
+            $("admin-repair-teams").disabled = !data.can_repair_teams;
+            $("admin-decision").value = data.can_record ? "indeterminate" : "repair_teams";
+            $("admin-reconciliation-submit").disabled = !data.can_record && !data.can_repair_teams;
+            $("admin-evidence").value = "";
+            $("admin-reconciliation-reason").value = "";
+            $("admin-reconciliation-error").textContent = data.can_record || data.can_repair_teams ? "" : "Esta operação não admite uma decisão administrativa neste estado.";
+            const history = $("admin-reconciliation-history");
+            history.replaceChildren();
+            for (const event of data.history) {
+                node("p", "Administrador · " + date(event.at) + " · " + decisions[event.decision] + (event.applied ? "" : " · Retenção mantida"), history);
+                node("p", event.reason, history);
+            }
+            $("admin-reconciliation").showModal();
+        } catch (error) { $("admin-status").textContent = error.message; }
     };
     const load = async () => {
         $("admin-reload").disabled = true;
@@ -123,6 +156,33 @@
         }
     };
     $("admin-reload").addEventListener("click", load);
+    $("admin-reconciliation-lookup").addEventListener("submit", (event) => {
+        event.preventDefault();
+        openReconciliation($("admin-job-id").value.trim());
+    });
+    $("admin-reconciliation-cancel").addEventListener("click", () => { reconciliation = null; $("admin-reconciliation").close(); });
+    $("admin-reconciliation-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!reconciliation) return;
+        $("admin-reconciliation-submit").disabled = true;
+        try {
+            const decision = $("admin-decision").value;
+            let evidence = null;
+            if (decision === "accepted" || decision === "rejected") {
+                const file = $("admin-evidence").files?.[0];
+                if (!file || file.size > 65536) throw new Error("Anexe o registo de evidência, até 64 KiB.");
+                try { evidence = JSON.parse(await file.text()); }
+                catch { throw new Error("O ficheiro de evidência não contém JSON válido."); }
+            }
+            const result = (await request(reconciliation.url, {revision: reconciliation.revision, decision,
+                reason: $("admin-reconciliation-reason").value.trim(), evidence})).result;
+            reconciliation = null;
+            $("admin-reconciliation").close();
+            await load();
+            $("admin-status").textContent += result.applied ? " Decisão registada." : " Decisão registada; retenção mantida.";
+        } catch (error) { $("admin-reconciliation-error").textContent = error.message; }
+        finally { $("admin-reconciliation-submit").disabled = false; }
+    });
     $("admin-refresh").addEventListener("click", () => {
         pending = { url: "/api/admin/refresh", data: {} };
         $("admin-action-title").textContent = "Atualizar SharePoint";

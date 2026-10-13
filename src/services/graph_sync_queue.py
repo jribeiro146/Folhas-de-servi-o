@@ -44,7 +44,8 @@ LOGGER = logging.getLogger(__name__)
 def delivery_uncertain(kind: str, result: dict[str, Any]) -> bool:
     # Malformed legacy evidence cannot prove whether an external effect occurred.
     # Migration preserves its raw text separately and explicitly requires review.
-    if result.get("migration_uncertain") is True or result.get("restore_uncertain") is True:
+    if (result.get("migration_uncertain") is True or result.get("restore_uncertain") is True
+            or result.get("reconciliation_hold") is True):
         return True
     if kind == "remove_active":
         return result.get("cancellation_started") is True and result.get("cancellation_confirmed") is not True
@@ -56,7 +57,8 @@ def delivery_uncertain(kind: str, result: dict[str, Any]) -> bool:
 
 
 def teams_retry_deadline(kind: str, result: dict[str, Any]) -> float | None:
-    value = result.get("retry_not_before") if kind == "notify_teams" else None
+    # Reconciled provider refusals also carry a binding mail retry deadline.
+    value = result.get("retry_not_before") if kind == "notify_teams" or result.get("reconciled_retry_deadline") is True else None
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
@@ -278,6 +280,23 @@ class GraphSyncQueue:
         return self._serialize(row) if row else None
 
     @admitted
+    def reconciliation(self, job_id: str, *, actor) -> dict[str, Any]:
+        from src.services.admin_access import can_administer
+        from src.services.job_reconciliation import inspection
+        if not can_administer(actor):
+            raise PermissionError("Acesso reservado ao administrador.")
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM graph_sync_jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            return inspection(row)
+
+    @admitted
+    def reconcile(self, job_id: str, **decision) -> dict[str, Any]:
+        from src.services.job_reconciliation import reconcile
+        return reconcile(self, job_id, **decision)
+
+    @admitted
     def retry(self, job_id: str) -> dict[str, Any]:
         """Repete explicitamente um único trabalho que ficou terminalmente falhado."""
         now = time.time()
@@ -303,7 +322,7 @@ class GraphSyncQueue:
             deadline = teams_retry_deadline(current["kind"], current["result"] or {})
             if deadline is not None and now < deadline:
                 connection.rollback()
-                raise ValueError("O prazo indicado pelo Teams ainda não terminou. Atualize o diagnóstico mais tarde.")
+                raise ValueError("O prazo indicado pelo fornecedor ainda não terminou. Atualize o diagnóstico mais tarde.")
             if (current["result"] or {}).get("blocked_by_newer_upload"):
                 connection.commit()
                 raise ValueError("Existe uma gravação posterior. Repita a publicação mais recente.")
@@ -794,10 +813,12 @@ class GraphSyncQueue:
             from src.services.graph_cancellation import execute_cancellation
             # Preflight failures remain retryable. Only an attempted PATCH has
             # an uncertain effect; a definite 409/412 is a recorded refusal.
+            request_id = str(uuid.uuid4())
             def before_write():
-                self._checkpoint_result(job_id, {"phase": "canceling_remote", "cancellation_started": True})
+                self._checkpoint_result(job_id, {"phase": "canceling_remote", "cancellation_started": True,
+                                                 "delivery_request_id": request_id})
             try:
-                outcome = execute_cancellation(self.graph_service, payload["cancellation"], before_write=before_write)
+                outcome = execute_cancellation(self.graph_service, payload["cancellation"], before_write=before_write, request_id=request_id)
             except GraphConflictError as exc:
                 if exc.status_code in {409, 412}:
                     self._checkpoint_result(job_id, {"phase": "cancellation_rejected", "cancellation_started": False})
@@ -916,9 +937,10 @@ class GraphSyncQueue:
             raise RuntimeError("O serviço de e-mail não está disponível para este trabalho.")
         self._assert_job_running(job_id)
         self._validate_fixed_mail(job_id, delivery)
-        self._checkpoint_result(job_id, {"phase": "sending_mail"})
+        request_id = str(uuid.uuid4())
+        self._checkpoint_result(job_id, {"phase": "sending_mail", "delivery_request_id": request_id})
         try:
-            mail_result = self.mail_service.send_delivery(delivery)
+            mail_result = self.mail_service.send_delivery(delivery, request_id=request_id)
         except GraphMailUnknownResultError:
             self._checkpoint_result(job_id, {"phase": "mail_unknown"})
             raise
@@ -963,11 +985,13 @@ class GraphSyncQueue:
             self._checkpoint_result(job_id, {"phase": "teams_rejected", "http_status": exc.http_status,
                                             "retry_not_before": exc.retry_not_before})
             raise
+        request_id = str(uuid.uuid4())
         self._checkpoint_result(job_id, {
             "phase": "sending_teams", "http_status": None, "retry_not_before": None,
+            "delivery_request_id": request_id,
         })
         try:
-            receipt = service.send_prepared(notification, operation_id=job_id)
+            receipt = service.send_prepared(notification, operation_id=job_id, request_id=request_id)
             if not isinstance(receipt, dict) or receipt.get("accepted") is not True:
                 raise TeamsNotificationUnknownResultError("Resultado Teams inválido; requer reconciliação.")
         except TeamsNotificationUnknownResultError:

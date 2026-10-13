@@ -22,7 +22,7 @@ class AcceptedMail(FixedMailFake):
         super().__init__()
         self.root = Path(root)
 
-    def send_delivery(self, delivery):
+    def send_delivery(self, delivery, *, request_id=None):
         self.validate_delivery(delivery)
         with (self.root / "mail-accepted").open("ab") as stream:
             stream.write(b"one simulated acceptance\n")

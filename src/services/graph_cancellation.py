@@ -72,7 +72,7 @@ def prepare_cancellation(graph, source: Path, operation_id: str) -> dict:
             "folder": folder, "children": _tree(graph, receipt["id"], local=source.parent) if folder else []}
 
 
-def execute_cancellation(graph, plan: dict, *, before_write=None) -> dict:
+def execute_cancellation(graph, plan: dict, *, before_write=None, request_id=None) -> dict:
     """Move the proven item; never DELETE a folder or rediscover identity by name."""
     if (not isinstance(plan, dict) or type(plan.get("format")) is not int or plan["format"] != 1
             or plan.get("drive_id") != graph.config.drive_id or type(plan.get("absent")) is not bool
@@ -101,13 +101,17 @@ def execute_cancellation(graph, plan: dict, *, before_write=None) -> dict:
         raise GraphConflictError("Destino de cancelamento inválido; origem preservada.")
     body = {"parentReference": {"id": parent["id"]}, "name": plan["destination_name"],
             "@microsoft.graph.conflictBehavior": "fail"}
+    headers = {"If-Match": plan["source_etag"]}
+    if request_id is not None:
+        from uuid import UUID
+        headers["client-request-id"] = str(UUID(request_id))
     # Read failures and explicit preflight conflicts have no uncertain move.
     # The durable intention belongs immediately before this single PATCH.
     if before_write is not None:
         before_write()
     raw = graph._graph_bytes("PATCH", f"/drives/{quote(graph.config.drive_id, safe='')}/items/{quote(plan['source_id'], safe='')}",
                              data=json.dumps(body).encode(), content_type="application/json",
-                             headers={"If-Match": plan["source_etag"]})
+                             headers=headers)
     response = json.loads(raw)
     if (not isinstance(response, dict) or response.get("id") != plan["source_id"]
             or response.get("name") != plan["destination_name"]

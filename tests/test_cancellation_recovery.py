@@ -36,7 +36,8 @@ class CancellationGraph(GraphStorageService):
     def _graph_bytes(self, method, path, data=None, content_type=None, headers=None):
         assert method == "PATCH", "Cancellation must preserve the remote bundle, never recursively delete it"
         assert path == "/drives/drive/items/original"
-        assert headers == {"If-Match": "folder-v1"}
+        assert headers["If-Match"] == "folder-v1"
+        assert set(headers) <= {"If-Match", "client-request-id"}
         body = json.loads(data)
         assert body["parentReference"] == {"id": "canceled-root"}
         self.writes.append(body)
