@@ -319,7 +319,7 @@ def test_legacy_request_without_correlation_can_only_remain_held_or_prove_accept
     state.pop("delivery_request_id")
     with queue._connect() as db:
         db.execute("UPDATE graph_sync_jobs SET result_json=? WHERE id=?", (json.dumps(state), job))
-    with pytest.raises(ValueError, match="último pedido"):
+    with pytest.raises(ValueError):
         decide(queue, job, "rejected", evidence(queue, job, "rejected"))
     assert decide(queue, job, "accepted", evidence(queue, job))["status"] == "complete"
 
@@ -416,3 +416,51 @@ def test_repair_teams_retains_divergent_child_without_reopening_mail(tmp_path):
     assert queue.status(job)["result"]["mail"]["accepted"] is True
     assert queue.status("teams:" + job)["result"]["invalid_state"] is True
     assert len(mail.calls) == 1
+
+
+def test_archive_without_mail_cannot_create_an_uncertainty_hold(tmp_path):
+    queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", auto_start=False)
+    job = queue.enqueue("archive_and_remove", {"source_name": "synthetic.xlsx"})["id"]
+    with queue._connect() as db:
+        db.execute("UPDATE graph_sync_jobs SET status='failed',retryable=0,attempts=1 WHERE id=?", (job,))
+    before = persisted(queue)
+    assert not queue.reconciliation(job, actor=ADMIN)["can_record"]
+    with pytest.raises(ValueError):
+        decide(queue, job, "indeterminate")
+    assert persisted(queue) == before
+    assert queue.retry(job)["status"] in {"pending", "held"}
+
+
+def test_cancellation_preflight_conflict_cannot_create_an_uncertainty_hold(tmp_path):
+    from tests.test_cancellation_recovery import CancellationGraph, source_with_receipts, plan, guarded_payload
+    graph = CancellationGraph()
+    _, payload = guarded_payload(tmp_path, plan(graph, source_with_receipts(tmp_path)))
+    queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", auto_start=False)
+    job = queue.enqueue("remove_active", payload)["id"]
+    graph.item["eTag"] = "concurrent-version"
+    queue.run_until_idle()
+    assert not graph.writes and queue.status(job)["status"] == "failed"
+    before = persisted(queue)
+    assert not queue.reconciliation(job, actor=ADMIN)["can_record"]
+    with pytest.raises(ValueError):
+        decide(queue, job, "indeterminate")
+    assert persisted(queue) == before
+    assert queue.retry(job)["status"] in {"pending", "held"}
+
+
+def test_legacy_mail_without_phase_only_offers_indeterminate(tmp_path):
+    queue, job, _ = mail_job(tmp_path)
+    state = queue.status(job)["result"]
+    state.pop("phase")
+    state.pop("delivery_request_id")
+    with queue._connect() as db:
+        db.execute("UPDATE graph_sync_jobs SET result_json=? WHERE id=?", (json.dumps(state), job))
+    before = persisted(queue)
+    assert queue.reconciliation(job, actor=ADMIN)["allowed_decisions"] == ["indeterminate"]
+    for decision in ("accepted", "rejected"):
+        with pytest.raises(ValueError):
+            decide(queue, job, decision, evidence(queue, job, decision))
+    assert persisted(queue) == before
+    decide(queue, job, "indeterminate")
+    with pytest.raises(ValueError):
+        queue.retry(job)

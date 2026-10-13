@@ -6,20 +6,21 @@ const vm = require("node:vm");
 const source = fs.readFileSync(path.join(__dirname, "../../src/web/static/js/admin.js"), "utf8");
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-async function panel({repair = false, failure = null} = {}) {
+async function panel({repair = false, failure = null, decisions = null, jobs = []} = {}) {
     const elements = new Map(), requests = [];
     const element = () => ({textContent:"", value:"", files:[], children:[], events:{}, dataset:{}, disabled:false,
         classList:{add(){}}, append(child){this.children.push(child);}, replaceChildren(){this.children=[];},
         addEventListener(name, fn){this.events[name]=fn;}, showModal(){this.open=true;}, close(){this.open=false;}, focus(){}});
     const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
     const document = {body:{dataset:{adminCsrf:"synthetic-csrf"}}, getElementById:get, createElement:element};
-    const overview = {success:true, jobs:[], documents:[], audit:[], refresh:null, queue_summary:null};
+    const overview = {success:true, jobs, documents:[], audit:[], refresh:null, queue_summary:null};
     const fetch = async (url, options = {}) => {
         requests.push({url, ...options});
         if (options.method === "POST") return {ok:!failure, json:async () => failure || {success:true, result:{applied:repair}}};
         return {ok:true, json:async () => url.endsWith("/reconciliation") ? {success:true, reconciliation:{
             id:"send:synthetic", kind:"archive_and_mail_local", status:repair ? "complete" : "failed",
-            revision:"current-revision", can_record:!repair, can_repair_teams:repair, history:[]}} : overview};
+            revision:"current-revision", can_record:!repair, can_repair_teams:repair, history:[],
+            allowed_decisions:decisions || (repair ? ["repair_teams"] : ["indeterminate", "accepted", "rejected"])}} : overview};
     };
     vm.runInNewContext(source, {document, fetch, Date});
     await settle();
@@ -79,4 +80,21 @@ test("accepted parent offers only independent Teams repair without an evidence f
     assert.equal(posts.length, 1);
     assert.equal(JSON.parse(posts[0].body).decision, "repair_teams");
     assert.doesNotMatch(posts[0].url, /\/retry$/);
+});
+
+test("legacy uncertain mail only offers the supported indeterminate decision", async () => {
+    const ui = await panel({decisions:["indeterminate"]});
+    assert.equal(ui.get("admin-accepted").disabled, true);
+    assert.equal(ui.get("admin-rejected").disabled, true);
+    assert.equal(ui.get("admin-indeterminate").disabled, false);
+    assert.equal(ui.get("admin-decision").value, "indeterminate");
+});
+
+test("known retryable failure has no reconciliation button", async () => {
+    const ui = await panel({jobs:[{id:"synthetic",kind:"remove_active",status:"failed",can_retry:true,
+        reconciliation_required:false,invalid_state:false}],decisions:[]});
+    const texts = element => [element.textContent,...element.children.flatMap(texts)];
+    assert.ok(texts(ui.get("admin-jobs")).includes("Repetir trabalho"));
+    assert.ok(!texts(ui.get("admin-jobs")).includes("Consultar reconciliação"));
+    assert.equal(ui.get("admin-reconciliation-submit").disabled, true);
 });

@@ -90,10 +90,10 @@
                 (job.status === "failed" && job.reconciliation_required && !job.will_retry)) {
                 node("p", "Requer revisão. A repetição está bloqueada.", card);
             }
-            if (job.kind === "remove_active" && job.status === "failed") node("p", "Cancelamento pendente de reconciliação. Confirme o estado remoto antes de intervir.", card);
+            if (job.kind === "remove_active" && job.status === "failed") node("p", "Cancelamento não concluído. Confirme o estado remoto antes de intervir.", card);
             if (job.can_retry) action(card, "Repetir trabalho", "/api/admin/jobs/" + encodeURIComponent(job.id) + "/retry", {},
                 "Repetir apenas esta operação. Se incluir um envio recusado, pode originar um envio de e-mail.");
-            if (job.status === "failed" && job.kind !== "upload_active") {
+            if (job.status === "failed" && job.kind !== "upload_active" && (job.reconciliation_required || job.invalid_state)) {
                 const review = node("button", "Consultar reconciliação", card);
                 review.type = "button";
                 review.addEventListener("click", () => openReconciliation(job.id));
@@ -107,13 +107,14 @@
             reconciliation = {url, revision: data.revision};
             $("admin-reconciliation-detail").textContent = "Operação: " + data.id + " · " + (kinds[data.kind] || data.kind) + " · " + (statuses[data.status] || data.status);
             if (data.request_id) $("admin-reconciliation-detail").textContent += " · Pedido externo: " + data.request_id;
-            for (const key of ["indeterminate", "accepted", "rejected"]) $("admin-" + key).disabled = !data.can_record;
-            $("admin-repair-teams").disabled = !data.can_repair_teams;
-            $("admin-decision").value = data.can_record ? "indeterminate" : "repair_teams";
-            $("admin-reconciliation-submit").disabled = !data.can_record && !data.can_repair_teams;
+            const allowed = Array.isArray(data.allowed_decisions) ? data.allowed_decisions : [];
+            for (const key of ["indeterminate", "accepted", "rejected"]) $("admin-" + key).disabled = !allowed.includes(key);
+            $("admin-repair-teams").disabled = !allowed.includes("repair_teams");
+            $("admin-decision").value = allowed[0] || "indeterminate";
+            $("admin-reconciliation-submit").disabled = !allowed.length;
             $("admin-evidence").value = "";
             $("admin-reconciliation-reason").value = "";
-            $("admin-reconciliation-error").textContent = data.can_record || data.can_repair_teams ? "" : "Esta operação não admite uma decisão administrativa neste estado.";
+            $("admin-reconciliation-error").textContent = allowed.length ? "" : "Esta operação não admite uma decisão administrativa neste estado.";
             const history = $("admin-reconciliation-history");
             history.replaceChildren();
             for (const event of data.history) {

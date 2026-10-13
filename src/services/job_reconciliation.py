@@ -54,6 +54,7 @@ def _request_id(value):
 
 
 def inspection(row):
+    from src.services.graph_sync_queue import delivery_uncertain
     payload, result = _object(row["payload_json"]), _object(row["result_json"])
     if result.get("mail") is not None and not isinstance(result["mail"], dict):
         raise ValueError("O recibo da operação requer recuperação.")
@@ -65,18 +66,35 @@ def inspection(row):
     if not isinstance(history, list):
         raise ValueError("O histórico da operação requer recuperação.")
     accepted_mail = isinstance(result.get("mail"), dict) and result["mail"].get("accepted") is True
-    needs_review = (result.get("phase") in {"sending_mail", "mail_unknown", "sending_teams", "teams_unknown"}
-                    or row["kind"] == "remove_active" or any(result.get(key) for key in
-                    ("invalid_state", "restore_uncertain", "migration_uncertain", "reconciliation_hold"))
-                    or (row["kind"] in {"archive_and_mail_local", "archive_and_remove"}
-                        and row["attempts"] > 0 and not result.get("phase") and not accepted_mail))
+    recovery_hold = any(result.get(key) for key in
+                        ("invalid_state", "restore_uncertain", "migration_uncertain", "commit_guard_required"))
+    has_mail = row["kind"] == "archive_and_mail_local" or bool(payload.get("mail"))
+    legacy_mail = has_mail and row["attempts"] > 0 and not result.get("phase") and not accepted_mail
+    needs_review = delivery_uncertain(row["kind"], result) or recovery_hold or legacy_mail
+    can_record = row["kind"] in KINDS and row["status"] == "failed" and not row["retryable"] and needs_review
+    can_repair = (row["kind"] in {"archive_and_mail_local", "archive_and_remove"}
+                  and accepted_mail and bool(payload.get("teams")) and row["status"] in {"failed", "complete"}
+                  and not recovery_hold and not result.get("reconciliation_hold"))
+    allowed = ["indeterminate"] if can_record else []
+    # A known preflight failure must never acquire a new uncertainty hold.
+    # Legacy mail without a send checkpoint can retain a note, but lacks the
+    # correlation required to prove acceptance/refusal through this workflow.
+    provable = ((row["kind"] in {"archive_and_mail_local", "archive_and_remove"}
+                 and result.get("phase") in {"sending_mail", "mail_unknown"} and not accepted_mail)
+                or (row["kind"] == "notify_teams" and result.get("phase") in {"sending_teams", "teams_unknown"}
+                    and result.get("accepted") is not True)
+                or (row["kind"] == "remove_active" and result.get("cancellation_started") is True
+                    and result.get("cancellation_confirmed") is not True))
+    if can_record and not recovery_hold and provable:
+        allowed.append("accepted")
+        if _request_id(result.get("delivery_request_id")):
+            allowed.append("rejected")
+    if can_repair:
+        allowed.append("repair_teams")
     return {
         "id": row["id"], "kind": row["kind"], "status": row["status"], "revision": revision(row),
         "request_id": _request_id(result.get("delivery_request_id")),
-        "can_record": row["kind"] in KINDS and row["status"] == "failed" and not row["retryable"] and needs_review,
-        "can_repair_teams": (row["kind"] in {"archive_and_mail_local", "archive_and_remove"}
-                             and accepted_mail and bool(payload.get("teams")) and row["status"] in {"failed", "complete"}
-                             and not result.get("invalid_state")),
+        "can_record": bool(can_record), "can_repair_teams": bool(can_repair), "allowed_decisions": allowed,
         # Evidence, identities and references stay in the private audit; the
         # administrator receives only a bounded, sanitized reason for history.
         "history": [{"decision": event["decision"], "at": event.get("at") if _timestamp(event.get("at")) else None,
@@ -205,7 +223,7 @@ def reconcile(queue, job_id, *, actor, expected_revision, decision, reason, evid
             if expected_revision != view["revision"]:
                 raise ValueError("A operação mudou. Atualize o diagnóstico antes de decidir.")
             payload, result = _object(row["payload_json"]), _object(row["result_json"])
-            if not (view["can_repair_teams"] if decision == "repair_teams" else view["can_record"]):
+            if decision not in view["allowed_decisions"]:
                 raise ValueError("A operação está ativa ou não admite esta decisão.")
             if decision != "indeterminate" and any(result.get(key) for key in
                     ("invalid_state", "restore_uncertain", "migration_uncertain", "commit_guard_required")):
