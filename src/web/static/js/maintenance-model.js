@@ -60,6 +60,21 @@
         }
         return signatureErrors(site, definition).length ? "Por assinar" : "Completa";
     }
+    function pendingRecovery(payload) {
+        const copy = structuredClone(payload);
+        for (const site of copy.maintenance_checklists || []) {
+            for (const role of ['technician', 'customer']) {
+                if (!site.signatures?.[role]) continue;
+                delete site.signatures[role];
+                delete site.signature_drafts?.[role];
+                site.signature_warnings ||= {};
+                site.signature_warnings[role] = 'verification_pending';
+            }
+        }
+        // Display-only copy. The original recovery stays intact for verification
+        // on retry; lack of a server reply is not an HMAC rejection.
+        return copy;
+    }
     function reconcileSignatures(currentSites, submittedSites, verifiedSites) {
         const removed = [];
         for (const site of currentSites || []) {
@@ -83,7 +98,7 @@
         }
         return removed;
     }
-    const api = { applicable, validateSite, validateSiteDetails, status, signatureWaived, signatureErrors, signatureIssues, reconcileSignatures };
+    const api = { applicable, validateSite, validateSiteDetails, status, signatureWaived, signatureErrors, signatureIssues, reconcileSignatures, pendingRecovery };
     if (typeof module !== "undefined" && module.exports) module.exports = api;
     else root.MaintenanceModel = api;
 })(typeof window !== "undefined" ? window : globalThis);

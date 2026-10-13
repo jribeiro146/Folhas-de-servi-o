@@ -64,22 +64,26 @@ function database(records) {
     }};
 }
 
-function harness(t, {local, remote, failVerification=false, deferSave=false}) {
+function harness(t, {local, remote, failVerification=false, failBootstrap=false, deferSave=false}) {
     const records=new Map();
     if(local)records.set('user:doc',{key:'user:doc',userId:'user',fileName:'synthetic-draft',documentId:'doc',
         baseRevision:1,updatedAt:Date.now(),payload:structuredClone(local)});
     const elements=new Map(), listeners=new Map(), timers=new Set();
-    const classList={add(){},remove(){},toggle(){}};
+    const classes=()=>{const values=new Set();return {add:name=>values.add(name),remove:name=>values.delete(name),
+        toggle:(name,value)=>value ? values.add(name) : values.delete(name),contains:name=>values.has(name)};};
     const element=id=>{
-        if(!elements.has(id))elements.set(id,{disabled:true,hidden:false,textContent:'',dataset:{},classList,
-            addEventListener(){},querySelectorAll:()=>[]});
+        if(!elements.has(id))elements.set(id,{disabled:true,hidden:false,textContent:'',dataset:{},classList:classes(),events:new Map(),
+            addEventListener(name,fn){this.events.set(name,fn);},querySelectorAll:()=>[]});
         return elements.get(id);
     };
     let payload={}, pendingSave, saveCount=0, verifyCount=0;
     const reply=value=>({ok:true,status:200,json:async()=>value});
     const fetch=async (url, options) => {
-        if(url.includes('/bootstrap?'))return reply({success:true,is_draft:true,document:remote,
-            editing:{document_id:'doc',revision:1,server_document:remote,lease:{token:'synthetic-lease'}}});
+        if(url.includes('/bootstrap?')) {
+            if(failBootstrap)throw new Error('synthetic bootstrap network failure');
+            return reply({success:true,is_draft:true,document:remote,
+                editing:{document_id:'doc',revision:1,server_document:remote,lease:{token:'synthetic-lease'}}});
+        }
         if(url.endsWith('/maintenance/validate')) {
             verifyCount++;
             if(failVerification)throw new Error('synthetic network failure');
@@ -94,7 +98,8 @@ function harness(t, {local, remote, failVerification=false, deferSave=false}) {
     };
     const signatureNotice={}, invalidatedSignatures=new Map();
     const view={sites:[],signatureNotice,invalidatedSignatures,model,
-        def:{signature_exceptions:{},signature_verification_warning:'A chave de segurança pode ter mudado; recolha uma nova assinatura.'}};
+        def:{signature_exceptions:{},signature_verification_warning:'A chave de segurança pode ter mudado; recolha uma nova assinatura.',
+            signature_pending_warning:'Assinatura por confirmar no servidor. Volte a tentar com ligação.'}};
     vm.runInNewContext(`${functionSource('restoreSignatureWarnings')}\n${functionSource('renderSignatureNotice')}\nthis.refresh=()=>{restoreSignatureWarnings();renderSignatureNotice();};`,view);
     const refresh=()=>{view.sites=payload.maintenance_checklists || [];view.refresh();};
     const verification={fetch,config:{selectedFileIsDraft:true,selectedFileName:'synthetic-draft'},encodeURIComponent};
@@ -104,6 +109,7 @@ function harness(t, {local, remote, failVerification=false, deferSave=false}) {
         __FILES_EDITOR__:{collectFormData:()=>structuredClone(payload),
             populateForm:(_name,value)=>{payload=structuredClone(value);refresh();},
             verifyRecovery:verification.verify,
+            pendingRecovery:model.pendingRecovery,
             reconcileSignatures:(submitted,verified)=>{
                 const result=model.reconcileSignatures(payload.maintenance_checklists,submitted.maintenance_checklists,verified.maintenance_checklists);
                 refresh();return result.length;
@@ -111,7 +117,7 @@ function harness(t, {local, remote, failVerification=false, deferSave=false}) {
         crypto:{randomUUID:()=>require('node:crypto').randomUUID()},indexedDB,
         setTimeout:(fn,delay)=>{const timer=setTimeout(fn,delay);timers.add(timer);return timer;},clearTimeout,
         setInterval:()=>({unref(){}}),clearInterval(){},addEventListener:(name,fn)=>listeners.set(name,fn),location:{}};
-    const document={readyState:'complete',hidden:false,body:{classList},getElementById:element,
+    const document={readyState:'complete',hidden:false,body:{classList:classes()},getElementById:element,
         querySelector:()=>null,addEventListener:(name,fn)=>listeners.set(name,fn)};
     vm.runInNewContext(read('editing-coordinator.js'),{window,document,fetch,console,Blob,indexedDB,
         IDBKeyRange:{only:value=>value},navigator:{onLine:true,sendBeacon:()=>true},
@@ -119,7 +125,8 @@ function harness(t, {local, remote, failVerification=false, deferSave=false}) {
     t.after(()=>{for(const timer of timers)clearTimeout(timer);});
     return {records,element,notice:signatureNotice,coordinator:window.__EDITING_COORDINATOR__,
         payload:()=>payload,setPayload:value=>{payload=structuredClone(value);refresh();},
-        saveCount:()=>saveCount,verifyCount:()=>verifyCount,finishSave:()=>pendingSave?.(),pendingSave:()=>Boolean(pendingSave),listeners};
+        saveCount:()=>saveCount,verifyCount:()=>verifyCount,finishSave:()=>pendingSave?.(),pendingSave:()=>Boolean(pendingSave),listeners,
+        recoverNetwork:()=>{failVerification=false;failBootstrap=false;}};
 }
 
 test('IndexedDB recovery is verified before hydration; rejected proofs never return to the editor or recovery',async t=>{
@@ -166,8 +173,37 @@ test('failed recovery verification preserves the original copy and disables comm
     const app=harness(t,{local,remote:normalize(local),failVerification:true});
     await waitFor(()=>app.element('autosave-status').dataset.state==='offline');
     assert.equal(app.element('btn-save-draft').disabled,true);
+    assert.equal(app.element('service-form').classList.contains('is-readonly'),true);
+    assert.equal(Object.keys(app.payload().maintenance_checklists[0].signatures).length,0);
+    assert.equal(app.notice.hidden,false);
     assert.equal(app.records.get('user:doc').payload.maintenance_checklists[0].signatures.technician.token,'old');
+    app.coordinator.markDirty();
+    assert.equal(app.coordinator.isDirty(),false);
     assert.equal(app.saveCount(),0);
+    assert.equal(app.element('btn-retry-lease').hidden,false);
+    app.recoverNetwork();
+    await app.element('btn-retry-lease').events.get('click')();
+    assert.equal(app.verifyCount(),2);
+    assert.equal(app.element('btn-save-draft').disabled,false);
+    assert.equal(app.element('service-form').classList.contains('is-readonly'),false);
+    assert.equal(Object.keys(app.records.get('user:doc').payload.maintenance_checklists[0].signatures).length,0);
+});
+
+test('offline bootstrap shows a read-only preview without claiming local signatures are saved',async t=>{
+    const local=signed('fresh-valid');
+    const app=harness(t,{local,remote:normalize(signed('old')),failBootstrap:true});
+    await waitFor(()=>app.element('autosave-status').dataset.state==='offline');
+    assert.equal(app.element('service-form').classList.contains('is-readonly'),true);
+    assert.equal(app.element('btn-save-draft').disabled,true);
+    assert.equal(Object.keys(app.payload().maintenance_checklists[0].signatures).length,0);
+    assert.match(app.notice.textContent,/por confirmar no servidor/);
+    assert.equal(app.records.get('user:doc').payload.maintenance_checklists[0].signatures.technician.token,'fresh-valid');
+    app.coordinator.markDirty();assert.equal(app.coordinator.isDirty(),false);
+    app.recoverNetwork();
+    await app.element('btn-retry-lease').events.get('click')();
+    assert.equal(app.element('btn-save-draft').disabled,false);
+    assert.equal(app.payload().maintenance_checklists[0].signatures.technician.token,'fresh-valid');
+    assert.equal(app.notice.hidden,true);
 });
 
 test('unchanged autosave replaces rejected proofs before marking saved and storing recovery',async t=>{

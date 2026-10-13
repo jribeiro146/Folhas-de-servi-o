@@ -83,6 +83,8 @@ const startEditingCoordinator = () => {
     let otherTabActive = false;
     let resumeConflictPending = false;
     let resumePromise = null;
+    let initializing = false;
+    let initialRecoveryPending = false;
     const operationKeys = new Map();
 
     const showToast = (message, variant = "info") => editor.showToast?.(message, variant);
@@ -120,7 +122,7 @@ const startEditingCoordinator = () => {
     };
 
     const setFormReadOnly = (value, ownerName = "") => {
-        readOnly = revoked || Boolean(value);
+        readOnly = revoked || initialRecoveryPending || Boolean(value);
         form.classList.toggle("is-readonly", readOnly);
         form.querySelectorAll("input, select, textarea, button").forEach((control) => {
             if (!control.dataset.editingInitialDisabled) {
@@ -287,6 +289,7 @@ const startEditingCoordinator = () => {
         && !revoked
         && !otherTabActive
         && !resumeConflictPending
+        && !initialRecoveryPending
         && editing.document_id
         && clientId
         && sessionToken
@@ -528,6 +531,10 @@ const startEditingCoordinator = () => {
 
     const resumeEditingSession = async () => {
         if (revoked) return false;
+        if (initialRecoveryPending) {
+            await initialize();
+            return hasActiveSession();
+        }
         if (hasActiveSession()) return true;
         if (
             !initialized
@@ -617,20 +624,28 @@ const startEditingCoordinator = () => {
     };
 
     const initialize = async () => {
+        if (initializing || revoked) return;
+        initializing = true;
+        initialized = false;
+        let bootstrapResult = null;
         setBooting(true);
         setFormReadOnly(true);
         setAutosaveStatus("A abrir a área de trabalho…", "saving");
         const localRecoveryPromise = readLatestRecoveryForFile().catch(() => null);
         try {
             const result = await loadBootstrap();
+            bootstrapResult = result;
+            // Keep the acquired reservation even when checking recovery fails,
+            // so heartbeat/close can account for it. It grants no editing rights
+            // until the recovery decision has completed successfully.
+            editing = { ...(result.editing || {}) };
+            sessionToken = result.editing?.lease?.token || "";
+            serverPayload = result.editing?.server_document || result.document || null;
             let localRecovery = await localRecoveryPromise;
             if (localRecovery?.payload && editor.verifyRecovery) {
                 localRecovery = {...localRecovery, payload:await editor.verifyRecovery(localRecovery.payload)};
             }
             if (revoked) return;
-            editing = { ...(result.editing || {}) };
-            sessionToken = result.editing?.lease?.token || "";
-            serverPayload = result.editing?.server_document || result.document || null;
             sourceSignatures = result.signatures || {};
             sourcePhotos = result.photos || [];
             if (selectedFileIsDraft && tabChannel) {
@@ -673,6 +688,7 @@ const startEditingCoordinator = () => {
 
             applyPayload(initialPayload, initialSignatures, { shouldSave });
             if (localRecovery?.payload === initialPayload) await persistLocalRecovery({ force:true });
+            initialRecoveryPending = false;
             initialized = true;
             setFormReadOnly(otherTabActive, otherTabActive ? "outra aba deste técnico" : "");
             syncCommitActions();
@@ -692,15 +708,18 @@ const startEditingCoordinator = () => {
             }
             pruneExpiredRecoveries().catch(() => {});
         } catch (error) {
-            const result = error.result || {};
+            if (revoked) return;
+            const result = bootstrapResult || error.result || {};
             editing = { ...editing, ...(result.editing || {}) };
             const localRecovery = await localRecoveryPromise;
             if (result.document) {
                 sourcePhotos = result.photos || sourcePhotos;
                 applyPayload(result.document, result.signatures || {}, { shouldSave: false });
             } else if (localRecovery?.payload) {
-                applyPayload(localRecovery.payload, localRecovery.payload, { shouldSave: false });
+                const preview = editor.pendingRecovery ? editor.pendingRecovery(localRecovery.payload) : localRecovery.payload;
+                applyPayload(preview, preview, { shouldSave: false });
             }
+            initialRecoveryPending = true;
             initialized = true;
             setBooting(false);
             if (handleConflict(result)) return;
@@ -708,13 +727,24 @@ const startEditingCoordinator = () => {
                 setFormReadOnly(true, result.editing?.owner?.owner_name);
                 setAutosaveStatus("Modo de consulta — rascunho de outro técnico", "conflict");
             } else {
-                setFormReadOnly(false);
+                setFormReadOnly(true);
                 setCommitActionsEnabled(false);
-                setAutosaveStatus("Servidor indisponível — pode consultar a cópia local", "offline");
+                setAutosaveStatus("Recuperação por confirmar — apenas consulta; volte a tentar", "offline");
+                if (lockTitle) lockTitle.textContent = "Não foi possível confirmar a recuperação";
+                if (lockMessage) lockMessage.textContent = "A cópia original deste dispositivo continua guardada. Volte a tentar antes de editar.";
+                if (retryButton) { retryButton.hidden = false; retryButton.disabled = false; retryButton.textContent = "Voltar a tentar"; }
                 showToast(error.message, "error");
             }
+        } finally {
+            initializing = false;
         }
     };
+
+    retryButton?.addEventListener("click", async () => {
+        if (revoked) return;
+        if (initialRecoveryPending) await initialize();
+        else await resumeEditingSession();
+    });
 
     ignoreRecoveryButton?.addEventListener("click", async () => {
         if (revoked) return;

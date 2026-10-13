@@ -2034,6 +2034,7 @@ document.addEventListener("DOMContentLoaded", () => {
         collectFormData,
         populateForm,
         verifyRecovery: payload => window.MaintenanceEditor?.verifyRecovery(payload) || payload,
+        pendingRecovery: payload => window.MaintenanceEditor?.pendingRecovery(payload) || payload,
         reconcileSignatures: (submitted, verified) => window.MaintenanceEditor?.reconcileSignatures(submitted, verified),
         showToast,
         openDocumentPreview,

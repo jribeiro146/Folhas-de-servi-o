@@ -80,6 +80,7 @@ FIELDS = {
 DEFINITION = dict(version=VERSION, groups=GROUPS, fields=FIELDS, periods=PERIODS,
                   signature_exceptions=SIGNATURE_EXCEPTIONS,
                   signature_verification_warning=SIGNATURE_VERIFICATION_WARNING,
+                  signature_pending_warning="Assinatura por confirmar no servidor. Volte a tentar com ligação antes de continuar a editar.",
                   general=GENERAL, conventional=CONVENTIONAL, addressable=ADDRESSABLE,
                   repeater=REPEATER, peripherals=PERIPHERALS, trials=TRIALS,
                   start_warning=START_WARNING, end_warning=END_WARNING,

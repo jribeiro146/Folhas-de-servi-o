@@ -157,7 +157,8 @@
         signatureNotice.textContent = affected.map(site => {
             const roles = ['technician', 'customer'].filter(role => requiresSignature(site, role)).map(role => role === 'technician' ? 'técnico' : 'cliente');
             const verificationFailed = ['technician', 'customer'].some(role => requiresSignature(site, role) && site.signature_warnings?.[role] === 'verification_failed');
-            const reason = verificationFailed ? def.signature_verification_warning : 'Conteúdo alterado; recolha e guarde novamente as assinaturas.';
+            const verificationPending = ['technician', 'customer'].some(role => requiresSignature(site, role) && site.signature_warnings?.[role] === 'verification_pending');
+            const reason = verificationFailed ? def.signature_verification_warning : verificationPending ? def.signature_pending_warning : 'Conteúdo alterado; recolha e guarde novamente as assinaturas.';
             return `${site.location || `Local ${sites.indexOf(site) + 1}`}: assinatura do ${roles.join(' e do ')}. ${reason}`;
         }).join(' ');
     }
@@ -166,8 +167,8 @@
         for (const site of sites) {
             for (const role of ['technician', 'customer']) {
                 if (!model.signatureWaived(site, role, def) && !site.signatures?.[role]?.token &&
-                    site.signature_warnings?.[role] === 'verification_failed') {
-                    invalidatedSignatures.set(`${site.id}:${role}`, def.signature_verification_warning);
+                    ['verification_failed','verification_pending'].includes(site.signature_warnings?.[role])) {
+                    invalidatedSignatures.set(`${site.id}:${role}`, site.signature_warnings[role] === 'verification_pending' ? def.signature_pending_warning : def.signature_verification_warning);
                 }
             }
         }
@@ -495,6 +496,7 @@
         hydrate(document) {sites=structuredClone(document.maintenance_checklists||[]);signatureMessages.clear();restoreSignatureWarnings();validationVisible=false;active=0;loaded=true;common="";notice.textContent="";render();sync();},
         collect() {return structuredClone(sites);},
         verifyRecovery,
+        pendingRecovery: model.pendingRecovery,
         reconcileSignatures,
         async settleSignatures() {
             while(signatureJobs.size)await Promise.all(Array.from(signatureJobs.values(),job=>job.done));
