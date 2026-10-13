@@ -398,7 +398,7 @@ def test_admin_reports_expired_unconfirmed_commit_as_failure_before_sending(diag
     assert before["result"]["commit_guard_required"] is True
     job = login(app, oid=ADMIN_ID, email=admin_access.ADMIN_EMAIL).get("/api/admin/overview").get_json()["jobs"][0]
     assert job["error_code"] == "job_failed" and job["will_retry"] is False
-    assert job["can_retry"] is False and job["reconciliation_required"] is True
+    assert job["can_retry"] is True and job["reconciliation_required"] is False
     assert queue.status(item["id"]) == before
 
 

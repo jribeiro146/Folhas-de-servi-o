@@ -90,8 +90,9 @@ test("legacy uncertain mail only offers the supported indeterminate decision", a
     assert.equal(ui.get("admin-decision").value, "indeterminate");
 });
 
-test("known retryable failure has no reconciliation button", async () => {
-    const ui = await panel({jobs:[{id:"synthetic",kind:"remove_active",status:"failed",can_retry:true,
+for (const kind of ["remove_active", "archive_and_remove", "archive_and_mail_local"]) {
+test("known retryable failure has no reconciliation button: " + kind, async () => {
+    const ui = await panel({jobs:[{id:"synthetic",kind,status:"failed",can_retry:true,
         reconciliation_required:false,invalid_state:false}],decisions:[]});
     const texts = element => [element.textContent,...element.children.flatMap(texts)];
     assert.ok(texts(ui.get("admin-jobs")).includes("Repetir trabalho"));
@@ -101,3 +102,4 @@ test("known retryable failure has no reconciliation button", async () => {
     assert.equal(ui.requests.filter(x => x.method === "POST").length, 0);
     assert.equal(ui.get("admin-reconciliation-submit").disabled, true);
 });
+}

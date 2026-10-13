@@ -492,3 +492,104 @@ def test_missing_commit_with_uncertain_cancellation_still_allows_indeterminate(t
     decide(queue, job, "indeterminate")
     with pytest.raises(ValueError):
         queue.retry(job)
+
+
+def reconciliation_client(queue, root, monkeypatch):
+    import src.web.application as web
+    from src.services.editing_state_service import EditingStateService
+    monkeypatch.setattr(web, "AUTH_ENABLED", True)
+    monkeypatch.setattr(web, "ACTIVE_AUTH_PROVIDER", "microsoft")
+    class Auth:
+        def user_from_session(self, payload):
+            return SimpleNamespace(**payload) if payload else None
+    editing = EditingStateService(root / "admin-edits")
+    app = web.create_app(graph_sync_queue=queue, editing_state_service=editing, microsoft_auth_service=Auth())
+    return login(app, ADMIN.email), editing.repository
+
+
+@pytest.mark.parametrize("prefix", ["/api/admin/jobs/", "/api/graph/jobs/"])
+@pytest.mark.parametrize("kind,has_mail", [("remove_active", False), ("archive_and_remove", False),
+                                          ("archive_and_remove", True), ("archive_and_mail_local", True)])
+def test_http_retry_rechecks_missing_commit_without_external_effects(tmp_path, monkeypatch, kind, has_mail, prefix):
+    from tests.editing_evidence import committed_editing_repository
+    editing = committed_editing_repository(tmp_path)
+    with editing.transaction("document", lambda: {}) as state:
+        state["operations"]["finalize"]["status"] = "pending"
+    payload = {"_commit_guard": {"database": str(editing.database_path), "document_id": "document", "operation_id": "finalize"}}
+    if has_mail:
+        payload["mail"] = {"to": "customer@example.invalid"}
+    queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", auto_start=False)
+    monkeypatch.setattr(queue, "_execute", lambda *_args, **_kwargs: pytest.fail("Unconfirmed commit must not execute any effect"))
+    job = queue.enqueue(kind, payload)["id"]
+    with queue._connect() as db:
+        db.execute("UPDATE graph_sync_jobs SET updated_at=0,attempts=1 WHERE id=?", (job,))
+    queue.run_until_idle()
+    assert queue.status(job)["status"] == "failed"
+    assert queue.status(job)["result"]["commit_guard_required"] is True
+    client, audit = reconciliation_client(queue, tmp_path, monkeypatch)
+    view = client.get("/api/admin/overview").json["jobs"][0]
+    assert view["can_retry"] is True and view["reconciliation_required"] is False
+    assert client.get("/api/admin/jobs/" + job + "/reconciliation").json["reconciliation"]["allowed_decisions"] == []
+    reason = "Synthetic commit confirmation recheck"
+    response = client.post(prefix + job + "/retry", json={"reason": reason}, headers={"X-Admin-CSRF": "synthetic-csrf"})
+    assert response.status_code == 202, response.json
+    assert queue.status(job)["status"] == "held"
+    entries = audit.admin_history()
+    assert {entry["action"] for entry in entries} == {"retry_job_requested", "retry_job_accepted"}
+    assert len(entries) == 2 and all(entry["reason"] == reason and entry["target"] == job for entry in entries)
+    queue.run_until_idle()
+    assert queue.status(job)["status"] == "held"
+
+
+@pytest.mark.parametrize("prefix", ["/api/admin/jobs/", "/api/graph/jobs/"])
+@pytest.mark.parametrize("kind", ["archive_and_remove", "archive_and_mail_local"])
+@pytest.mark.parametrize("extra", [{"phase": "sending_mail"}, {"phase": "mail_unknown"}, {"invalid_state": True},
+                                   {"reconciliation_hold": True}, {"restore_uncertain": True}, {"migration_uncertain": True}])
+def test_http_commit_marker_never_overrides_uncertainty_or_invalid_state(tmp_path, monkeypatch, prefix, kind, extra):
+    queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", auto_start=False)
+    job = queue.enqueue(kind, {"mail": {"to": "customer@example.invalid"}})["id"]
+    with queue._connect() as db:
+        db.execute("UPDATE graph_sync_jobs SET status='failed',retryable=0,attempts=1,result_json=? WHERE id=?",
+                   (json.dumps({"commit_guard_required": True, **extra}), job))
+    before = persisted(queue)
+    client, audit = reconciliation_client(queue, tmp_path, monkeypatch)
+    view = client.get("/api/admin/overview").json["jobs"][0]
+    assert view["can_retry"] is False
+    assert client.get("/api/admin/jobs/" + job + "/reconciliation").json["reconciliation"]["allowed_decisions"] == ["indeterminate"]
+    response = client.post(prefix + job + "/retry", json={"reason": "Synthetic guard check"}, headers={"X-Admin-CSRF": "synthetic-csrf"})
+    assert response.status_code == 409
+    assert persisted(queue) == before and audit.admin_history() == []
+
+
+def test_local_mail_reconciled_429_can_retry_after_deadline_and_retains_bytes_on_400(tmp_path, monkeypatch):
+    from src.services.graph_mail_service import GraphMailError
+    pdf = tmp_path / "synthetic.pdf"
+    pdf.write_bytes(b"%PDF-synthetic")
+    mail = UnknownMail()
+    queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", mail_service=mail,
+                          local_pdf_service=SimpleNamespace(export_archive_pdf=lambda _path: pdf), auto_start=False)
+    job = queue.enqueue("archive_and_mail_local", {"archived_path": str(tmp_path / "synthetic.xlsx"),
+                        "mail": {"to": "customer@example.invalid", "subject": "Synthetic local mail"}})["id"]
+    queue.run_until_idle()
+    assert queue.status(job)["reconciliation_required"]
+    proof = evidence(queue, job, "rejected")
+    deadline = time.time() + 60
+    proof["record"].update(http_status=429, retry_not_before=deadline)
+    decide(queue, job, "rejected", proof)
+    client, _ = reconciliation_client(queue, tmp_path, monkeypatch)
+    retry_url = "/api/admin/jobs/" + job + "/retry"
+    request = {"json": {"reason": "Synthetic provider deadline passed"}, "headers": {"X-Admin-CSRF": "synthetic-csrf"}}
+    assert client.post(retry_url, **request).status_code == 409
+    def refuse(delivery, **kwargs):
+        mail.calls.append(delivery)
+        raise GraphMailError("Synthetic explicit HTTP 400 refusal")
+    monkeypatch.setattr(mail, "send_delivery", refuse)
+    monkeypatch.setattr(time, "time", lambda: deadline + 1)
+    assert client.post(retry_url, **request).status_code == 202
+    queue.run_until_idle()
+    assert len(mail.calls) == 2 and mail.calls[0].payload == mail.calls[1].payload
+    assert queue.status(job)["result"]["phase"] == "mail_rejected"
+    view = client.get("/api/admin/overview").json["jobs"][0]
+    assert view["can_retry"] is True and view["reconciliation_required"] is False
+    with queue._connect() as db:
+        assert db.execute("SELECT payload FROM graph_mail_messages WHERE job_id=?", (job,)).fetchone()[0] == mail.calls[0].payload

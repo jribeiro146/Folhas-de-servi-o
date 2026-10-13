@@ -99,6 +99,11 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
             has_mail = row["kind"] == "archive_and_mail_local" or bool(payload.get("mail"))
             if has_mail and mail.get("accepted") is not True and result.get("phase") not in ("generating_pdf", "pdf_ready", "mail_rejected"):
                 uncertain = True
+                if result.get("commit_guard_required") is True and not result.get("phase"):
+                    # Retry only re-enters held and checks the local commit.
+                    # Preserve independent uncertainty, including restore and
+                    # reconciliation holds; invalid state is refused below.
+                    uncertain = delivery_unknown
                 known_not_sent = (result.get("phase") in {
                     "message_ready", "removing_active", "active_removed", "mail_snapshot_invalid"
                 } or result.get("commit_guard_required") is True

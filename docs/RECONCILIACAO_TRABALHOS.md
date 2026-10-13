@@ -27,6 +27,15 @@ mesmo quando o trabalho tem email. Continua a usar a repetição/validação de 
 prevista. Se também houver prova de um efeito externo incerto, a nota mantém
 esse bloqueio adicional.
 
+No caso sem fase e com apenas `commit_guard_required`, o painel oferece
+«Repetir trabalho». As duas rotas de repetição (`/api/admin/jobs/<id>/retry` e
+`/api/graph/jobs/<id>/retry`) auditam o pedido e voltam a colocar o trabalho em
+`held`. O worker volta a ler a prova do commit; enquanto não estiver concluído,
+não executa efeitos externos. Isto também se aplica a trabalhos com email.
+Uma fase de envio incerto, retenção de restauro/migração/reconciliação ou estado
+inválido continua a impedir a repetição. Sem o marcador de falta de commit,
+mantém-se o tratamento conservador dos trabalhos sem fase.
+
 As decisões só estão disponíveis para efeitos incertos ou retenções existentes.
 Um arquivo sem email que falhou antes da publicação e um cancelamento recusado
 na verificação anterior ao PATCH não podem receber uma nova retenção por esta
@@ -222,3 +231,17 @@ M08. JavaScript final: 99 aprovados em 1,77 s (`p2-m08-js-final-r3.txt`), inclui
 submissão recusada no cliente e botão que permanece desativado sem decisões.
 Esta última alteração foi apenas JavaScript e validada depois dos testes Python;
 não houve mudança posterior no backend.
+
+Primeira ronda adicional autorizada por João: a incoerência entre fila e painel
+foi reproduzida em quatro falhas esperadas (dois tipos com email, duas rotas),
+com 28 controlos aprovados, em 11,86 s (`p2-m08-extra-reproduce-r1.txt`).
+A correção de `safe_job` aplica-se apenas a ausência de fase com o marcador
+booleano de falta de commit; mantém incertezas independentes e estado inválido.
+Validação final: **444 Python aprovados em 119,43 s**, nos mesmos 16 módulos
+enumerados acima (`p2-m08-extra-regression-r1.txt`), e **101 JavaScript aprovados
+em 1,37 s** (`p2-m08-extra-js-r1.txt`). Esta execução ampla terminou sem falhas.
+Os testes HTTP conferem as duas rotas, overview, auditoria e retorno a `held`
+sem execução, além de rejeitar envio incerto, restauro/migração, retenção de
+reconciliação e estado inválido. Incluem também email local reconciliado com
+429, repetição após o prazo e nova recusa conhecida, preservando os mesmos bytes.
+As ocorrências Windows anteriores mantêm-se registadas, sem causa atribuída.
