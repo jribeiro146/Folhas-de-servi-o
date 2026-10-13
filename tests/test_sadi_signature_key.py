@@ -121,6 +121,16 @@ def test_http_rotation_warns_on_reopen_and_validation_then_requires_recollection
     checked = client.post(f"/api/file/{draft.stem}/maintenance/validate", json={"document": document}).json
     assert all("chave de segurança" in error for error in checked["errors"])
     assert all(not any(site["signed"].values()) for site in checked["sites"])
+    assert all(not site["signatures"] and site["signature_warnings"] for site in checked["maintenance_checklists"])
+    metadata = metadata_from(client, draft, metadata)
+    autosaved = client.post(f"/api/file/{draft.stem}/autosave", json={"document": document, "_edit": metadata})
+    assert autosaved.status_code == 200, autosaved.json
+    assert all(not site["signatures"] and site["signature_warnings"]
+               for site in autosaved.json["editing"]["server_document"]["maintenance_checklists"])
+    assert {path: path.read_bytes() for path in private_before} == private_before
+    assert not list((root / "private" / "sadi").rglob("*.pdf"))
+    reopened = client.get(f"/api/file/{draft.stem}").json["document"]
+    assert all(not site["signatures"] and site["signature_warnings"] for site in reopened["maintenance_checklists"])
     metadata = metadata_from(client, draft, metadata)
     blocked = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
     assert blocked.status_code == 400, blocked.json

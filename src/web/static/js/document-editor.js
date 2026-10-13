@@ -2033,6 +2033,8 @@ document.addEventListener("DOMContentLoaded", () => {
     window.__FILES_EDITOR__ = {
         collectFormData,
         populateForm,
+        verifyRecovery: payload => window.MaintenanceEditor?.verifyRecovery(payload) || payload,
+        reconcileSignatures: (submitted, verified) => window.MaintenanceEditor?.reconcileSignatures(submitted, verified),
         showToast,
         openDocumentPreview,
         hasPendingPhotoChanges,

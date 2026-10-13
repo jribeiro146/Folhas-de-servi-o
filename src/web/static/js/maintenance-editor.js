@@ -172,6 +172,32 @@
             }
         }
     }
+    async function verifyRecovery(payload) {
+        if (!config.selectedFileIsDraft || !payload.maintenance_checklists?.length) return payload;
+        const response = await fetch(`/api/file/${encodeURIComponent(config.selectedFileName)}/maintenance/validate`, {
+            method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({document:payload})
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success || !Array.isArray(result.maintenance_checklists)) {
+            throw new Error(result.error || 'Não foi possível verificar as assinaturas recuperadas. Tente novamente com ligação.');
+        }
+        // Verify the actual local candidate, not another stored version: a newly
+        // collected, valid signature may exist only in this device's recovery.
+        return {...payload, maintenance_checklists:result.maintenance_checklists};
+    }
+    function reconcileSignatures(submitted, verified) {
+        const removed = model.reconcileSignatures(sites, submitted?.maintenance_checklists, verified?.maintenance_checklists);
+        for (const {siteId, role} of removed) {
+            invalidatedSignatures.set(`${siteId}:${role}`, def.signature_verification_warning);
+            signatureMessages.delete(`${siteId}:${role}`);
+            if (current()?.id === siteId && !current().signature_drafts?.[role]?.image) {
+                const canvas = host.querySelector(`[data-mc-sign-canvas="${role}"]`);
+                canvas?.getContext('2d').clearRect(0,0,canvas.width,canvas.height);
+            }
+        }
+        if (removed.length) renderStatus();
+        return removed.length;
+    }
     function renderValidationSummary() {
         if (!validationSummary) return;
         validationSummary.hidden = !validationVisible;
@@ -468,6 +494,8 @@
         },
         hydrate(document) {sites=structuredClone(document.maintenance_checklists||[]);signatureMessages.clear();restoreSignatureWarnings();validationVisible=false;active=0;loaded=true;common="";notice.textContent="";render();sync();},
         collect() {return structuredClone(sites);},
+        verifyRecovery,
+        reconcileSignatures,
         async settleSignatures() {
             while(signatureJobs.size)await Promise.all(Array.from(signatureJobs.values(),job=>job.done));
         },

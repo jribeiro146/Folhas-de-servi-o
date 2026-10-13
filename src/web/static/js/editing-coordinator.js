@@ -430,8 +430,10 @@ const startEditingCoordinator = () => {
             setCommitActionsEnabled(true);
             if (pendingAutosave?.key === requestState.key) pendingAutosave = null;
 
+            const unchanged = JSON.stringify(editor.collectFormData()) === requestState.serialized;
+            editor.reconcileSignatures?.(payload, serverPayload);
             const currentPayload = editor.collectFormData();
-            if (JSON.stringify(currentPayload) === requestState.serialized) {
+            if (unchanged) {
                 const attachmentsPending = Boolean(editor.hasPendingPhotoChanges?.());
                 dirty = attachmentsPending;
                 window.clearTimeout(localSaveTimer);
@@ -545,6 +547,12 @@ const startEditingCoordinator = () => {
             try {
                 const result = await loadBootstrap();
                 if (revoked) return false;
+                const verifiedLocal = editor.verifyRecovery ? await editor.verifyRecovery(localPayload) : localPayload;
+                if (revoked) return false;
+                const rejectedSignatures = editor.reconcileSignatures?.(localPayload, verifiedLocal);
+                // Keep the conflict choice and future autosaves free of rejected
+                // proofs, while retaining all edits made before suspension.
+                localPayload.maintenance_checklists = verifiedLocal.maintenance_checklists;
                 const resumedEditing = { ...(result.editing || {}) };
                 const remotePayload = result.document || result.source_document || {};
                 const revisionChanged = Number(resumedEditing.revision || 1) !== previousRevision;
@@ -555,6 +563,7 @@ const startEditingCoordinator = () => {
                 serverPayload = resumedEditing.server_document || remotePayload;
                 sourceSignatures = result.signatures || sourceSignatures;
                 sourcePhotos = result.photos || sourcePhotos;
+                if (rejectedSignatures) await persistLocalRecovery({ force:true });
 
                 if (!sessionToken || !editing.document_id) {
                     throw new Error("Não foi possível retomar a sessão de edição.");
@@ -614,7 +623,10 @@ const startEditingCoordinator = () => {
         const localRecoveryPromise = readLatestRecoveryForFile().catch(() => null);
         try {
             const result = await loadBootstrap();
-            const localRecovery = await localRecoveryPromise;
+            let localRecovery = await localRecoveryPromise;
+            if (localRecovery?.payload && editor.verifyRecovery) {
+                localRecovery = {...localRecovery, payload:await editor.verifyRecovery(localRecovery.payload)};
+            }
             if (revoked) return;
             editing = { ...(result.editing || {}) };
             sessionToken = result.editing?.lease?.token || "";
@@ -660,6 +672,7 @@ const startEditingCoordinator = () => {
             }
 
             applyPayload(initialPayload, initialSignatures, { shouldSave });
+            if (localRecovery?.payload === initialPayload) await persistLocalRecovery({ force:true });
             initialized = true;
             setFormReadOnly(otherTabActive, otherTabActive ? "outra aba deste técnico" : "");
             syncCommitActions();
@@ -719,11 +732,20 @@ const startEditingCoordinator = () => {
     });
 
     restoreRecoveryButton?.addEventListener("click", async () => {
+        if (revoked) return;
         const action = pendingPanelAction;
         if (!action) return hideRecoveryPanel();
         if (action.kind === "conflict" && action.localRecord?.payload) {
+            let payload;
+            try {
+                payload = editor.verifyRecovery ? await editor.verifyRecovery(action.localRecord.payload) : action.localRecord.payload;
+            } catch (error) {
+                showToast(error.message, "error");
+                return; // Keep the conflict and original recovery for another attempt.
+            }
+            if (revoked || pendingPanelAction !== action) return;
             resumeConflictPending = false;
-            applyPayload(action.localRecord.payload, action.localRecord.payload, { shouldSave: true });
+            applyPayload(payload, payload, { shouldSave: true });
             hideRecoveryPanel();
             await persistLocalRecovery({ force: true });
             await runAutosave();

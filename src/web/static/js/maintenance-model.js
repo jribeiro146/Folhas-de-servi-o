@@ -60,7 +60,30 @@
         }
         return signatureErrors(site, definition).length ? "Por assinar" : "Completa";
     }
-    const api = { applicable, validateSite, validateSiteDetails, status, signatureWaived, signatureErrors, signatureIssues };
+    function reconcileSignatures(currentSites, submittedSites, verifiedSites) {
+        const removed = [];
+        for (const site of currentSites || []) {
+            const submitted = (submittedSites || []).find(item => item.id === site.id);
+            const verified = (verifiedSites || []).find(item => item.id === site.id);
+            if (!submitted || !verified) continue;
+            for (const role of ['technician', 'customer']) {
+                // A late response only rejects the exact proof submitted. Never
+                // overwrite a newly collected signature or unrelated local edits.
+                if (!submitted.signatures?.[role] || verified.signatures?.[role] ||
+                    verified.signature_warnings?.[role] !== 'verification_failed' ||
+                    JSON.stringify(site.signatures?.[role]) !== JSON.stringify(submitted.signatures[role])) continue;
+                delete site.signatures[role];
+                if (JSON.stringify(site.signature_drafts?.[role]) === JSON.stringify(submitted.signature_drafts?.[role])) {
+                    delete site.signature_drafts?.[role];
+                }
+                site.signature_warnings ||= {};
+                site.signature_warnings[role] = 'verification_failed';
+                removed.push({siteId:site.id, role});
+            }
+        }
+        return removed;
+    }
+    const api = { applicable, validateSite, validateSiteDetails, status, signatureWaived, signatureErrors, signatureIssues, reconcileSignatures };
     if (typeof module !== "undefined" && module.exports) module.exports = api;
     else root.MaintenanceModel = api;
 })(typeof window !== "undefined" ? window : globalThis);

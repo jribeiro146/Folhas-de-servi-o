@@ -989,7 +989,10 @@ def _create_app(
             return json_error("Crie primeiro um rascunho.", 409)
         received = request.get_json(silent=True) or {}
         document = normalize_document_for_file(received.get("document"), path)
-        return jsonify(success=True, errors=maintenance.document_errors(document, app.secret_key),
+        # Recovered browser drafts need the same HMAC normalization as a save,
+        # without overwriting either persisted version or accepting old ink.
+        return jsonify(success=True, maintenance_checklists=document["maintenance_checklists"],
+                       errors=maintenance.document_errors(document, app.secret_key),
                        sites=[{"id": site["id"], "errors": maintenance.site_errors(site),
                                "waived": {role: maintenance.signature_waived(site, role)
                                           for role in ("technician", "customer")},
