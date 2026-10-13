@@ -156,8 +156,21 @@
         signatureNotice.hidden = !affected.length;
         signatureNotice.textContent = affected.map(site => {
             const roles = ['technician', 'customer'].filter(role => requiresSignature(site, role)).map(role => role === 'technician' ? 'técnico' : 'cliente');
-            return `${site.location || `Local ${sites.indexOf(site) + 1}`}: conteúdo alterado; recolha e guarde novamente a assinatura do ${roles.join(' e do ')}.`;
+            const verificationFailed = ['technician', 'customer'].some(role => requiresSignature(site, role) && site.signature_warnings?.[role] === 'verification_failed');
+            const reason = verificationFailed ? def.signature_verification_warning : 'Conteúdo alterado; recolha e guarde novamente as assinaturas.';
+            return `${site.location || `Local ${sites.indexOf(site) + 1}`}: assinatura do ${roles.join(' e do ')}. ${reason}`;
         }).join(' ');
+    }
+    function restoreSignatureWarnings() {
+        invalidatedSignatures.clear();
+        for (const site of sites) {
+            for (const role of ['technician', 'customer']) {
+                if (!model.signatureWaived(site, role, def) && !site.signatures?.[role]?.token &&
+                    site.signature_warnings?.[role] === 'verification_failed') {
+                    invalidatedSignatures.set(`${site.id}:${role}`, def.signature_verification_warning);
+                }
+            }
+        }
     }
     function renderValidationSummary() {
         if (!validationSummary) return;
@@ -288,7 +301,7 @@
             {name:role === 'technician' ? site.technician || '' : '',date:today.toISOString().slice(0,10),image:''};
     }
     function signatureKey(site,role) {
-        const {signatures,signature_drafts,...content} = site;
+        const {signatures,signature_drafts,signature_warnings,...content} = site;
         const doc = documentData();
         return JSON.stringify([content,doc.customer_name,doc.service_number,model.applicable(doc),signatureInput(site,role)]);
     }
@@ -393,7 +406,7 @@
             const result=await response.json();
             if(!response.ok){window.__EDITING_COORDINATOR__?.handleConflict(result);throw new Error(result.error||'Não foi possível guardar a assinatura.');}
             if(!readOnly() && sites.includes(site) && signatureKey(site,role)===key){
-                site.signatures ||= {};site.signatures[role]=result.signature;delete site.signature_drafts?.[role];invalidatedSignatures.delete(jobKey);dirty();
+                site.signatures ||= {};site.signatures[role]=result.signature;delete site.signature_drafts?.[role];delete site.signature_warnings?.[role];invalidatedSignatures.delete(jobKey);dirty();
             }
         } catch(error){signatureMessages.set(jobKey,error.message);}
         finally {
@@ -453,7 +466,7 @@
             new MutationObserver(syncReadOnly).observe(form,{attributes:true,attributeFilter:["class"]});
             host.addEventListener('toggle',sizeTextLines,true);
         },
-        hydrate(document) {sites=structuredClone(document.maintenance_checklists||[]);signatureMessages.clear();invalidatedSignatures.clear();validationVisible=false;active=0;loaded=true;common="";notice.textContent="";render();sync();},
+        hydrate(document) {sites=structuredClone(document.maintenance_checklists||[]);signatureMessages.clear();restoreSignatureWarnings();validationVisible=false;active=0;loaded=true;common="";notice.textContent="";render();sync();},
         collect() {return structuredClone(sites);},
         async settleSignatures() {
             while(signatureJobs.size)await Promise.all(Array.from(signatureJobs.values(),job=>job.done));

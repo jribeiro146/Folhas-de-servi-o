@@ -68,6 +68,10 @@ PERIODS = {"monthly": "Mensal", "quarterly": "Trimestral", "half_yearly": "Semes
 SIGNATURE_EXCEPTIONS = {
     "customer": {"field": "customer_not_present", "label": "Cliente não presente na obra"},
 }
+SIGNATURE_VERIFICATION_WARNING = (
+    "Não foi possível validar a assinatura anterior. A chave de segurança da aplicação "
+    "pode ter mudado ou o conteúdo ter sido alterado. Recolha e guarde uma nova assinatura."
+)
 FIELDS = {
     "conventional": [("brand", "Marca", "text"), ("model", "Modelo", "text"), ("location", "Local da central", "text"), ("total", "N.º zonas total", "number"), ("used", "N.º zonas em uso", "number"), ("detectors", "N.º de detetores", "number"), ("buttons", "N.º de botoneiras", "number"), ("sirens", "N.º de sirenes", "number")],
     "addressable": [("brand", "Marca", "text"), ("model", "Modelo", "text"), ("location", "Local da central", "text"), ("total", "N.º loops central", "number"), ("used", "N.º loops em uso", "number")],
@@ -75,6 +79,7 @@ FIELDS = {
 }
 DEFINITION = dict(version=VERSION, groups=GROUPS, fields=FIELDS, periods=PERIODS,
                   signature_exceptions=SIGNATURE_EXCEPTIONS,
+                  signature_verification_warning=SIGNATURE_VERIFICATION_WARNING,
                   general=GENERAL, conventional=CONVENTIONAL, addressable=ADDRESSABLE,
                   repeater=REPEATER, peripherals=PERIPHERALS, trials=TRIALS,
                   start_warning=START_WARNING, end_warning=END_WARNING,
@@ -173,6 +178,14 @@ def normalize_sites(value):
             sig = signatures.get(role)
             if isinstance(sig, dict) and not signature_waived(site, role):
                 site["signatures"][role] = {key: text(sig.get(key)) for key in ("name", "date", "image", "token")}
+        # Bounded presentation metadata survives a draft round trip. It is never
+        # proof of validity, and no key, token or signature image is copied here.
+        warnings = raw.get("signature_warnings")
+        site["signature_warnings"] = {
+            role: "verification_failed" for role in ("technician", "customer")
+            if isinstance(warnings, dict) and warnings.get(role) == "verification_failed"
+            and not signature_waived(site, role)
+        }
         # Unsigned captures survive draft saves but never count as a signature or appear in PDFs.
         drafts = raw.get("signature_drafts")
         site["signature_drafts"] = {}
@@ -327,6 +340,9 @@ def signature_content(document, site):
     content = deepcopy(site)
     content.pop("signatures", None)
     content.pop("signature_drafts", None)
+    # UI warnings must not change the historical sadi-2 HMAC payload or
+    # invalidate another role when one signature is rejected or recollected.
+    content.pop("signature_warnings", None)
     # Empty optional additions do not invalidate an existing sadi-2 signature.
     for key in ("photos", "final_observations", *(item["field"] for item in SIGNATURE_EXCEPTIONS.values())):
         if not content.get(key):
@@ -355,7 +371,8 @@ def signature_valid(secret, document, site, role):
         return False
     signature = site["signatures"].get(role, {})
     token = signature.get("token", "")
-    return bool(token and hmac.compare_digest(token, signature_token(secret, document, site, role, signature)))
+    return bool(isinstance(token, str) and re.fullmatch(r"[a-f0-9]{64}", token) and
+                hmac.compare_digest(token, signature_token(secret, document, site, role, signature)))
 
 
 def make_signature(secret, document, site, role, name, signed_date, image):
@@ -388,9 +405,20 @@ def make_signature(secret, document, site, role, name, signed_date, image):
 
 def clear_invalid_signatures(document, secret):
     for site in document.get("maintenance_checklists", []):
+        warnings = site.setdefault("signature_warnings", {})
         for role in list(site["signatures"]):
             if not signature_valid(secret, document, site, role):
                 del site["signatures"][role]
+                # An HMAC mismatch does not reveal whether the key or content
+                # changed. Keep that distinction honest, and never re-sign old ink.
+                site.get("signature_drafts", {}).pop(role, None)
+                if not signature_waived(site, role):
+                    warnings[role] = "verification_failed"
+            else:
+                warnings.pop(role, None)
+        for role in ("technician", "customer"):
+            if signature_waived(site, role):
+                warnings.pop(role, None)
 
 
 def document_errors(document, secret, signatures=True):
@@ -409,5 +437,7 @@ def document_errors(document, secret, signatures=True):
         if signatures:
             for role, label in (("technician", "técnico"), ("customer", "cliente")):
                 if not signature_waived(site, role) and not signature_valid(secret, document, site, role):
-                    errors.append(f"{prefix}: assinatura do {label}")
+                    detail = (": " + SIGNATURE_VERIFICATION_WARNING
+                              if site.get("signature_warnings", {}).get(role) == "verification_failed" else "")
+                    errors.append(f"{prefix}: assinatura do {label}{detail}")
     return errors
