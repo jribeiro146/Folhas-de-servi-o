@@ -386,6 +386,7 @@ def _create_app(
             "/service-worker.js",
             "/static/js/field-app.js",
             "/static/js/mail-job-monitor.js",
+            "/static/js/mail-followup.js",
             "/static/js/document-editor.js",
             "/static/js/editing-coordinator.js",
             "/static/css/auth.css",
@@ -464,6 +465,17 @@ def _create_app(
             return microsoft_job_owner(g.get("current_user"))
         # Local/demo jobs belong to the existing signed editing session too.
         return normalize_job_owner({"provider": "local", "id": current_editor_identity().id})
+
+    def mail_monitor_scope():
+        owner = current_job_owner()
+        if owner is None:
+            return None
+        nonce = session.get("mail_monitor_session")
+        if not isinstance(nonce, str) or len(nonce) != 64:
+            nonce = session["mail_monitor_session"] = secrets.token_hex(32)
+        # Opaque UI scope only, never authorization. Login/logout clears the
+        # signed session; including the principal also fences account changes.
+        return hashlib.sha256((nonce + json.dumps(owner, sort_keys=True)).encode()).hexdigest()
 
     def enqueue_owned_job(kind, payload, *, job_id):
         # Ownership is server metadata. Never accept a document's supplied owner.
@@ -1165,6 +1177,7 @@ def _create_app(
             technician_required_fields=TECHNICIAN_REQUIRED_FIELDS,
             signature_required_fields=SIGNATURE_REQUIRED_FIELDS,
             mail_enabled=mail_service is not None,
+            mail_monitor_scope=mail_monitor_scope(),
             graph_enabled=graph_service is not None,
             mail_test_recipient=(
                 mail_service.config.test_recipient if mail_service is not None else ""
@@ -1351,8 +1364,22 @@ def _create_app(
         status = schedule_graph_refresh(force=True)
         return jsonify({"success": True, "refresh": status}), 202
 
+    @app.get("/api/graph/monitor-context")
+    def mail_monitor_context():
+        scope = mail_monitor_scope()
+        if scope is None:
+            return json_error("Sessão indisponível para acompanhamento.", 403)
+        return jsonify(success=True, scope=scope)
+
     @app.route("/api/graph/jobs/<job_id>")
     def graph_job_status(job_id: str):
+        supplied_scope = request.headers.get("X-Mail-Monitor-Scope")
+        if supplied_scope is not None:
+            expected_scope = mail_monitor_scope()
+            if (not re.fullmatch(r"[a-f0-9]{64}", supplied_scope) or not expected_scope
+                    or not secrets.compare_digest(supplied_scope, expected_scope)):
+                return json_error("A sessão de acompanhamento mudou. Atualize a página.", 403,
+                                  code="mail_monitor_session_changed")
         if graph_sync_queue is None:
             return json_error("Backend Graph não está ativo.", 400)
         job = graph_sync_queue.status(job_id)

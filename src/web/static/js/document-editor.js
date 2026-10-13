@@ -1548,6 +1548,11 @@ document.addEventListener("DOMContentLoaded", () => {
                 throw new Error((result.error || "Falha ao fechar a folha.") + suffix);
             }
 
+            // Persist the reference before any asynchronous local bookkeeping.
+            // A reload resumes GET only; it never repeats this send POST.
+            if (result.email_status === "pending" && result.graph_job_id) {
+                window.SensorpointMailFollowup?.remember(result.graph_job_id);
+            }
             commitPhotoState();
             await window.__EDITING_COORDINATOR__?.markCommitted(result, "send");
             if (result.maintenance_bundle_url) {
@@ -1566,7 +1571,8 @@ document.addEventListener("DOMContentLoaded", () => {
                         "A folha foi arquivada, mas o monitor do envio de e-mail não está disponível."
                     );
                 }
-                await monitor.waitForMailJob(result.graph_job_id, {
+                const waitForJob = window.SensorpointMailFollowup?.waitForMailJob || monitor.waitForMailJob;
+                await waitForJob(result.graph_job_id, {
                     timeoutMs: mailJobMonitorTimeoutMs
                 });
                 navigateAfterCommit("/", "Folha arquivada e e-mail aceite para envio pela Microsoft.");

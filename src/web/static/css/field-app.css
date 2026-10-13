@@ -1203,6 +1203,19 @@ body.has-active-file .brand-logo {
         --sidebar-width: clamp(320px, 22vw, 440px);
     }
 }
+.mail-followup {
+    padding: 16px 18px;
+    border: 1px solid #c5d7e7;
+    border-radius: 14px;
+    background: #f4f8fc;
+    color: #22384c;
+    overflow-wrap: anywhere;
+}
+
+.mail-followup[hidden] { display: none; }
+.mail-followup p { margin: 8px 0; }
+.mail-followup button { margin: 4px 8px 4px 0; }
+
 .mail-test-banner {
     display: flex;
     align-items: center;

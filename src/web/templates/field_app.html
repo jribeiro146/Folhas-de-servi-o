@@ -180,6 +180,8 @@
             </section>
             {% endif %}
 
+            <section id="mail-followup" class="mail-followup" hidden aria-live="polite"></section>
+
             <section id="confirm-panel" class="confirm-panel" hidden aria-live="polite">
                 <div class="confirm-panel-copy">
                     <p class="eyebrow" id="confirm-eyebrow">Confirmar ação</p>
@@ -646,6 +648,7 @@
             maintenanceEnabled: {{ maintenance_enabled_for_user | tojson }},
             maintenanceDefinition: {{ maintenance_definition | tojson }},
             mailEnabled: {{ mail_enabled | tojson }},
+            mailMonitorScope: {{ mail_monitor_scope | tojson }},
             mailTestRecipient: {{ mail_test_recipient | tojson }},
             mailJobStaleSeconds: {{ mail_job_stale_seconds | tojson }},
             teamsEnabled: {{ teams_enabled | tojson }},
@@ -666,6 +669,7 @@
         };
     </script>
     <script src="{{ url_for('static', filename='js/mail-job-monitor.js', v=asset_version) }}"></script>
+    <script src="{{ url_for('static', filename='js/mail-followup.js', v=asset_version) }}"></script>
     <script src="{{ url_for('static', filename='js/document-validation.js', v=asset_version) }}"></script>
     {% if maintenance_enabled_for_user %}
     <script src="{{ url_for('static', filename='js/maintenance-model.js', v=asset_version) }}"></script>
