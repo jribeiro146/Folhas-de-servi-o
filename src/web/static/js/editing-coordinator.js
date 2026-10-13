@@ -218,7 +218,9 @@ const startEditingCoordinator = () => {
     };
 
     const persistLocalRecovery = async ({ announce = false, force = false } = {}) => {
-        if ((!dirty && !force) || !editing.document_id) return null;
+        // All tabs share this record. A read-only observer must never replace
+        // the active editor's newer recovery, including on pagehide.
+        if (otherTabActive || (!dirty && !force) || !editing.document_id) return null;
         try {
             const record = {
                 key: recoveryKey(),
@@ -586,13 +588,12 @@ const startEditingCoordinator = () => {
                 serverPayload = resumedEditing.server_document || remotePayload;
                 sourceSignatures = result.signatures || sourceSignatures;
                 sourcePhotos = result.photos || sourcePhotos;
-                if (rejectedSignatures) await persistLocalRecovery({ force:true });
-
                 await checkOtherTab();
                 if (revoked) return false;
                 // Another tab may have started editing while this one could
                 // not verify its recovery. Never enable two editors on retry.
                 if (otherTabActive) return false;
+                if (rejectedSignatures) await persistLocalRecovery({ force:true });
                 editor.setVerificationPending?.(false);
                 if (revisionChanged && contentChanged) {
                     resumeConflictPending = true;
@@ -625,11 +626,15 @@ const startEditingCoordinator = () => {
                 if (revoked) return false;
                 const result = error.result || {};
                 if (result.code === "lease_revoked") { handleConflict(result); return false; }
+                editing = { ...editing, ...(result.editing || {}), revision:previousRevision };
+                if (error.status === 423) sessionToken = "";
                 // Preserve both the acquired reservation and the unmodified
                 // form. No autosave/close may publish it before verification.
                 setFormReadOnly(true, result.editing?.owner?.owner_name);
                 setCommitActionsEnabled(false);
-                showVerificationRetry("O formulário mais recente continua nesta página. Volte a tentar antes de editar.");
+                showVerificationRetry(error.status === 423
+                    ? `A reserva pertence a ${editing.owner?.owner_name || "outro técnico"}. O formulário mais recente continua nesta página; volte a tentar quando a outra sessão terminar.`
+                    : "O formulário mais recente continua nesta página. Volte a tentar antes de editar.");
                 showToast(error.message, "error");
                 return false;
             } finally {
@@ -696,7 +701,7 @@ const startEditingCoordinator = () => {
                     if (payloadHasSignatures(localRecovery.payload)) {
                         initialPayload = localRecovery.payload;
                         initialSignatures = localRecovery.payload;
-                    } else {
+                    } else if (!otherTabActive) {
                         deleteRecovery(localRecovery.key).catch(() => {});
                     }
                 } else if (
@@ -822,7 +827,7 @@ const startEditingCoordinator = () => {
         sessionToken = "";
         setCommitActionsEnabled(false);
         const payload = JSON.stringify({
-            document: dirty && !initialRecoveryPending && !resumeSnapshot ? {
+            document: dirty && !otherTabActive && !initialRecoveryPending && !resumeSnapshot ? {
                 ...editor.collectFormData(),
                 "Assinatura Cliente": "",
                 "Assinatura Técnico": "",
@@ -946,6 +951,11 @@ const startEditingCoordinator = () => {
             }
             if (message.type === "closing" && otherTabActive && sessionToken) {
                 otherTabActive = false;
+                if (initialRecoveryPending) {
+                    setFormReadOnly(true);
+                    showVerificationRetry("A cópia original deste dispositivo continua guardada. Volte a tentar antes de editar.");
+                    return;
+                }
                 if (resumeSnapshot) { resumeEditingSession(); return; }
                 setFormReadOnly(false);
                 syncCommitActions();

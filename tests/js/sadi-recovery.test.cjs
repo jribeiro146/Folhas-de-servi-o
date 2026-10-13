@@ -73,8 +73,8 @@ function broadcastBus() {
     };
 }
 
-function harness(t, {local, remote, failVerification=false, failBootstrap=false, deferSave=false, BroadcastChannel}) {
-    const records=new Map();
+function harness(t, {local, remote, failVerification=false, failBootstrap=false, deferSave=false, BroadcastChannel,
+    records=new Map(), deferVerification=false}) {
     if(local)records.set('user:doc',{key:'user:doc',userId:'user',fileName:'synthetic-draft',documentId:'doc',
         baseRevision:1,updatedAt:Date.now(),payload:structuredClone(local)});
     const elements=new Map(), listeners=new Map(), timers=new Set(), intervals=new Map(), beacons=[];
@@ -85,18 +85,22 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
             addEventListener(name,fn){this.events.set(name,fn);},querySelectorAll:()=>[]});
         return elements.get(id);
     };
-    let payload={}, pendingSave, saveCount=0, verifyCount=0, heartbeatRequired=false, revision=1;
+    let payload={}, pendingSave, pendingVerification, saveCount=0, verifyCount=0, heartbeatRequired=false, revision=1, leaseOwner='';
     const reply=value=>({ok:true,status:200,json:async()=>value});
     const fetch=async (url, options) => {
         if(url.includes('/bootstrap?')) {
             if(failBootstrap)throw new Error('synthetic bootstrap network failure');
+            if(leaseOwner)return {ok:false,status:423,json:async()=>({success:false,code:'lease_conflict',
+                editing:{revision,owner:{owner_name:leaseOwner}}})};
             return reply({success:true,is_draft:true,document:remote,
                 editing:{document_id:'doc',revision,server_document:remote,lease:{token:'synthetic-lease'}}});
         }
         if(url.endsWith('/maintenance/validate')) {
             verifyCount++;
             if(failVerification)throw new Error('synthetic network failure');
-            return reply({success:true,maintenance_checklists:normalize(JSON.parse(options.body).document).maintenance_checklists});
+            const value=reply({success:true,maintenance_checklists:normalize(JSON.parse(options.body).document).maintenance_checklists});
+            if(deferVerification)return new Promise(resolve=>{pendingVerification=()=>{pendingVerification=null;resolve(value);};});
+            return value;
         }
         if(url.endsWith('/lease/heartbeat'))return heartbeatRequired
             ? {ok:false,status:409,json:async()=>({success:false,code:'lease_required',editing:{revision}})}
@@ -138,11 +142,14 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
         sessionStorage:{getItem:()=>null,setItem(){}},setTimeout,clearTimeout});
     t.after(()=>{for(const timer of timers)clearTimeout(timer);});
     return {records,element,beacons,notice:signatureNotice,coordinator:window.__EDITING_COORDINATOR__,
+        booting:()=>document.body.classList.contains('editor-booting'),
         payload:()=>payload,setPayload:value=>{payload=structuredClone(value);refresh();},
         saveCount:()=>saveCount,verifyCount:()=>verifyCount,finishSave:()=>pendingSave?.(),pendingSave:()=>Boolean(pendingSave),listeners,
+        finishVerification:()=>pendingVerification?.(),pendingVerification:()=>Boolean(pendingVerification),
         failVerification:()=>{failVerification=true;},
+        denyLease:owner=>{leaseOwner=owner;},
         requireLease:(remoteRevision=revision)=>{heartbeatRequired=true;revision=remoteRevision;return intervals.get(15000)();},
-        recoverNetwork:()=>{failVerification=false;failBootstrap=false;heartbeatRequired=false;}};
+        recoverNetwork:()=>{failVerification=false;failBootstrap=false;heartbeatRequired=false;leaseOwner='';}};
 }
 
 test('IndexedDB recovery is verified before hydration; rejected proofs never return to the editor or recovery',async t=>{
@@ -332,6 +339,82 @@ for(const stage of ['initial','resume'])test(`${stage} verification failure allo
     await waitFor(()=>first.element('btn-save-draft').disabled===false);
     assert.equal(first.element('service-form').classList.contains('is-readonly'),false);
     assert.equal(second.element('btn-save-draft').disabled,true);
+});
+
+test('three tabs restore the failed-initial-recovery retry after the editor closes',async t=>{
+    const BroadcastChannel=broadcastBus(), remote=signed('fresh-valid'), records=new Map();
+    const first=harness(t,{local:remote,remote,records,BroadcastChannel,failVerification:true});
+    await waitFor(()=>first.element('btn-retry-lease').hidden===false);
+    const second=harness(t,{remote,records,BroadcastChannel});
+    await waitFor(()=>second.element('btn-save-draft').disabled===false);
+    const third=harness(t,{remote,records,BroadcastChannel});
+    await waitFor(()=>!third.booting() && third.element('autosave-status').dataset.state==='conflict');
+    await waitFor(()=>first.element('btn-retry-lease').hidden===true);
+    third.listeners.get('pagehide')();
+    second.listeners.get('pagehide')();
+    await waitFor(()=>first.element('btn-retry-lease').hidden===false);
+    assert.equal(first.element('service-form').classList.contains('is-readonly'),true);
+    assert.equal(first.element('btn-save-draft').disabled,true);
+    assert.match(first.element('autosave-status').textContent,/Recuperação por confirmar/);
+    first.recoverNetwork();
+    await first.element('btn-retry-lease').events.get('click')();
+    assert.equal(first.element('btn-save-draft').disabled,false);
+    assert.equal(first.element('service-form').classList.contains('is-readonly'),false);
+});
+
+test('a read-only tab finishing deferred verification cannot overwrite the active tab shared recovery',async t=>{
+    const BroadcastChannel=broadcastBus(), remote=signed('fresh-valid'), records=new Map();
+    const local=structuredClone(remote);local.observations='cópia local anterior às últimas edições';
+    const editor=harness(t,{local,remote,records,BroadcastChannel,deferSave:true});
+    await waitFor(()=>editor.element('btn-save-draft').disabled===false);
+    const observer=harness(t,{remote,records,BroadcastChannel,deferVerification:true});
+    await waitFor(observer.pendingVerification);
+    const latest=structuredClone(editor.payload());latest.observations='alterações novas da aba editora';
+    editor.setPayload(latest);editor.coordinator.markDirty();
+    await waitFor(()=>records.get('user:doc').payload.observations===latest.observations);
+    const before=structuredClone(records.get('user:doc'));
+    observer.finishVerification();
+    // Wait for initialize, not just the immediate BroadcastChannel handler.
+    // The editor's server request remains deferred.
+    await waitFor(()=>!observer.booting());
+    assert.equal(observer.element('btn-save-draft').disabled,true);
+    assert.deepEqual(records.get('user:doc'),before);
+    assert.equal(observer.coordinator.isDirty(),true);
+    observer.listeners.get('pagehide')();
+    assert.equal(JSON.parse(await observer.beacons[0].body.text()).document,null);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(records.get('user:doc'),before);
+    assert.equal(editor.element('btn-save-draft').disabled,false);
+});
+
+test('resume denied by another lease stays read-only, shows the owner and allows explicit retry',async t=>{
+    const app=harness(t,{remote:signed('fresh-valid')});
+    await waitFor(()=>app.element('btn-save-draft').disabled===false);
+    app.listeners.get('freeze')();app.denyLease('Técnico fictício B');app.listeners.get('resume')();
+    await waitFor(()=>app.element('btn-retry-lease').hidden===false);
+    assert.equal(app.element('service-form').classList.contains('is-readonly'),true);
+    assert.equal(app.element('btn-save-draft').disabled,true);
+    assert.match(app.element('editing-lock-message').textContent,/Técnico fictício B/);
+    assert.equal(app.saveCount(),0);
+    const before=app.beacons.length;
+    app.listeners.get('pagehide')();
+    assert.equal(app.beacons.length,before);
+    app.recoverNetwork();await app.element('btn-retry-lease').events.get('click')();
+    assert.equal(app.element('btn-save-draft').disabled,false);
+});
+
+test('lease-required heartbeat during initial verification failure retries once and keeps original recovery',async t=>{
+    const local=signed('old');
+    const app=harness(t,{local,remote:normalize(local),failVerification:true});
+    await waitFor(()=>!app.booting());
+    const before=structuredClone(app.records.get('user:doc'));
+    assert.equal(app.verifyCount(),1);
+    await app.requireLease();
+    await waitFor(()=>app.verifyCount()===2 && !app.booting());
+    assert.equal(app.element('service-form').classList.contains('is-readonly'),true);
+    assert.equal(app.element('btn-retry-lease').hidden,false);
+    assert.deepEqual(app.records.get('user:doc'),before);
+    assert.equal(app.saveCount(),0);
 });
 
 test('late rejection never erases a new unsigned capture or an unrelated site',()=>{
