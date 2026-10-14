@@ -134,6 +134,8 @@ def web(root):
     original_publish = FinalizationService.publish
     def publish(self, *args):
         result = original_publish(self, *args)
+        if fault(root, 'crash-after-finalization-publish'):
+            os._exit(74)
         if fault(root, 'after-finalization-publish'):
             raise OSError('Synthetic interruption after archive publication')
         return result
@@ -142,7 +144,10 @@ def web(root):
     app = application.create_app(mail_service=mail, teams_notification_service=teams,
         local_pdf_service=pdf, graph_sync_queue=build_queue(root),
         microsoft_auth_service=MicrosoftAuthService(tenant_id=TENANT, client_id=TECH, client_secret='synthetic'))
-    server = make_server('127.0.0.1', 0, app, threaded=True)
+    port_file = root / 'web-port.txt'
+    port = int(port_file.read_text()) if port_file.exists() else 0
+    server = make_server('127.0.0.1', port, app, threaded=True)
+    port_file.write_text(str(server.server_port))
     (root / 'web-ready.json').write_text(json.dumps({'port':server.server_port, 'pid':os.getpid(),
         'cookie_name':app.config['SESSION_COOKIE_NAME']}))
     def stop_when_requested():

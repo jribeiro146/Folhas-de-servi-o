@@ -1455,15 +1455,21 @@ def _create_app(
             form_data, source_document, signatures = load_editor_state(path)
             diagnostic("editor_file_loaded", **file_fields(name))
             identity = current_editor_identity()
-            if file_service.is_draft_file(path):
-                editing = editing_state_service.acquire_lease(
-                    path, identity, client_id,
-                    allow_foreign_owner=can_edit_foreign_sadi_draft(path),
-                )
-            else:
-                editing = editing_state_service.acquire_private_workspace(
-                    path, identity, client_id
-                )
+            # Bootstrap already acquires a session. Enter the normal write
+            # guard first so an abandoned pending commit cannot block autosave
+            # after recovery; a live writer still refuses this acquisition.
+            document_id = resolve_editing_document_id(path, client_id)
+            with editing_state_service.operation_guard(document_id, identity,
+                    allow_foreign_owner=can_edit_foreign_sadi_draft(path)):
+                if file_service.is_draft_file(path):
+                    editing = editing_state_service.acquire_lease(
+                        path, identity, client_id,
+                        allow_foreign_owner=can_edit_foreign_sadi_draft(path),
+                    )
+                else:
+                    editing = editing_state_service.acquire_private_workspace(
+                        path, identity, client_id
+                    )
             server_document = editing.get("server_document")
             if isinstance(server_document, dict):
                 server_document = normalize_document_for_file(server_document, path)
@@ -1969,6 +1975,7 @@ def _create_app(
             prepared_photos = PhotoAttachmentService.prepare_uploads(photo_uploads)
             request_digest = hashlib.sha256(json.dumps({
                 "document": document_payload,
+                # Prepared names contain SHA256(bytes), not the upload's name.
                 "photos": sorted(photo.filename for photo in prepared_photos),
                 "removed_photos": sorted(set(removed_photo_ids)),
             }, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()

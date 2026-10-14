@@ -678,7 +678,7 @@ const startEditingCoordinator = () => {
         if (operation.status === "pending") {
             throw new Error("A gravação ainda está por confirmar. Volte a consultar; nenhum envio será repetido.");
         }
-        if (operation.status === "failed") {
+        if (["failed", "interrupted"].includes(operation.status)) {
             // A confirmed failed attempt may have an old prepared archive. The
             // next explicit save must capture the current form under a new key.
             operationKeys.delete(operation.kind);

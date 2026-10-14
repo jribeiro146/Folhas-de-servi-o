@@ -537,22 +537,40 @@ class EditingStateService:
 
     def recover_operation(self, document_id: str, idempotency_key: str, owner: dict) -> dict | None:
         """Read an owned receipt even after retirement; never create/refresh state."""
-        with self.repository._connect() as connection:
-            row = connection.execute('SELECT state_json FROM editing_states WHERE document_id=?',
-                                     (document_id,)).fetchone()
-        if row is None:
+        def read_owned():
+            with self.repository._connect() as connection:
+                row = connection.execute('SELECT state_json FROM editing_states WHERE document_id=?',
+                                         (document_id,)).fetchone()
+            if row is None:
+                return None
+            state = decode_editing_state(row['state_json'], document_id)
+            operation = state.get('operations', {}).get(idempotency_key)
+            if (not operation or operation.get('kind') != 'send' or not owner
+                    or operation.get('context', {}).get('recovery_owner') != owner):
+                return None
+            return operation
+        operation = read_owned()
+        if operation is None:
             return None
-        state = decode_editing_state(row['state_json'], document_id)
-        operation = state.get('operations', {}).get(idempotency_key)
-        if (not operation or operation.get('kind') != 'send' or not owner
-                or operation.get('context', {}).get('recovery_owner') != owner):
-            return None
+        interrupted = False
+        if operation['status'] == 'pending':
+            lock_id = hashlib.sha256(document_id.encode('utf-8')).hexdigest()
+            try:
+                with file_mutex(self.root / 'operation-locks' / lock_id):
+                    # Age alone cannot distinguish a slow writer from a dead
+                    # process. Re-read under the same OS lock as every commit.
+                    operation = read_owned()
+                    if operation is None:
+                        return None
+                    interrupted = operation['status'] == 'pending'
+            except FileMutexBusy:
+                pass
         # Only workflow routing metadata crosses this read boundary. No document,
         # path, lease, signatures, recipients or private observations are exposed.
         allowed = {'success', 'document_id', 'revision', 'etag', 'email_status',
                    'graph_job_id', 'publication_status', 'maintenance_bundle_url'}
         response = operation.get('response') or {}
-        return {'kind': operation['kind'], 'status': operation['status'],
+        return {'kind': operation['kind'], 'status': 'interrupted' if interrupted else operation['status'],
                 'result': {key: value for key, value in response.items() if key in allowed}}
 
     def finalizations_to_retire(self):

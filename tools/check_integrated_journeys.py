@@ -461,6 +461,40 @@ def main():
                 page.locator('#confirm-accept').click()
             assert not damaged.exists()
             passed('F01 damaged opaque reference does not block saving or cancelling a live draft')
+            ctx.close()
+            ctx = context()
+            page = ctx.new_page()
+            interrupted = files.create_draft_copy(sources[1], 'Processo interrompido')
+            DocumentDataService(interrupted).write(normalize_document_payload({
+                'customer_name':'Cliente fictício processo interrompido', 'customer_email':'customer@example.invalid',
+                'service_types':{'assistencia':True}, 'equipments':{'vss':True}, 'client_not_present':True,
+                'technician_records':[{'technician':'Técnico fictício','date':'2026-10-14',
+                                       'start_time':'09:00','end_time':'10:00'}]}))
+            open_draft(page, interrupted)
+            page.locator('#intervention-report').fill('Texto preservado após terminar abruptamente o processo web')
+            saved(page)
+            before_mails = sum(r['kind']=='mail' for r in effect_rows())
+            (root / 'fault-crash-after-finalization-publish').touch()
+            page.locator('#btn-save-send').click()
+            page.locator('#confirm-accept').click()
+            until(lambda:web.poll() is not None, 'Web process did not reach crash boundary', 45)
+            assert web.returncode == 74
+            (root / 'web-ready.json').unlink()
+            web = start('web')
+            restarted_web = ready('web-ready.json', web)
+            assert restarted_web['port'] == web_info['port']
+            page.reload()
+            expect(page.locator('#btn-save-send')).to_be_enabled()
+            expect(page.locator('#intervention-report')).to_have_value('Texto preservado após terminar abruptamente o processo web')
+            page.locator('#intervention-report').fill('Texto atualizado após recuperar o processo interrompido')
+            saved(page)
+            assert sum(r['kind']=='mail' for r in effect_rows()) == before_mails
+            page.locator('#btn-save-send').click()
+            page.locator('#confirm-accept').click()
+            page.wait_for_url(base+'/', timeout=45000)
+            assert sum(r['kind']=='mail' for r in effect_rows()) == before_mails + 1
+            assert not interrupted.exists()
+            passed('F01 killed web process releases OS lock; same tab reloads current form and explicit retry sends once')
             effects = effect_rows()
             assert errors == [] and blocked == [], (errors,blocked)
             report = {'status':'PASS','source':__import__('src.services.release_identity',fromlist=['get_release_info']).get_release_info(),
