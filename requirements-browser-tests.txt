@@ -1,3 +1,5 @@
 # Optional synthetic browser journeys, separate from production Docker/runtime.
 playwright==1.61.0
 pypdf==6.20.0
+# M18 reuses the isolated pytest SADI factory; Linux QA constraints may narrow this.
+pytest>=9.0.2,<10

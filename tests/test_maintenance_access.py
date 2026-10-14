@@ -24,6 +24,15 @@ import src.web.application as web
 @pytest.fixture
 def production_sadi(tmp_path, monkeypatch, request, verified_test_release):
     settings = getattr(request, "param", {})
+    return synthetic_production_sadi(tmp_path, monkeypatch, settings, verified_test_release)
+
+
+def synthetic_production_sadi(tmp_path, monkeypatch, settings, verified_test_release):
+    """Shared test-only factory; caller isolates storage/network before imports.
+
+    Optional renderer/mail/auth seams let the PDF matrix use real Chromium and
+    message preparation while retaining the same synthetic Graph and policy.
+    """
     monkeypatch.setenv("FS_ENVIRONMENT", settings.get("mode", "production"))
     monkeypatch.delenv("FS_TEST_SYNTHETIC", raising=False)
     flag = settings.get("flag")
@@ -74,6 +83,11 @@ def production_sadi(tmp_path, monkeypatch, request, verified_test_release):
             self.calls.append(("remove_active", name))
             return True
 
+        def export_archive_pdf(self, path):
+            pdf = pdf_service.export_archive_pdf(path)
+            self.calls.append(("export_pdf", path))
+            return pdf, pdf.name
+
     class Refresh:
         @staticmethod
         def request_refresh(**_kwargs):
@@ -82,8 +96,10 @@ def production_sadi(tmp_path, monkeypatch, request, verified_test_release):
     def render(_html, destination):
         destination.write_bytes(b"%PDF-1.4\nsynthetic SADI access test")
 
+    pdf_service = LocalPdfService(renderer=settings.get("renderer", render))
+    mail_service = settings.get("mail_service")
     graph = Graph()
-    queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", auto_start=False)
+    queue = GraphSyncQueue(graph, tmp_path / "queue.sqlite3", mail_service=mail_service, auto_start=False)
     app = web.create_app(
         release_root=verified_test_release,
         file_service=files,
@@ -92,8 +108,9 @@ def production_sadi(tmp_path, monkeypatch, request, verified_test_release):
         graph_sync_queue=queue,
         graph_refresh_coordinator=Refresh(),
         work_folder_service=object(),
-        microsoft_auth_service=Authentication(),
-        local_pdf_service=LocalPdfService(renderer=render),
+        microsoft_auth_service=settings.get("auth_service") or Authentication(),
+        local_pdf_service=pdf_service,
+        mail_service=mail_service,
     )
     app.extensions["test_graph_queue"] = queue
     assert not app.config["MAINTENANCE_DEMO"] and not app.config["SYNTHETIC_TEST_VERSION"]
@@ -373,7 +390,8 @@ def test_public_manifest_with_sadi_active_in_production(production_sadi, email):
     assert client.get("/service-worker.js").status_code == 200
 
 
-def test_reads_private_checklist_written_by_1ede4d8_without_migration(production_sadi):
+@pytest.mark.parametrize("allowed_email", ["jribeiro@sensorpoint.pt", "acarvalho@sensorpoint.pt"])
+def test_reads_private_checklist_written_by_1ede4d8_without_migration(production_sadi, allowed_email):
     _app, client, draft, edits, root = production_sadi
     fixture = Path(__file__).parent / "fixtures/sadi-private-1ede4d8.json"
     content = fixture.read_bytes()
@@ -399,7 +417,7 @@ def test_reads_private_checklist_written_by_1ede4d8_without_migration(production
             empty.chmod(0o600)
         assert private.read(empty_id) == []
     assert private.read(document_id) == expected
-    login(client, "jribeiro@sensorpoint.pt")
+    login(client, allowed_email)
     response = client.get(f"/api/file/{draft.stem}")
     assert response.status_code == 200
     assert expected[0]["location"] in json.dumps(response.get_json(), ensure_ascii=False)
