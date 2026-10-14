@@ -735,6 +735,11 @@ class GraphSyncQueue:
                 raise GraphMailError("O serviço de e-mail não está disponível para este trabalho.")
             delivery = self._load_mail_delivery(job_id, prior_result) if mail_payload else None
             if delivery is None:
+                if mail_payload:
+                    # Persist before the first upload: a failure/crash here has
+                    # not attempted mail. Missing legacy phases remain unknown;
+                    # never infer this checkpoint when merely inspecting a job.
+                    self._checkpoint_result(job_id, {"phase": "uploading_archive"})
                 uploaded = self.graph_service.upload_archive_bundle(archived_path)
                 if mail_payload:
                     self._checkpoint_result(job_id, {"phase": "generating_pdf"})

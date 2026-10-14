@@ -98,7 +98,7 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
             reported_uncertain = uncertain
             deadline = teams_retry_deadline(row["kind"], result)
             has_mail = row["kind"] == "archive_and_mail_local" or bool(payload.get("mail"))
-            if has_mail and mail.get("accepted") is not True and result.get("phase") not in ("generating_pdf", "pdf_ready", "mail_rejected"):
+            if has_mail and mail.get("accepted") is not True and result.get("phase") not in ("uploading_archive", "generating_pdf", "pdf_ready", "mail_rejected"):
                 uncertain = True
                 if result.get("commit_guard_required") is True and not result.get("phase"):
                     # Retry only re-enters held and checks the local commit.

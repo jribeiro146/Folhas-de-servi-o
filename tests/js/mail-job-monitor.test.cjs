@@ -14,6 +14,21 @@ test("an ambiguous send requires reconciliation instead of offering retry", asyn
     }), error => error.code === "mail_unknown" && error.job === job);
 });
 
+test("an exhausted archive upload reports failure before mail without claiming uncertainty or acceptance", async () => {
+    const job = { id: "synthetic-upload", status: "failed", will_retry: false,
+        reconciliation_required: false, result: { phase: "uploading_archive" } };
+    let requests = 0;
+    await assert.rejects(waitForMailJob(job.id, {
+        fetchFn: async (_url, options) => {
+            requests += 1;
+            assert.equal(options.method, undefined);
+            return { ok: true, json: async () => ({ success: true, job }) };
+        },
+        waitFn: async () => {},
+    }), error => error.code === "mail_failed" && /não foi enviado/i.test(error.message));
+    assert.equal(requests, 1);
+});
+
 test("migration quarantine keeps the unknown-send warning visible", async () => {
     const job = { id: "migrated", status: "failed", will_retry: false,
         reconciliation_required: true,
