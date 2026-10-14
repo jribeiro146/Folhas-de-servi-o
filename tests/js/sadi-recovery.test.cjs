@@ -64,17 +64,20 @@ function database(records) {
     }};
 }
 
-function broadcastBus() {
+function broadcastBus({dropClosing=false}={}) {
     const channels=new Set();
     return class {
         constructor() {channels.add(this);}
-        postMessage(data) {for(const channel of channels)if(channel!==this)setImmediate(()=>channel.onmessage?.({data:structuredClone(data)}));}
+        postMessage(data) {
+            if(dropClosing && data.type==='closing')return;
+            for(const channel of channels)if(channel!==this)setImmediate(()=>channel.onmessage?.({data:structuredClone(data)}));
+        }
         close() {channels.delete(this);}
     };
 }
 
 function harness(t, {local, remote, failVerification=false, failBootstrap=false, deferSave=false, BroadcastChannel,
-    records=new Map(), deferVerification=false}) {
+    records=new Map(), deferVerification=false, sharedServer=null}) {
     if(local)records.set('user:doc',{key:'user:doc',userId:'user',fileName:'synthetic-draft',documentId:'doc',
         baseRevision:1,updatedAt:Date.now(),payload:structuredClone(local)});
     const elements=new Map(), listeners=new Map(), timers=new Set(), intervals=new Map(), beacons=[];
@@ -92,8 +95,9 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
             if(failBootstrap)throw new Error('synthetic bootstrap network failure');
             if(leaseOwner)return {ok:false,status:423,json:async()=>({success:false,code:'lease_conflict',
                 editing:{revision,owner:{owner_name:leaseOwner}}})};
-            return reply({success:true,is_draft:true,document:remote,
-                editing:{document_id:'doc',revision,server_document:remote,lease:{token:'synthetic-lease'}}});
+            const document=structuredClone(sharedServer?.document || remote);
+            return reply({success:true,is_draft:true,document,
+                editing:{document_id:'doc',revision:sharedServer?.revision || revision,server_document:document,lease:{token:'synthetic-lease'}}});
         }
         if(url.endsWith('/maintenance/validate')) {
             verifyCount++;
@@ -107,8 +111,16 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
             : reply({success:true});
         assert.ok(url.endsWith('/autosave'),url);
         saveCount++;
-        const submitted=JSON.parse(options.body).document;
-        const value=reply({success:true,editing:{revision:2,server_document:normalize(submitted)}});
+        const request=JSON.parse(options.body), submitted=request.document;
+        if(sharedServer && request._edit.base_revision!==sharedServer.revision) {
+            sharedServer.conflicts++;
+            return {ok:false,status:409,json:async()=>({success:false,code:'revision_conflict',
+                editing:{revision:sharedServer.revision,server_document:structuredClone(sharedServer.document)}})};
+        }
+        if(sharedServer) {
+            sharedServer.document=normalize(submitted);sharedServer.revision++;sharedServer.accepted++;
+        }
+        const value=reply({success:true,editing:{revision:sharedServer?.revision || 2,server_document:normalize(submitted)}});
         if(deferSave)return new Promise(resolve=>{pendingSave=()=>resolve(value);});
         return value;
     };
@@ -317,9 +329,9 @@ test('closing failed initial verification only releases the reservation and reta
     assert.deepEqual(app.records.get('user:doc'),before);
 });
 
-for(const stage of ['initial','resume'])test(`${stage} verification failure allows a second tab to edit, but retry waits for that tab`,async t=>{
+for(const stage of ['initial','resume','bootstrap'])test(`${stage} verification failure allows a second tab to edit, but retry waits for that tab`,async t=>{
     const BroadcastChannel=broadcastBus(), remote=signed('fresh-valid');
-    const first=harness(t,{local:remote,remote,BroadcastChannel,failVerification:stage==='initial'});
+    const first=harness(t,{local:remote,remote,BroadcastChannel,failVerification:stage==='initial',failBootstrap:stage==='bootstrap'});
     if(stage==='resume') {
         await waitFor(()=>first.element('btn-save-draft').disabled===false);
         first.listeners.get('freeze')();first.failVerification();first.listeners.get('resume')();
@@ -341,25 +353,78 @@ for(const stage of ['initial','resume'])test(`${stage} verification failure allo
     assert.equal(second.element('btn-save-draft').disabled,true);
 });
 
-test('three tabs restore the failed-initial-recovery retry after the editor closes',async t=>{
-    const BroadcastChannel=broadcastBus(), remote=signed('fresh-valid'), records=new Map();
-    const first=harness(t,{local:remote,remote,records,BroadcastChannel,failVerification:true});
+for(const failure of ['verification','bootstrap'])test(`three tabs restore the ${failure} recovery retry after the editor closes`,async t=>{
+    const BroadcastChannel=broadcastBus(), remote=normalize(signed('fresh-valid')), records=new Map();
+    const first=harness(t,{local:remote,remote,records,BroadcastChannel,
+        failVerification:failure==='verification',failBootstrap:failure==='bootstrap'});
     await waitFor(()=>first.element('btn-retry-lease').hidden===false);
     const second=harness(t,{remote,records,BroadcastChannel});
-    await waitFor(()=>second.element('btn-save-draft').disabled===false);
+    await waitFor(()=>second.element('btn-save-draft').disabled===false && !second.coordinator.isDirty());
     const third=harness(t,{remote,records,BroadcastChannel});
     await waitFor(()=>!third.booting() && third.element('autosave-status').dataset.state==='conflict');
     await waitFor(()=>first.element('btn-retry-lease').hidden===true);
+    const original=structuredClone(records.get('user:doc'));
     third.listeners.get('pagehide')();
     second.listeners.get('pagehide')();
     await waitFor(()=>first.element('btn-retry-lease').hidden===false);
     assert.equal(first.element('service-form').classList.contains('is-readonly'),true);
     assert.equal(first.element('btn-save-draft').disabled,true);
     assert.match(first.element('autosave-status').textContent,/Recuperação por confirmar/);
+    assert.deepEqual(records.get('user:doc'),original);
+    assert.equal(first.saveCount(),0);
     first.recoverNetwork();
     await first.element('btn-retry-lease').events.get('click')();
     assert.equal(first.element('btn-save-draft').disabled,false);
     assert.equal(first.element('service-form').classList.contains('is-readonly'),false);
+});
+
+for(const editorOpen of [false,true])test(`online bootstrap retry resamples tabs when the previous editor is ${editorOpen?'open':'closed without a closing message'}`,async t=>{
+    const BroadcastChannel=broadcastBus({dropClosing:true}), remote=normalize(signed('fresh-valid')), records=new Map();
+    const first=harness(t,{local:remote,remote,records,BroadcastChannel,failBootstrap:true});
+    await waitFor(()=>first.element('btn-retry-lease').hidden===false);
+    const second=harness(t,{remote,records,BroadcastChannel});
+    await waitFor(()=>second.element('btn-save-draft').disabled===false && !second.coordinator.isDirty());
+    const third=harness(t,{remote,records,BroadcastChannel});
+    await waitFor(()=>!third.booting() && third.element('autosave-status').dataset.state==='conflict');
+    await waitFor(()=>first.element('btn-retry-lease').hidden===true);
+    const original=structuredClone(records.get('user:doc'));
+    third.listeners.get('pagehide')();
+    if(!editorOpen)second.listeners.get('pagehide')();
+    first.recoverNetwork();await first.listeners.get('online')();
+    assert.equal(first.element('btn-save-draft').disabled,editorOpen);
+    assert.equal(first.element('service-form').classList.contains('is-readonly'),editorOpen);
+    assert.equal(first.element('autosave-status').dataset.state,editorOpen?'conflict':'saved');
+    assert.equal(first.saveCount(),0);
+    if(editorOpen)assert.deepEqual(records.get('user:doc'),original);
+    else {
+        assert.deepEqual(records.get('user:doc').payload,original.payload);
+        assert.equal(records.get('user:doc').baseRevision,original.baseRevision);
+    }
+});
+
+test('an observing tab with stale local edits receives a revision conflict after the editor saves and closes',async t=>{
+    const BroadcastChannel=broadcastBus(), remote=signed('fresh-valid'), records=new Map();
+    const sharedServer={document:remote,revision:1,accepted:0,conflicts:0};
+    const editor=harness(t,{remote,records,BroadcastChannel,sharedServer});
+    await waitFor(()=>editor.element('btn-save-draft').disabled===false);
+    const local=structuredClone(remote);local.observations='alterações locais anteriores da observadora';
+    const observer=harness(t,{local,remote,records,BroadcastChannel,sharedServer});
+    await waitFor(()=>!observer.booting());
+    assert.equal(observer.coordinator.isDirty(),true);
+    assert.equal(observer.element('btn-save-draft').disabled,true);
+    assert.equal(observer.saveCount(),0);
+    const latest=structuredClone(editor.payload());latest.observations='versão nova confirmada pela editora';
+    editor.setPayload(latest);editor.coordinator.markDirty();
+    await waitFor(()=>editor.element('autosave-status').dataset.state==='saved' && sharedServer.accepted===1);
+    const confirmed=structuredClone(sharedServer.document);
+    editor.listeners.get('pagehide')();
+    await waitFor(()=>observer.element('recovery-panel').classList.contains('is-conflict'));
+    assert.equal(observer.element('btn-save-draft').disabled,true);
+    assert.equal(observer.element('recovery-panel').hidden,false);
+    assert.equal(observer.payload().observations,local.observations);
+    assert.deepEqual(sharedServer.document,confirmed);
+    assert.equal(sharedServer.accepted,1);
+    assert.equal(sharedServer.conflicts,1);
 });
 
 test('a read-only tab finishing deferred verification cannot overwrite the active tab shared recovery',async t=>{

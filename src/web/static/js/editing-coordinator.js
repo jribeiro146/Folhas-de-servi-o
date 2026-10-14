@@ -654,6 +654,9 @@ const startEditingCoordinator = () => {
 
     const checkOtherTab = async () => {
         if (!selectedFileIsDraft || !tabChannel) return;
+        // A previous active message may outlive its tab (including a missed
+        // closing event). Only replies to this fresh probe may block retry.
+        otherTabActive = false;
         tabClaimPending = true;
         try {
             tabChannel.postMessage({type:"hello", fileName:activeFileName, userId:editorUser.id, instanceId:tabInstanceId});
@@ -949,7 +952,9 @@ const startEditingCoordinator = () => {
                 setFormReadOnly(true, "outra aba deste técnico");
                 setAutosaveStatus("Modo de consulta — rascunho aberto noutra aba", "conflict");
             }
-            if (message.type === "closing" && otherTabActive && sessionToken) {
+            // Failed bootstrap has no lease yet: restore its retry affordance,
+            // while keeping the unverified recovery read-only and untouched.
+            if (message.type === "closing" && otherTabActive && (initialRecoveryPending || sessionToken)) {
                 otherTabActive = false;
                 if (initialRecoveryPending) {
                     setFormReadOnly(true);

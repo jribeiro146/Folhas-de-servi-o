@@ -226,8 +226,30 @@ def main():
             ctx.close()
             ctx = context()
             page = ctx.new_page()
-            open_draft(page, first)
+            # Abort only A's bootstrap: HTML/assets and B/C still use the real
+            # isolated server. BroadcastChannel and tab lifecycle are Chromium's.
+            page.route('**/bootstrap?**', lambda request: request.abort())
+            page.goto(base + '/?file=' + quote(first.stem))
+            expect(page.locator('#btn-retry-lease')).to_be_visible()
+            expect(page.locator('#btn-save-draft')).to_be_disabled()
+            editing_tab = ctx.new_page()
+            open_draft(editing_tab, first)
+            observing_tab = ctx.new_page()
+            observing_tab.goto(base + '/?file=' + quote(first.stem))
+            expect(observing_tab.locator('#autosave-status')).to_have_attribute('data-state','conflict')
+            expect(page.locator('#btn-retry-lease')).to_be_hidden()
+            observing_tab.close()
+            expect(editing_tab.locator('#btn-save-draft')).to_be_enabled()
+            expect(page.locator('#btn-save-draft')).to_be_disabled()
+            editing_tab.close()
+            expect(page.locator('#btn-retry-lease')).to_be_visible()
+            expect(page.locator('#btn-save-draft')).to_be_disabled()
+            page.screenshot(path=str(output / 'm22-bootstrap-retry.png'), full_page=True)
+            page.unroute('**/bootstrap?**')
+            page.locator('#btn-retry-lease').click()
+            expect(page.locator('#intervention-report')).to_be_editable()
             expect(page.locator('#intervention-report')).to_have_value('Versão mais recente do primeiro navegador')
+            passed('M22 real three-tab bootstrap failure restores explicit retry after the editor closes')
 
             state['list_status'] = 503
             page.locator('#btn-toggle-sidebar').click()
@@ -353,7 +375,7 @@ def main():
                 'limits':['Synthetic authentication exchange and provider transports',
                           'Service worker excluded here; covered separately by M19',
                           'Local backend; Graph remote consistency covered by dedicated regressions',
-                          'M22 three-tab offline bootstrap issue remains open'], 'runtime':str(root)}
+                          'M22 lost-closing online retry and shared recovery conflicts covered separately by Node regressions'], 'runtime':str(root)}
             (output / 'result.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
             print(json.dumps({'status':'PASS','checks':len(results),'output':str(output)},ensure_ascii=False),flush=True)
         except Exception:

@@ -1,6 +1,6 @@
 ﻿# Folhas de Servico
 
-Esta árvore é a base canónica das Folhas de Serviço e checklists SADI. Consultar primeiro o [estado da entrega de 14/10/2026](docs/ESTADO_ENTREGA_2026-10-14.md): alterações aprovadas, evidência, configuração e pendências. O M22 conserva um problema conhecido de recuperação entre três abas; não há aprovação de instalação em produção.
+Esta árvore é a base canónica das Folhas de Serviço e checklists SADI. Consultar primeiro o [estado da entrega de 14/10/2026](docs/ESTADO_ENTREGA_2026-10-14.md): alterações aprovadas, evidência, configuração e pendências. A retoma M22 corrige a recuperação entre três abas e tem validação própria; o estado da entrega identifica o pacote ensaiado e o parecer. Não há aprovação de instalação em produção.
 
 Para uma instalação autorizada em Plesk/Docker, usar o ZIP do commit validado com manifesto e checksum, seguindo [a entrega Docker](docs/10_ALOJAMENTO_DOCKER.md) e [a preparação do servidor](docs/IMPLEMENTACAO_SERVIDOR.md). Não instalar por cópia seletiva de ficheiros. A tag antiga `v1.0.0-servidor` e as notas SADI de setembro são referências históricas.
 A SADI fica ativa por defeito com `FS_ENVIRONMENT=production`, autenticação Microsoft e backend Graph. O ficheiro `.env.production.example` inclui `FS_MAINTENANCE_ENABLED=true`. Um valor explícito `false` no servidor mantém a funcionalidade desligada. São necessários Chromium e armazenamento privado persistente em `FS_APP_DATA_DIR`.

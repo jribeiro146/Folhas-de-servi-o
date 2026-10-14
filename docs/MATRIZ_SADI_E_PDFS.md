@@ -20,7 +20,7 @@ O lançador configura uma pasta temporária nova e bloqueia a rede antes de impo
 | Dados antigos | Fixture sintética escrita pelo commit `1ede4d8`, lida por João e Ana sem migração nem alteração de bytes, hash, mtime ou permissões; conta restante sem acesso |
 | Publicação/email | Três PDFs no bundle privado; arquivo público sem SADI; exatamente um email simulado com um PDF da folha de serviço; hash do anexo igual ao PDF produzido |
 | Falha ao publicar o diretório privado | PermissionError injetado em rename: HTTP 500, rascunho conservado, sem bundle parcial nem trabalho enfileirado; repetição explícita após remover a falha conclui |
-| Cache, recuperação e chaves | Regressões existentes de service worker/JavaScript, acesso e chave SADI; preservação das limitações M22 abaixo |
+| Cache, recuperação e chaves | Regressões existentes de service worker/JavaScript, acesso e chave SADI; retoma M22 identificada abaixo |
 
 `tests/test_sadi_matrix.py` cobre dispensa, invalidação por local e falha de publicação. `tests/test_maintenance_access.py` reutiliza a mesma fábrica e verifica também legado e recusas. A matriz PDF usa o cliente HTTP de teste Flask; não é uma nova jornada de cliques no editor. Os percursos de navegador pertencem a [M16](PERCURSOS_INTEGRADOS.md), e os testes de cache continuam no M19. Não se acrescentam tipos de checklist nem se alteram perguntas ou dados operacionais.
 
@@ -39,4 +39,4 @@ O log histórico `ci-pre-review-python.txt` contém 1084 aprovados, 4 skips e um
 
 A nova injeção determinística verifica a conservação do rascunho e a recuperação explícita nessa fronteira; não reproduz a causa ambiental do WinError 5. As permissões POSIX são verificadas separadamente no CI Linux. Este ensaio não é uma execução no servidor AlmaLinux nem altera a sua configuração.
 
-O **M22 permanece pendente**: bootstrap offline na aba A sem sessionToken, aba B ativa e mensagem de uma terceira aba podem deixar o botão de repetir oculto depois de B fechar; recarregar recupera a interface e a cópia IndexedDB permanece. O diagnóstico `p2-m22-offline-bootstrap-reproduction.txt` conserva uma falha esperada; não é contado entre os testes aprovados. O M18 não corrige nem aprova esse cenário, nem reabre as rondas de revisão M22.
+O diagnóstico histórico M22 de bootstrap offline e três abas conserva a falha em `p2-m22-offline-bootstrap-reproduction.txt`. Na retoma autorizada de 14/10, o fecho da editora repõe retry mesmo sem sessionToken e uma nova sondagem descarta o estado antigo de outra aba. Os testes de recuperação e o ensaio Chromium integrado identificam esta correção; consultar [chave e recuperação](ASSINATURAS_SADI_E_CHAVE.md), [percursos](PERCURSOS_INTEGRADOS.md) e o [estado atual](ESTADO_ENTREGA_2026-10-14.md). O resultado histórico M18 não aprova retroativamente a retoma M22.

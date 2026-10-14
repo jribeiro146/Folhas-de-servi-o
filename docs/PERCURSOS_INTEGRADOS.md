@@ -26,8 +26,9 @@ Cada execução conserva `output/playwright/m16-fst-*/`: logs separados, captura
 | Cancelamento | Rascunho sai das ativas, existe em Canceladas, nenhum efeito de comunicação adicional |
 | Administração | Libertação/revogação e reposição pela UI, autosave preservado, conta normal recusada |
 | Novo rascunho | UI cria exatamente uma cópia, conserva o Excel original e não envia mensagens |
+| M22, três abas | Bootstrap abortado na aba A; B edita, C provoca aviso; fechar C/B repõe retry em A, que só edita após nova abertura bem sucedida |
 
-O relatório agrega finalização e crash num único resultado, portanto exige onze resultados `PASS`, sem erros JavaScript ou pedidos externos. O journal de efeitos usa append e fsync: é conservado mesmo quando o worker morre. Só após confirmar a morte do processo é antecipado `updated_at` dos trabalhos em execução para representar o tempo de recuperação decorrido; a classificação e retoma continuam a cargo da fila real. Não se modifica o resultado do trabalho nem se repete um POST de envio no navegador.
+O relatório agrega finalização e crash num único resultado, portanto exige doze resultados `PASS` após a extensão M22 (onze na execução original M16), sem erros JavaScript ou pedidos externos. O journal de efeitos usa append e fsync: é conservado mesmo quando o worker morre. Só após confirmar a morte do processo é antecipado `updated_at` dos trabalhos em execução para representar o tempo de recuperação decorrido; a classificação e retoma continuam a cargo da fila real. Não se modifica o resultado do trabalho nem se repete um POST de envio no navegador.
 
 ## Defeito encontrado e correção
 
@@ -41,4 +42,4 @@ Isto não transforma o bundle num sistema transacional de múltiplos ficheiros. 
 
 O login Microsoft e a aceitação de email/Teams são simulados. Usam-se sessões assinadas e o parser/política reais, com GUIDs e contas fictícias; não se testa o fornecedor ou entrega ao destinatário. A preparação/validação de mensagens é real. O PDF usa `LocalPdfService` para publicação atómica e Chromium Playwright para renderizar o HTML real; o lançador Chromium padrão do Docker tem a prova separada de M15.
 
-Este percurso usa backend local e não substitui os testes de concorrência/eTag, pastas ou cancelamento remoto Graph. O service worker fica bloqueado nesta matriz; cache e atualização têm o ensaio M19. SADI e privacidade por local pertencem à matriz M18. O P3 conhecido de M22 (bootstrap offline, três abas e retry oculto) permanece aberto e não é aprovado pelo M16. Não há deploy, migração operacional, email real ou ação no Teams.
+Este percurso usa backend local e não substitui os testes de concorrência/eTag, pastas ou cancelamento remoto Graph. O service worker fica bloqueado nesta matriz; cache e atualização têm o ensaio M19. SADI e privacidade por local pertencem à matriz M18. A extensão M22 usa três páginas do mesmo contexto Chromium, com BroadcastChannel e fechos reais; só o pedido bootstrap da primeira é abortado. As variantes de mensagem closing perdida, regresso da rede e conflito de revisão partilhado têm regressões Node próprias. O resultado histórico M16 não aprova retroativamente esta extensão. Não há deploy, migração operacional, email real ou ação no Teams.
