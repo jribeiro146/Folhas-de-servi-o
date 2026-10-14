@@ -1,5 +1,7 @@
 # Validação Linux/Docker e rastreabilidade
 
+**Atualização M15 de 14/10/2026:** o primeiro run novo `38543107104` confirmou dependências e ZIP reproduzível, mas falhou em quatro fixtures anteriores desatualizadas; não é uma aceitação completa. Correções e limites em [dependências e build](DEPENDENCIAS_E_BUILD.md). Os resultados de 12/10 abaixo pertencem exclusivamente ao commit indicado.
+
 **Resultado confirmado em 12/10/2026:** validação sintética Linux/Docker aprovada
 para o commit `0869bfa810794d80dbde6494cd603f6a3d764597`.
 [Run 38243794527](https://github.com/jribeiro146/Folhas-de-servi-o/actions/runs/38243794527)

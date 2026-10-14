@@ -247,9 +247,12 @@ def test_ambiguous_or_unusable_evidence_is_preserved(tmp_path, fault):
     assert stored_evidence(service, "document") == before
 
 
-def test_logout_http_preserves_other_autosave_and_admin_revocation(quarantine_app):
-    from types import SimpleNamespace
+def test_logout_http_preserves_other_autosave_and_admin_revocation(quarantine_app, monkeypatch):
+    from src.services import admin_access
+    from tests.test_operational_admin import ADMIN
     from src.services.editing_state_service import EditorIdentity, EditingSessionRevokedError
+    monkeypatch.setattr(admin_access, "ADMIN_TENANT_ID", ADMIN.tenant_id)
+    monkeypatch.setattr(admin_access, "ADMIN_OBJECT_ID", ADMIN.id)
     app, service, document_id, path = quarantine_app
     original = path.parent.parent / "synthetic.xlsx"
     owner = EditorIdentity("other-user", "Synthetic other")
@@ -258,9 +261,8 @@ def test_logout_http_preserves_other_autosave_and_admin_revocation(quarantine_ap
     service.save_autosave(document_id=doc, identity=owner, client_id="other-tab",
                           lease_token=lease["lease"]["token"], base_revision=lease["revision"],
                           idempotency_key="save", document={"intervention_report": "Preservar"})
-    admin = SimpleNamespace(id="admin", email="jribeiro@sensorpoint.pt")
     record = next(row for row in service.admin_documents() if row["document_id"] == doc)
-    service.admin_change_access(doc, admin, "Intervenção sintética", record["lock_version"])
+    service.admin_change_access(doc, ADMIN, "Intervenção sintética", record["lock_version"])
     before_bad = stored_evidence(service, document_id)
     response = app.test_client().post("/logout")
     assert response.status_code == 302

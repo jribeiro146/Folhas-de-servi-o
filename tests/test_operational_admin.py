@@ -149,7 +149,7 @@ def test_admin_page_exposes_csrf_only_after_authorization(admin_app):
     app, _, _ = admin_app
     admin = login(app, ADMIN.email, csrf=False)
     page = admin.get("/admin")
-    assert page.status_code == 200 and page.headers["Cache-Control"] == "no-store"
+    assert page.status_code == 200 and page.cache_control.no_store
     assert b'data-admin-csrf="' in page.data
     other = login(app, "other@sensorpoint.pt")
     assert other.get("/admin").status_code == 403

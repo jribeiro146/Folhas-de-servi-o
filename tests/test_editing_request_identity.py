@@ -59,9 +59,13 @@ def test_real_document_guard_blocks_all_exclusive_http_writes(valid_request, rou
 
 @pytest.mark.parametrize("encoding", ["json", "multipart"])
 def test_http_guard_prevents_admin_release_before_claiming_operation(valid_request, monkeypatch, encoding):
+    from src.services import admin_access
     from src.services.photo_attachment_service import PhotoAttachmentService
     from src.services.editing_state_service import OperationInProgressError
     from tests.test_operational_admin import ADMIN
+    # Match the stable synthetic identity required by the current admin policy.
+    monkeypatch.setattr(admin_access, "ADMIN_TENANT_ID", ADMIN.tenant_id)
+    monkeypatch.setattr(admin_access, "ADMIN_OBJECT_ID", ADMIN.id)
     client, service, document_id, path, metadata = valid_request
     original = PhotoAttachmentService.prepare_uploads
     attempts = []
