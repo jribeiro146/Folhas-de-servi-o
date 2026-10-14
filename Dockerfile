@@ -24,7 +24,8 @@ COPY src/ src/
 COPY tools/ tools/
 # Build only from the extracted build_release ZIP. Every fingerprinted file
 # must be present, including delivery files; never regenerate a manifest here.
-COPY passenger_wsgi.py requirements.txt Dockerfile .dockerignore docker-compose.yml release-manifest.json ./
+# Optional QA requirements are identity metadata too; copying does not install them.
+COPY passenger_wsgi.py requirements*.txt Dockerfile .dockerignore docker-compose.yml release-manifest.json ./
 RUN python -B -c "from src.services.release_identity import get_release_info; assert get_release_info()['verified']"
 
 RUN mkdir -p /app/data /home/appuser \

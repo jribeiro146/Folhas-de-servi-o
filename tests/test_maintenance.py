@@ -522,7 +522,7 @@ def test_pdf_failure_retains_draft_and_retry_builds_complete_bundle(demo, monkey
     monkeypatch.setattr(LocalPdfService, "export_html_pdf", failing)
     payload = {**document, "_edit": metadata}
     result = client.post(f"/api/file/{draft.stem}/send", json=payload)
-    assert result.status_code == 500 and draft.exists()
+    assert result.status_code == 500 and draft.exists(), result.get_json()
     assert not list((root / "archive").glob("*/maintenance-manifest.json"))
     result = client.post(f"/api/file/{draft.stem}/send", json=payload)
     assert result.status_code == 200, result.get_json()
