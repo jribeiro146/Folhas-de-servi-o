@@ -313,7 +313,7 @@ const startEditingCoordinator = () => {
                 "A sessão de edição ainda não está pronta. Aguarde alguns segundos e tente novamente."
             );
         }
-        const pending = window.SensorpointCommitRecovery?.read(activeFileName);
+        const pending = kind === "send" ? window.SensorpointCommitRecovery?.read(activeFileName) : null;
         if (pending?.kind === kind && pending.documentId === editing.document_id) {
             operationKeys.set(kind, pending.operationId);
         }
@@ -677,6 +677,13 @@ const startEditingCoordinator = () => {
         if (!operation) return false;
         if (operation.status === "pending") {
             throw new Error("A gravação ainda está por confirmar. Volte a consultar; nenhum envio será repetido.");
+        }
+        if (operation.status === "failed") {
+            // A confirmed failed attempt may have an old prepared archive. The
+            // next explicit save must capture the current form under a new key.
+            operationKeys.delete(operation.kind);
+            recovery.clear(activeFileName);
+            return false;
         }
         if (operation.status !== "complete") return false;
         if (operation.result?.success !== true) throw new Error("Conclusão da gravação inválida.");

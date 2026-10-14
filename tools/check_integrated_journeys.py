@@ -154,6 +154,7 @@ def main():
 
         def open_draft(page, draft):
             page.goto(base + '/?file=' + quote(draft.stem))
+            expect(page.locator('#btn-save-draft')).to_be_enabled(timeout=15000)
             expect(page.locator('#intervention-report')).to_be_editable(timeout=15000)
 
         def saved(page):
@@ -174,6 +175,7 @@ def main():
             page.goto(base)
             expect(page.locator(f'a[data-name="{first.stem}"]')).to_be_visible()
             page.locator(f'a[data-name="{first.stem}"]').click()
+            expect(page.locator('#btn-save-draft')).to_be_enabled()
             expect(page.locator('#intervention-report')).to_be_editable()
             assert page.evaluate('!!window.__EDITING_COORDINATOR_STARTED__')
             page.locator('#intervention-report').fill('Texto confirmado no servidor')
@@ -404,6 +406,61 @@ def main():
                 assert not lost.exists()
                 page.screenshot(path=str(output / ('f01-reload.png' if reload_before_recovery else 'f01-response-lost.png')), full_page=True)
                 passed('F01 lost finalization response recovered by GET only' + (' after reload and failed consultation' if reload_before_recovery else ' in the same page'))
+            ctx.close()
+            ctx = context()
+            page = ctx.new_page()
+            partial = files.create_draft_copy(sources[1], 'Falha parcial')
+            DocumentDataService(partial).write(normalize_document_payload({
+                'customer_name':'Cliente fictício falha parcial', 'customer_email':'customer@example.invalid',
+                'service_types':{'assistencia':True}, 'equipments':{'vss':True}, 'client_not_present':True,
+                'technician_records':[{'technician':'Técnico fictício','date':'2026-10-14',
+                                       'start_time':'09:00','end_time':'10:00'}]}))
+            open_draft(page, partial)
+            page.locator('#intervention-report').fill('Conteúdo anterior à falha parcial')
+            saved(page)
+            (root / 'fault-after-finalization-publish').touch()
+            page.route('**/api/editing/operations/**', lambda route: route.abort())
+            before_mails = sum(r['kind']=='mail' for r in effect_rows())
+            page.locator('#btn-save-send').click()
+            with page.expect_response(lambda r:r.url.endswith('/send') and r.status==500):
+                page.locator('#confirm-accept').click()
+            expect(page.locator('#btn-retry-lease')).to_be_visible()
+            page.unroute('**/api/editing/operations/**')
+            page.reload()
+            expect(page.locator('#btn-save-send')).to_be_enabled()
+            page.locator('#intervention-report').fill('Alteração posterior à falha que tem de chegar ao arquivo')
+            saved(page)
+            page.locator('#btn-save-send').click()
+            with page.expect_response(lambda r:r.url.endswith('/send') and r.status==200) as completed_send:
+                page.locator('#confirm-accept').click()
+            result = completed_send.value.json()
+            page.wait_for_url(base+'/', timeout=45000)
+            expect(page.locator('#toast-zone')).to_contain_text('e-mail aceite para envio pela Microsoft', timeout=10000)
+            from src.services import archive_service
+            archived = archive_service.EXCEL_ARQUIVADAS_DIR / Path(result['archived_excel']).stem / result['archived_excel']
+            assert DocumentDataService(archived).read()['intervention_report'] == 'Alteração posterior à falha que tem de chegar ao arquivo'
+            assert sum(r['kind']=='mail' for r in effect_rows()) == before_mails + 1
+            assert not partial.exists()
+            passed('F01 partial publication failure, reload, edit and explicit retry archives current content with one mail')
+            ctx.close()
+            ctx = context()
+            page = ctx.new_page()
+            damaged = files.create_draft_copy(sources[1], 'Referência inválida')
+            open_draft(page, damaged)
+            page.evaluate("name => sessionStorage.setItem('sensorpoint-commit-recovery-v1:'+encodeURIComponent(name), '{')", damaged.stem)
+            page.reload()
+            expect(page.locator('#btn-save-draft')).to_be_enabled()
+            page.locator('#intervention-report').fill('Rascunho preservado apesar de referência inválida')
+            saved(page)
+            with page.expect_navigation(wait_until='load'):
+                page.locator('#btn-save-draft').click()
+            expect(page.locator('#btn-cancel-file')).to_be_enabled()
+            assert DocumentDataService(damaged).read()['intervention_report'] == 'Rascunho preservado apesar de referência inválida'
+            page.locator('#btn-cancel-file').click()
+            with page.expect_navigation(wait_until='load'):
+                page.locator('#confirm-accept').click()
+            assert not damaged.exists()
+            passed('F01 damaged opaque reference does not block saving or cancelling a live draft')
             effects = effect_rows()
             assert errors == [] and blocked == [], (errors,blocked)
             report = {'status':'PASS','source':__import__('src.services.release_identity',fromlist=['get_release_info']).get_release_info(),

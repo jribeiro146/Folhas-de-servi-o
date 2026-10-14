@@ -130,6 +130,14 @@ def web(root):
             raise OSError(errno.ENOSPC, 'Synthetic full disk')
         return original_write(self, document)
     DocumentDataService.write = write
+    from src.services.finalization_service import FinalizationService
+    original_publish = FinalizationService.publish
+    def publish(self, *args):
+        result = original_publish(self, *args)
+        if fault(root, 'after-finalization-publish'):
+            raise OSError('Synthetic interruption after archive publication')
+        return result
+    FinalizationService.publish = publish
     mail, teams, pdf = services(root)
     app = application.create_app(mail_service=mail, teams_notification_service=teams,
         local_pdf_service=pdf, graph_sync_queue=build_queue(root),

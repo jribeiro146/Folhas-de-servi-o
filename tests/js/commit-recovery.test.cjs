@@ -7,6 +7,18 @@ const storage = () => { const values = new Map(); return {
     removeItem: key => values.delete(key), values}; };
 const metadata = {document_id:'doc-synthetic', idempotency_key:'operation-synthetic', lease_token:'SECRET-NOT-RETAINED'};
 
+test('damaged references preserve evidence and do not break normal bootstrap or other actions', async () => {
+    for (const raw of ['{', 'null', 'x'.repeat(2049), JSON.stringify({scope,kind:'send',documentId:'invalid/id'})]) {
+        const store = storage();
+        store.setItem(PREFIX + 'synthetic', raw);
+        const tracker = create({scope, storage:store, fetchFn:() => assert.fail('Invalid reference must not query')});
+        assert.equal(tracker.read('synthetic'), null);
+        assert.equal(await tracker.lookup('synthetic'), null);
+        tracker.clear('synthetic');
+        assert.equal(store.getItem(PREFIX + 'synthetic'), raw);
+    }
+});
+
 test('a reload recovers the completed send through GET only, without retaining form or lease', async () => {
     const store = storage(), calls = [];
     const fetchFn = async (url, options) => {calls.push({url, options}); return {ok:true, status:200,

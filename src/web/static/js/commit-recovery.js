@@ -5,13 +5,19 @@
     const create = ({scope, storage, fetchFn = root.fetch.bind(root)}) => {
         const key = file => PREFIX + encodeURIComponent(file);
         const read = file => {
-            const raw = storage?.getItem(key(file));
-            if (!raw) return null;
-            const record = JSON.parse(raw);
-            if (record.scope !== scope) return null;
-            if (raw.length > 2048 || record.kind !== "send" || !validId(record.documentId)
-                    || !validId(record.operationId)) throw new Error("Referência de gravação inválida. Contacte o administrador.");
-            return {scope, kind: record.kind, documentId: record.documentId, operationId: record.operationId};
+            try {
+                const raw = storage?.getItem(key(file));
+                if (!raw || raw.length > 2048) return null;
+                const record = JSON.parse(raw);
+                if (record?.scope !== scope || record.kind !== "send" || !validId(record.documentId)
+                        || !validId(record.operationId)) return null;
+                return {scope, kind: record.kind, documentId: record.documentId, operationId: record.operationId};
+            } catch (_) {
+                // An unusable hint is not authority to send or to disable other
+                // actions. Preserve it and fall back to normal server bootstrap,
+                // whose lease/closed-document checks still govern all writes.
+                return null;
+            }
         };
         const begin = (file, metadata) => {
             if (!/^[a-f0-9]{64}$/.test(scope || "") || !validId(metadata.document_id)

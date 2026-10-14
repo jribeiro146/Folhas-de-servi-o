@@ -1966,8 +1966,16 @@ def _create_app(
                 return jsonify(existing_operation["response"])
 
             operation_context = dict((existing_operation or {}).get("context") or {})
+            prepared_photos = PhotoAttachmentService.prepare_uploads(photo_uploads)
+            request_digest = hashlib.sha256(json.dumps({
+                "document": document_payload,
+                "photos": sorted(photo.filename for photo in prepared_photos),
+                "removed_photos": sorted(set(removed_photo_ids)),
+            }, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
             if operation_context.get("prepared_document"):
-                document_payload = dict(operation_context["prepared_document"])
+                if operation_context.get("request_digest") != request_digest:
+                    return jsonify({"success": False, "code": "operation_payload_changed",
+                        "error": "A folha foi alterada depois desta tentativa. Volte a finalizar para guardar o conteúdo atual numa nova operação."}), 409
             path = file_service.get_file_by_name(name)
             archived_value = str(operation_context.get("archived_path") or "")
             archived_path = Path(archived_value) if archived_value else None
@@ -2028,7 +2036,6 @@ def _create_app(
             if document_data.get("client_not_present"):
                 document_payload[CLIENT_SIGNATURE_LABEL] = ""
             validation_path = archived_path or path
-            prepared_photos = PhotoAttachmentService.prepare_uploads(photo_uploads)
             PhotoAttachmentService(validation_path).validate_changes(
                 prepared_photos,
                 removed_photo_ids,
@@ -2113,6 +2120,8 @@ def _create_app(
             if "recovery_owner" not in operation_context:
                 editing_state_service.update_operation_context(
                     document_id, idempotency_key, recovery_owner=current_job_owner())
+            editing_state_service.update_operation_context(
+                document_id, idempotency_key, request_digest=request_digest)
             private_bundle_key = str(operation_context.get("private_bundle_key") or "")
 
             source_path = Path(str(operation_context.get("source_path") or path))
