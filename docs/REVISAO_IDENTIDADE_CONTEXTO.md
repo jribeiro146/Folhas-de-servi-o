@@ -1,5 +1,7 @@
 # Contexto das revisões da identificação de versão
 
+**Contexto histórico da revisão M13, preservado como evidência daquela fase.** A entrega Docker e o M15 foram implementados e ensaiados posteriormente; o estado atual está em [ESTADO_ENTREGA_2026-10-14.md](ESTADO_ENTREGA_2026-10-14.md) e [VALIDACAO_CI.md](VALIDACAO_CI.md). As referências a etapas futuras abaixo não são pendências atuais.
+
 A primeira revisão Claude do commit `49ffbf7` pediu três ajustes: logging estruturado da falha do worker, ensaios da recusa nos pontos de entrada e diagnóstico de ficheiros divergentes. A retificação mantém o âmbito de identidade/manifesto; o contrato dos dados e o build Docker final continuam separados.
 
 - O worker calcula a identificação uma vez dentro do tratamento de erros. A recusa devolve 1 e emite `queue_worker_failed`.

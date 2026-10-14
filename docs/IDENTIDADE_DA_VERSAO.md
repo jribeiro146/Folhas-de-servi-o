@@ -59,7 +59,7 @@ O manifesto guarda hashes individuais e o SHA Git. Uma divergência indica apena
 nomes relativos limitados/escapados, nunca conteúdo. Web/worker recusam antes dos
 serviços persistentes; o worker regista queue_worker_failed. Não regenerar o
 manifesto no servidor para esconder diferenças: reinstalar o artefacto correto ou
-corrigir a montagem. A futura entrega Docker tem de copiar todos os ficheiros
+corrigir a montagem. A entrega Docker copia todos os ficheiros
 cobertos, sem montagem de código por cima (M14).
 
 X-App-Version, /api/admin/overview autenticado e os registos/resultados do worker
@@ -99,6 +99,4 @@ exclusão de dados privados e ausência de imports da configuração/aplicação
 Mínimo Python 3.12; recomendado 3.13. Não foi ensaiada uma instalação Python 3.12.
 A verificação ocorre no arranque: não editar ficheiros de processos em execução.
 verified significa correspondência ao manifesto; não é assinatura criptográfica
-de um fornecedor. O ZIP reproduz o código, não fixa downloads de dependências ou
-a imagem base (M15). Linux/Docker e falhas físicas continuam a exigir ensaio no
-ambiente adequado. Esta documentação não autoriza publicação ou instalação.
+de um fornecedor. O ZIP reproduz o conteúdo versionado. O M15 fixa digest da base e constraints Python; APT/wheels mantêm os limites de [DEPENDENCIAS_E_BUILD.md](DEPENDENCIAS_E_BUILD.md). Linux/Docker foi executado nos commits de [VALIDACAO_CI.md](VALIDACAO_CI.md); falhas físicas e configuração do destino não são abrangidas por esses ensaios. Esta documentação não autoriza instalação.

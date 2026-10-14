@@ -1,8 +1,6 @@
 # Docker/Plesk — entrega identificada e preparação explícita — M14
 
-Build e execução Linux/Docker ainda não realizados neste processo. O João está a
-obter um ambiente. Até lá o instalador deve executar a
-[nota de validação](VALIDACAO_DOCKER_INSTALADOR.md) e registar os resultados.
+Build e execução sintética Linux/Docker foram realizados no GitHub Actions, nos commits e dois perfis identificados em [VALIDACAO_CI.md](VALIDACAO_CI.md). O M15 validou digest/constraints e ZIP Windows/Linux em fd1128f; o estado da entrega identifica a validação dos commits posteriores. O destino AlmaLinux permanece uma verificação do instalador, usando a [nota de validação](VALIDACAO_DOCKER_INSTALADOR.md) com dados fictícios.
 A referência histórica 1ede4d8 não identifica a nova entrega.
 
 ## Construir do artefacto
@@ -85,9 +83,7 @@ restaura com bloqueio global e fila retida, libertados após reconciliação. Se
 leitores de diagnóstico criarem locks/journals, parar os processos e diagnosticar;
 não apagar journals em uso para fazer passar uma recusa.
 
-A CI foi adaptada só para gerar o ZIP antes do build e registar identidade da
-imagem. Não foi executada remotamente; triggers, pinning e matriz completa são
-M15. Reproduzir o ZIP não fixa downloads de dependências/imagem base.
+A CI gera o ZIP do commit exato antes do build e regista identidade, dependências, testes e PDF. Triggers da branch de validação, digest da base e constraints M15 estão implementados e foram exercitados remotamente. Ver [VALIDACAO_CI.md](VALIDACAO_CI.md) para o SHA realmente testado e [DEPENDENCIAS_E_BUILD.md](DEPENDENCIAS_E_BUILD.md) para os limites de APT/wheels; não se promete imagem binariamente idêntica.
 
 ## Ferramentas offline dentro do contentor
 

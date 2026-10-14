@@ -222,7 +222,9 @@ false explícito; true, ausência ou valores de outro tipo são recusados. Não 
 de arranque Compose. Não executar up/run aqui: os nomes de containers de produção
 são fixos. O ensaio de execução acima usa apenas docker run e volumes QA únicos.
 
-| Verificação | Resultado real a preencher |
+A tabela seguinte é um formulário em branco para uma **nova execução do instalador**, não o estado dos ensaios GitHub já concluídos. Resultados anteriores e seus SHAs estão em [VALIDACAO_CI.md](VALIDACAO_CI.md).
+
+| Verificação | Resultado desta nova execução |
 |---|---|
 | Commit / ZIP SHA256 / source_sha256 | Pendente |
 | Docker / Compose / arquitetura | Pendente |

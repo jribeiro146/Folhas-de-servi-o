@@ -56,8 +56,7 @@ e diretórios novos são privados (0700). Falhar a reposição destes atributos
 interrompe a publicação antes de substituir esse ficheiro. No Windows, as ACL
 são herdadas da pasta: preparar as ACL privadas no destino e no workspace.
 O Dockerfile atual declara UID/GID10001 por defeito; a ferramenta não pressupõe
-esse número e conserva os atributos encontrados. O UID real da instalação e
-o ensaio Linux serão confirmados com os detalhes Docker ainda aguardados.
+esse número e conserva os atributos encontrados. Os ensaios Linux já realizados em 10001:10001 e 100:101 estão em [VALIDACAO_CI.md](VALIDACAO_CI.md). O instalador continua a conferir o UID/GID e as montagens efetivos do destino.
 
 ```sh
 python -B tools/migrate_runtime.py prepare \

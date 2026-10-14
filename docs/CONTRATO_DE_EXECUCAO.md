@@ -20,7 +20,7 @@ Só a base de controlo usa `journal_mode=DELETE`: a transação de leitura permi
 
 Código antigo que não implementa este contrato não participa nos bloqueios. A primeira passagem de uma versão legada exige parar todos os escritores e preparar os dados com backup consistente; a API `initialize_empty()` não adota esse estado. Restauro/rollback não desfaz email/Teams/Graph já efetuados. Consultar [migração M06](MIGRACAO_OFFLINE.md) e [backup/restauro M07](BACKUP_RESTAURO.md) para os comandos offline e respetivos limites.
 
-Os testes usam duas ligações e também processos reais separados, com dados fictícios e rede bloqueada. Confirmam concorrência compatível, recusa de ativação com operação em curso, libertação após saída/crash, bloqueio de processos antigos, preservação de dados não marcados e recusa de formatos futuros/corrompidos. A validação atual é Windows/Python 3.13; Linux continua por executar. Esta fundação, por si só, não permite declarar o plano nem a aplicação prontos para produção.
+Os testes usam duas ligações e também processos reais separados, com dados fictícios e rede bloqueada. Confirmam concorrência compatível, recusa de ativação com operação em curso, libertação após saída/crash, bloqueio de processos antigos, preservação de dados não marcados e recusa de formatos futuros/corrompidos. O checkpoint original foi validado em Windows/Python 3.13; os ensaios Linux posteriores, incluindo contrato e recusa de versões, estão em [VALIDACAO_CI.md](VALIDACAO_CI.md). Esta fundação, por si só, não permite declarar o plano nem a aplicação prontos para produção.
 
 ## Histórico: resposta à primeira revisão da API e desenho da integração
 

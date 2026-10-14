@@ -144,7 +144,7 @@ recusa de dados mudados/incompletos e fila sem replay. `gc.collect` na fixture
 simula a paragem dos processos antigos e fecha ligações SQLite da fila que ainda
 aguardam recolha; não é um mecanismo usado pelo comando operacional.
 
-O ensaio real de UID/GID em Linux/Docker aguarda o ambiente ou o instalador (M14).
+Os ensaios sintéticos de UID/GID, backup e restauro foram executados nos dois perfis Linux/Docker identificados em [VALIDACAO_CI.md](VALIDACAO_CI.md). A confirmação das permissões e do armazenamento no destino operacional continua a cargo do instalador.
 As interrupções testadas são de processo; durabilidade face a perda física de
 energia/disco e restauro off-site exigem o ensaio/procedimento da infraestrutura.
 Não foi executado backup, restauro, envio ou desbloqueio em produção.

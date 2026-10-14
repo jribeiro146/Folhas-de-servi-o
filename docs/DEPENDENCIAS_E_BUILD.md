@@ -38,7 +38,7 @@ Estas alterações não migram dados nem mudam a chave de segurança. A instala�
 
 ## Estado da validação
 
-A evidência de 12/10/2026 é a base das versões escolhidas e pertence ao commit `0869bfa`, anterior a M15. O novo Dockerfile/manifesto só pode ser declarado validado em Linux após novo run do commit que os contém. A aprovação M15 não encerra o P3 de recuperação offline entre abas que permanece registado em M22.
+A evidência de 12/10/2026 é a base das versões escolhidas e pertence ao commit `0869bfa`, anterior a M15. O Dockerfile/manifesto M15 foi validado no commit fd1128f, run38544935797, conforme o resultado abaixo. Alterações posteriores exigem CI próprio no SHA exato. A aprovação M15 não encerra o P3 de recuperação offline entre abas que permanece registado em M22.
 
 O primeiro ensaio M15, [run 38543107104](https://github.com/jribeiro146/Folhas-de-servi-o/actions/runs/38543107104), no commit `7f3911b`, confirmou os inventários (15 pacotes runtime, 20 qa, todas as versões coincidentes com constraints e `pip check` sem incompatibilidades) e ZIP Windows/Linux idêntico: `1b85896618a207cf44771efe19c80597498c9b1be4824953b029ad03f4693c83`. Python 3.13.16 e Chromium 155.0.8059.39 foram efetivamente observados. Os dois perfis passaram init, migração e backup/restauro, mas falharam em quatro testes desatualizados: fixtures sem a identidade estável de administrador e comparação literal do cabeçalho de cache. O PDF e o Compose posteriores não chegaram a executar; este run não é aceitação completa.
 

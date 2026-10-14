@@ -145,6 +145,4 @@ Testes JavaScript verificam os rótulos, hora da fotografia e Teams.
 As regressões existentes de admissão, identidade, formatos, propriedade da fila,
 administração e privacidade são executadas antes da revisão independente.
 
-Não foram executados neste ponto arranque de produção, envios, reinícios, Linux
-remoto ou uma nova sessão de browser real. Evidência exata dos testes e pareceres
-fica no registo de colaboração; o ensaio Linux anterior não valida este novo código.
+No checkpoint original M11 não houve execução Linux nova nem sessão de navegador real. A evidência posterior está em [VALIDACAO_CI.md](VALIDACAO_CI.md) (M15 inclui M11) e [PERCURSOS_INTEGRADOS.md](PERCURSOS_INTEGRADOS.md). Cada resultado pertence ao seu SHA; não houve arranque de produção, reinício ou envio operacional.
