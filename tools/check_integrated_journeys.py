@@ -366,6 +366,45 @@ def main():
             assert DocumentDataService(new_draft).read()['intervention_report'] == 'Novo rascunho criado no navegador'
             assert sources[3].read_bytes() == original_bytes and effect_rows() == effects
             passed('Creating a draft through the real UI preserves the original and creates no delivery')
+            for reload_before_recovery in (False, True):
+                ctx.close()
+                ctx = context()
+                page = ctx.new_page()
+                lost = files.create_draft_copy(sources[1], 'Recarga confirmada' if reload_before_recovery else 'Resposta perdida')
+                DocumentDataService(lost).write(normalize_document_payload({
+                    'customer_name':'Cliente fictício resposta perdida', 'customer_email':'customer@example.invalid',
+                    'service_types':{'assistencia':True}, 'equipments':{'vss':True}, 'client_not_present':True,
+                    'technician_records':[{'technician':'Técnico fictício','date':'2026-10-14',
+                                           'start_time':'09:00','end_time':'10:00'}]}))
+                open_draft(page, lost)
+                page.locator('#intervention-report').fill('Conclusão preservada após perda de resposta')
+                saved(page)
+                requests, replies = [], []
+                page.on('request', lambda request: requests.append(request.url) if request.url.endswith('/send') else None)
+                def lose_response(route):
+                    response = route.fetch()
+                    replies.append(response.status)
+                    route.abort()
+                page.route('**/send', lose_response, times=1)
+                if reload_before_recovery:
+                    page.route('**/api/editing/operations/**', lambda route: route.abort())
+                before_mails = sum(r['kind']=='mail' for r in effect_rows())
+                page.locator('#btn-save-send').click()
+                page.locator('#confirm-accept').click()
+                if reload_before_recovery:
+                    expect(page.locator('#btn-retry-lease')).to_be_visible()
+                    page.reload()
+                    expect(page.locator('#btn-retry-lease')).to_be_visible()
+                    page.unroute('**/api/editing/operations/**')
+                    page.locator('#btn-retry-lease').click()
+                page.wait_for_url(base+'/', timeout=45000)
+                expect(page.locator('#mail-followup')).to_contain_text('E-mail aceite para envio pela Microsoft', timeout=45000)
+                assert replies == [200] and len(requests) == 1
+                assert sum(r['kind']=='mail' for r in effect_rows()) == before_mails + 1
+                assert not lost.exists()
+                page.screenshot(path=str(output / ('f01-reload.png' if reload_before_recovery else 'f01-response-lost.png')), full_page=True)
+                passed('F01 lost finalization response recovered by GET only' + (' after reload and failed consultation' if reload_before_recovery else ' in the same page'))
+            effects = effect_rows()
             assert errors == [] and blocked == [], (errors,blocked)
             report = {'status':'PASS','source':__import__('src.services.release_identity',fromlist=['get_release_info']).get_release_info(),
                 'browser':browser.version, 'python':sys.version.split()[0],

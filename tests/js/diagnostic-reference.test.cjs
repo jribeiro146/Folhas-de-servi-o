@@ -22,6 +22,7 @@ for (const name of ["saveDraft", "sendFile", "cancelFile", "openDocumentPreview"
                     error, reference: "ref-sintetica", code: "operation_failed" }) };
             },
             window: {
+                SensorpointCommitRecovery: {begin: () => ({})},
                 location: { href: "original" },
                 open: () => ({ document: { write() {} }, close() {} }),
                 __EDITING_COORDINATOR__: { handleConflict: () => false,

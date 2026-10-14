@@ -88,6 +88,7 @@ const startEditingCoordinator = () => {
     let resumeSnapshot = null;
     let tabClaimPending = false;
     const operationKeys = new Map();
+    let commitPending = false;
 
     const showToast = (message, variant = "info") => editor.showToast?.(message, variant);
 
@@ -293,6 +294,7 @@ const startEditingCoordinator = () => {
         && !revoked
         && !otherTabActive
         && !resumeConflictPending
+        && !commitPending
         && !initialRecoveryPending
         && !resumeSnapshot
         && editing.document_id
@@ -310,6 +312,10 @@ const startEditingCoordinator = () => {
             throw new Error(
                 "A sessão de edição ainda não está pronta. Aguarde alguns segundos e tente novamente."
             );
+        }
+        const pending = window.SensorpointCommitRecovery?.read(activeFileName);
+        if (pending?.kind === kind && pending.documentId === editing.document_id) {
+            operationKeys.set(kind, pending.operationId);
         }
         if (!operationKeys.has(kind)) operationKeys.set(kind, makeId());
         return editMetadata(operationKeys.get(kind));
@@ -383,6 +389,7 @@ const startEditingCoordinator = () => {
     };
 
     const runAutosave = async ({ keepalive = false } = {}) => {
+        if (commitPending) return false;
         if (autosaveInFlight) {
             autosaveQueued = true;
             return false;
@@ -664,6 +671,28 @@ const startEditingCoordinator = () => {
         } finally { tabClaimPending = false; }
     };
 
+    const resolvePendingCommit = async () => {
+        const recovery = window.SensorpointCommitRecovery;
+        const operation = await recovery?.lookup(activeFileName);
+        if (!operation) return false;
+        if (operation.status === "pending") {
+            throw new Error("A gravação ainda está por confirmar. Volte a consultar; nenhum envio será repetido.");
+        }
+        if (operation.status !== "complete") return false;
+        if (operation.result?.success !== true) throw new Error("Conclusão da gravação inválida.");
+        // A receipt, not another POST, is the authority after response loss.
+        // Do not reopen the retired file or revive its local autosave.
+        commitPending = true;
+        dirty = false;
+        sessionToken = "";
+        window.clearTimeout(serverSaveTimer);
+        window.clearTimeout(retryTimer);
+        await deleteRecovery(`${editorUser.id}:${operation.record.documentId}`).catch(() => {});
+        await editor.resumeCompletedCommit(operation.result, operation.kind, operation.record.scope);
+        recovery.clear(activeFileName);
+        return true;
+    };
+
     const initialize = async () => {
         if (initializing || revoked) return;
         initializing = true;
@@ -674,6 +703,7 @@ const startEditingCoordinator = () => {
         setAutosaveStatus("A abrir a área de trabalho…", "saving");
         const localRecoveryPromise = readLatestRecoveryForFile().catch(() => null);
         try {
+            if (await resolvePendingCommit()) return;
             const result = await loadBootstrap();
             bootstrapResult = result;
             // Keep the acquired reservation even when checking recovery fails,
@@ -972,6 +1002,19 @@ const startEditingCoordinator = () => {
 
     window.__EDITING_COORDINATOR__ = {
         operationMetadata,
+        setCommitPending(value) {
+            commitPending = value;
+            syncCommitActions();
+        },
+        async recoverPendingCommit() {
+            try { return await resolvePendingCommit(); }
+            catch (error) {
+                initialRecoveryPending = true;
+                setFormReadOnly(true);
+                showVerificationRetry("Volte a consultar a operação antes de editar; nenhum envio será repetido.");
+                throw error;
+            }
+        },
         async prepareOperation(kind) {
             if (!hasActiveSession()) {
                 const resumed = await resumeEditingSession();
@@ -989,6 +1032,7 @@ const startEditingCoordinator = () => {
             const committedKey = recoveryKey();
             editing = { ...editing, ...result };
             operationKeys.delete(kind);
+            commitPending = false;
             dirty = false;
             pendingAutosave = null;
             window.clearTimeout(localSaveTimer);
@@ -1012,7 +1056,7 @@ const startEditingCoordinator = () => {
     initialize();
     let heartbeatInFlight = false;
     const leaseHeartbeatTimer = window.setInterval(async () => {
-        if (heartbeatInFlight || revoked || document.hidden || !navigator.onLine || !sessionToken || !editing.document_id) return;
+        if (heartbeatInFlight || commitPending || revoked || document.hidden || !navigator.onLine || !sessionToken || !editing.document_id) return;
         const checkedToken = sessionToken;
         const checkedDocument = editing.document_id;
         heartbeatInFlight = true;

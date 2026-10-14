@@ -396,6 +396,7 @@ def _create_app(
             "/static/js/field-app.js",
             "/static/js/mail-job-monitor.js",
             "/static/js/mail-followup.js",
+            "/static/js/commit-recovery.js",
             "/static/js/document-editor.js",
             "/static/js/editing-coordinator.js",
             "/static/css/auth.css",
@@ -603,6 +604,10 @@ def _create_app(
                 except (TypeError, ValueError):
                     payload = {}
             try:
+                supplied_scope = request.headers.get("X-Mail-Monitor-Scope")
+                if supplied_scope is not None and supplied_scope != mail_monitor_scope():
+                    return json_error("A sessão de acompanhamento mudou. Atualize a página.", 403,
+                                      code="mail_monitor_session_changed")
                 # Validate before acquiring a mutex or opening a state transaction.
                 # A copy keeps the JSON/multipart body intact for the view, which
                 # applies the same validation and uses the identical opaque ID.
@@ -1416,6 +1421,21 @@ def _create_app(
             return json_error("Não tem autorização para consultar este trabalho.", 403, code="job_access_denied")
         return jsonify({"success": True, "job": public_job_status(job)})
 
+    @app.get("/api/editing/operations/<document_id>/<idempotency_key>")
+    def recover_editing_operation(document_id: str, idempotency_key: str):
+        supplied_scope = request.headers.get("X-Mail-Monitor-Scope", "")
+        expected_scope = mail_monitor_scope()
+        if (not re.fullmatch(r"[a-f0-9]{64}", supplied_scope) or not expected_scope
+                or not secrets.compare_digest(supplied_scope, expected_scope)):
+            return json_error("A sessão de acompanhamento mudou. Atualize a página.", 403)
+        if not all(re.fullmatch(r"[A-Za-z0-9:_-]{1,240}", value)
+                   for value in (document_id, idempotency_key)):
+            return json_error("Referência de operação inválida.", 400)
+        operation = editing_state_service.recover_operation(document_id, idempotency_key, current_job_owner())
+        if operation is None:
+            return json_error("Operação não encontrada para esta sessão.", 404)
+        return jsonify(success=True, operation=operation)
+
     @app.route("/api/file/<name>/bootstrap")
     def bootstrap_file_editor(name: str):
         path = file_service.get_file_by_name(name)
@@ -2090,6 +2110,9 @@ def _create_app(
             if claim["status"] == "replay":
                 return jsonify(claim["operation"]["response"])
             operation_context = dict(claim["operation"].get("context") or {})
+            if "recovery_owner" not in operation_context:
+                editing_state_service.update_operation_context(
+                    document_id, idempotency_key, recovery_owner=current_job_owner())
             private_bundle_key = str(operation_context.get("private_bundle_key") or "")
 
             source_path = Path(str(operation_context.get("source_path") or path))

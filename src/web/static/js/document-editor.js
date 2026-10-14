@@ -1532,9 +1532,15 @@ document.addEventListener("DOMContentLoaded", () => {
         try {
             payload._edit = await requireOperationMetadata("send");
             const requestOptions = buildCommitRequest(payload);
+            if (!window.SensorpointCommitRecovery) {
+                throw new Error("O acompanhamento da gravação não está disponível. Recarregue a folha antes de enviar.");
+            }
+            const recoveryHeaders = window.SensorpointCommitRecovery.begin(activeFileName, payload._edit);
+            window.__EDITING_COORDINATOR__?.setCommitPending?.(true);
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/send`, {
                 method: "POST",
-                ...requestOptions
+                ...requestOptions,
+                headers: {...requestOptions.headers, ...recoveryHeaders}
             });
             const result = await response.json();
 
@@ -1556,6 +1562,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             commitPhotoState();
             await window.__EDITING_COORDINATOR__?.markCommitted(result, "send");
+            window.SensorpointCommitRecovery?.clear(activeFileName);
             if (result.maintenance_bundle_url) {
                 navigateAfterCommit(result.maintenance_bundle_url, "Folha e checklists finalizadas. PDFs disponíveis; envio apenas simulado.");
                 return;
@@ -1582,6 +1589,12 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         } catch (error) {
             if (error?.code === "suspended") return; // Normal mobile/background navigation; the panel resumes.
+            try {
+                if (await window.__EDITING_COORDINATOR__?.recoverPendingCommit?.()) return;
+            } catch (recoveryError) {
+                showToast(recoveryError.message, "error");
+                return;
+            }
             showToast(error.message, "error");
             if (error?.jobId && error instanceof window.SensorpointMailJobMonitor.MailJobMonitorError) {
                 const retryDate = new Date(error.retryAt);
@@ -1600,6 +1613,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 });
             }
         } finally {
+            window.__EDITING_COORDINATOR__?.setCommitPending?.(false);
             setBusy(false);
         }
     };
@@ -2031,6 +2045,17 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     window.__FILES_EDITOR__ = {
+        async resumeCompletedCommit(result, kind, scope) {
+            if (kind !== "send") throw new Error("Tipo de conclusão inválido.");
+            if (result.email_status === "pending" && result.graph_job_id) {
+                window.SensorpointMailFollowup?.remember(result.graph_job_id, scope);
+                navigateAfterCommit("/", "Folha arquivada. Consulte o acompanhamento do e-mail.", "info");
+            } else if (result.maintenance_bundle_url) {
+                navigateAfterCommit(result.maintenance_bundle_url, "Folha e checklists finalizadas. PDFs disponíveis.");
+            } else {
+                navigateAfterCommit("/", "Folha arquivada com sucesso.");
+            }
+        },
         collectFormData,
         populateForm,
         verifyRecovery: payload => window.MaintenanceEditor?.verifyRecovery(payload) || payload,

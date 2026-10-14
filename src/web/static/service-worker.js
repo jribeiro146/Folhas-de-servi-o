@@ -15,7 +15,7 @@ const PUBLIC_PATHS = [
     "/static/css/maintenance.css", "/static/css/admin.css",
     "/static/js/document-editor.js", "/static/js/document-validation.js",
     "/static/js/editing-coordinator.js", "/static/js/mail-job-monitor.js",
-    "/static/js/mail-followup.js", "/static/js/maintenance-model.js",
+    "/static/js/mail-followup.js", "/static/js/commit-recovery.js", "/static/js/maintenance-model.js",
     "/static/js/maintenance-editor.js", "/static/js/admin.js", "/static/js/pwa.js",
     "/static/img/sensorpoint-logo.png", "/static/img/pwa/icon-192.png",
     "/static/img/pwa/icon-512.png", "/static/img/pwa/icon-maskable-512.png",
