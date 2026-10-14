@@ -45,12 +45,14 @@ desativa as opções inadmissíveis. Emails legados tentados sem fase permitem
 apenas nota indeterminada, pois falta o checkpoint para confirmar o envio neste
 procedimento. Sem GUID do último pedido, a recusa também fica indisponível.
 
-Limitação anterior a M08, identificada na revisão: um upload de arquivo com
-email pode falhar antes de gravar uma fase e ficar indistinguível de um envio
-legado incerto. Esta ferramenta mantém a classificação conservadora; não
-liberta esses registos sem prova. A introdução de um checkpoint de preparação
-para operações novas, com ajuste dos consumidores, ficou registada para uma
-alteração separada em M17. Não foi demonstrado que explique as queixas antigas.
+Atualização M17 (14/10/2026, `8a8878ed`): a execução grava agora
+`uploading_archive` antes do upload de arquivo com email, quando ainda não há
+mensagem preparada. Esgotamento de tentativas ou crash nessa fase não significam
+envio incerto: o painel permite repetição auditada, e a reconciliação não cria
+uma retenção nesse caso. Os registos antigos sem fase não são reclassificados
+nem libertados por inferência. Falhas anteriores ao checkpoint continuam
+conservadoras. A causa das queixas antigas não foi demonstrada; ver o
+[mapa de queixas e regressões](QUEIXAS_E_REGRESSOES.md).
 
 ## Evidência humana e verificações automáticas
 
