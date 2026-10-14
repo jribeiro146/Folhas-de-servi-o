@@ -390,6 +390,8 @@ class GraphSyncQueue:
         Retain the payload and the explicit replacement ID for audit/rollback.
         Never retire a running worker, an archive, or a different draft.
         """
+        if not self._has_uploads_to_reconcile(connection):
+            return
         rows = connection.execute(
             "SELECT * FROM graph_sync_jobs WHERE kind = 'upload_active' "
             "ORDER BY rowid DESC"
@@ -413,6 +415,8 @@ class GraphSyncQueue:
 
     def _hold_outdated_upload_retries(self, connection: sqlite3.Connection) -> None:
         """Never let an older retry overwrite a newer, partially published save."""
+        if not self._has_uploads_to_reconcile(connection):
+            return
         rows = connection.execute(
             "SELECT * FROM graph_sync_jobs WHERE kind = 'upload_active' "
             "ORDER BY rowid DESC"
@@ -435,6 +439,16 @@ class GraphSyncQueue:
                     )
             if int(row["attempts"]) > 0:
                 started.setdefault(source, row["id"])
+
+    @staticmethod
+    def _has_uploads_to_reconcile(connection: sqlite3.Connection) -> bool:
+        # Callers hold BEGIN IMMEDIATE. Without a row these routines can mutate,
+        # parsing/resolving the complete upload history cannot change anything.
+        # Keep that history: it still proves supersession and idempotency later.
+        return connection.execute(
+            "SELECT 1 FROM graph_sync_jobs WHERE kind='upload_active' "
+            "AND status IN ('pending','failed','held') LIMIT 1"
+        ).fetchone() is not None
 
     def summary(self) -> dict[str, int]:
         result = {"pending": 0, "running": 0, "failed": 0, "complete": 0,
