@@ -1,8 +1,22 @@
 # Validação Linux/Docker e rastreabilidade
 
+## Candidato final confirmado em 14/10/2026
+
+[Run 38558533929](https://github.com/jribeiro146/Folhas-de-servi-o/actions/runs/38558533929), commit **`b4614b5ed4ab6daa174b23bd77c932d03e88e3c3`**: os três jobs passaram. Cada perfil Docker aprovou **1537 Python**, com três skips exclusivos de Windows; JavaScript aprovou **175**. UID/GID 10001:10001 e 100:101, Compose 5.6.0 e 2.27.0. PDF Chromium real de duas páginas em ambos; init/factories, recusa de legado/adulteração, migração, reposição pré-M06, backup/verify/activate/restore/release e permissões POSIX passaram.
+
+O ZIP Windows e os dois Linux são idênticos: **`ec07dcddd13f602009b2d590fafb943d296089b0f20c4e5d8d92f84b8fd2bcb0`**. Identidade de fonte: `aa2043fa033fbf0c660e89bac6325930bacf2a43d50483baa4e170cdd6e6719e`, 122 ficheiros. Python 3.13.16, Chromium 155.0.8059.39; inventários de 15 pacotes runtime/20 QA coincidem com constraints, quatro pip check passaram, pytest ausente do runtime. [Evidência permanente final](EVIDENCIA_CI_2026-10-14_FINAL.json). Logs e anexos completos foram preservados localmente, com digests conferidos contra a API.
+
+O run anterior `38556971728`, em b61b5e8, falhou durante o build por não copiar `requirements-browser-tests.txt`; só JavaScript passou, sem executar Python/PDF/Compose posteriores. O COPY foi corrigido para incluir todos os requisitos declarados, mantendo a instalação pip e a verificação do manifesto. O resultado falhado não foi apagado nem classificado como sucesso.
+
+A suite Windows completa do candidato b4614b5 passou **1536 Python/4 skips**, 416,59 s. A primeira suite em b61b5e8 tinha 1535 aprovados/4 skips/1 falha HTTP400 num teste que esperava500 simulado. Dez reproduções isoladas e a suite posterior passaram; a causa não foi demonstrada. O diagnóstico da asserção foi melhorado, sem alterar o comportamento SADI; logs anteriores permanecem preservados.
+
+A atualização documental posterior apenas regista esta evidência e usa `[skip ci]`; não é um novo ensaio nem produz automaticamente outro ZIP validado. O artefacto ensaiado continua a ser b4614b5 com o checksum acima. M22 permanece pendente; retenção não elimina dados; a instalação/AlmaLinux permanece fora destes testes.
+
+## Histórico M15 de 14/10
+
 **M15 confirmado em 14/10/2026:** [run 38544935797](https://github.com/jribeiro146/Folhas-de-servi-o/actions/runs/38544935797), commit `fd1128f824b86b0143b11f8d32e4c3459affbf39`, três jobs aprovados. Cada perfil Docker passou 1517 Python/3 skips Windows; JavaScript passou 174. PDF real de duas páginas, permissões POSIX, init/migração/backup/activate/restauro, Compose 5.6.0 e 2.27.0 passaram. As duas identidades foram 10001:10001 e 100:101. Windows e ambos Linux produziram o mesmo ZIP SHA256 `47d2cbf023e6012c07d3adf9acad0fec9e7337768d4aed7cc55faa84478e6227`; source `816e6506c4c9f373154adef0fe6236f8f0b2b32443399ee95bae6ee2749bad61`. [Evidência permanente M15](EVIDENCIA_CI_2026-10-14_M15.json).
 
-O primeiro run `38543107104` falhou em quatro fixtures desatualizadas e permanece registado como falha. Correções e limites em [dependências e build](DEPENDENCIAS_E_BUILD.md). M16/M17/M18/M12 são posteriores a fd1128f e exigem o CI final identificado no [estado da entrega](ESTADO_ENTREGA_2026-10-14.md); a aprovação M15 não os valida retroativamente. O ensaio específico no destino AlmaLinux continua a cargo do instalador.
+O primeiro run `38543107104` falhou em quatro fixtures desatualizadas e permanece registado como falha. Correções e limites em [dependências e build](DEPENDENCIAS_E_BUILD.md). M16/M17/M18/M12 são posteriores a fd1128f e foram incluídos no CI final b4614b5 acima; a aprovação M15 não os valida retroativamente. O ensaio específico no destino AlmaLinux continua a cargo do instalador.
 
 ## Histórico confirmado de 12/10
 

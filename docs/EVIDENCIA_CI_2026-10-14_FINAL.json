@@ -1,0 +1,113 @@
+{
+  "run": "https://github.com/jribeiro146/Folhas-de-servi-o/actions/runs/38558533929",
+  "commit": "b4614b5ed4ab6daa174b23bd77c932d03e88e3c3",
+  "zip_sha256": "ec07dcddd13f602009b2d590fafb943d296089b0f20c4e5d8d92f84b8fd2bcb0",
+  "source_sha256": "aa2043fa033fbf0c660e89bac6325930bacf2a43d50483baa4e170cdd6e6719e",
+  "javascript": {
+    "passed": 175,
+    "failed": 0
+  },
+  "source_files": 122,
+  "profiles": [
+    {
+      "identity": "10001:10001",
+      "compose_version": "5.6.0",
+      "python": "Python 3.13.16",
+      "chromium": "Chromium 155.0.8059.39 built on Debian GNU/Linux 13 (trixie)",
+      "python_passed": 1537,
+      "python_skipped": 3,
+      "python_failures": 0,
+      "python_seconds": 86.268,
+      "image": "sha256:12dcdcf6713e4df9d0f51f164bd99ca569a68256acee20b5bdb5592f1be2d84c",
+      "qa_image": "sha256:278d5c51e17b6b4ce02716cf36a6a4f60a464f956dc60512675151ed02a25ae8",
+      "pdf": {
+        "status": "ok",
+        "pages": 2,
+        "bytes": 19889,
+        "uid": 10001,
+        "gid": 10001,
+        "sandbox_disabled": "true"
+      },
+      "compose_status": "PASS",
+      "acceptance": "PASS",
+      "inventories_match_constraints": true,
+      "runtime_has_pytest": false
+    },
+    {
+      "identity": "100:101",
+      "compose_version": "2.27.0",
+      "python": "Python 3.13.16",
+      "chromium": "Chromium 155.0.8059.39 built on Debian GNU/Linux 13 (trixie)",
+      "python_passed": 1537,
+      "python_skipped": 3,
+      "python_failures": 0,
+      "python_seconds": 74.613,
+      "image": "sha256:2cfc4cba6ade71fe07613fda373013debb4ef26591b8aabe0adab1ba1c6b6540",
+      "qa_image": "sha256:ccb896e5d5858a9fb8e2b1331a343756fff058f1751539cc69637df8bc2c61f3",
+      "pdf": {
+        "status": "ok",
+        "pages": 2,
+        "bytes": 19889,
+        "uid": 100,
+        "gid": 101,
+        "sandbox_disabled": "true"
+      },
+      "compose_status": "PASS",
+      "acceptance": "PASS",
+      "inventories_match_constraints": true,
+      "runtime_has_pytest": false
+    }
+  ],
+  "artifact_downloads": [
+    {
+      "name": "linux-hs4-b4614b5ed4ab6daa174b23bd77c932d03e88e3c3",
+      "sha256": "96b17fb68691a1b3af01659e937402421d532dd44722036e3225a36dc6f7927e",
+      "bytes": 42736
+    },
+    {
+      "name": "javascript-b4614b5ed4ab6daa174b23bd77c932d03e88e3c3",
+      "sha256": "84fc245f435f93234ea98d72dc9f6818fa7928b4124f4c475e44e0e1c2c6f8fe",
+      "bytes": 7434
+    },
+    {
+      "name": "linux-default-b4614b5ed4ab6daa174b23bd77c932d03e88e3c3",
+      "sha256": "1c6ae16d9e8c1c00c97d64a563c991c3bc086fb4a61af9fe422a52fde24f40c5",
+      "bytes": 42783
+    }
+  ],
+  "prior_failed_run": {
+    "run": 38556971728,
+    "commit": "b61b5e8cfbd14a446850c2d38d15694424066476",
+    "cause": "manifest refused missing requirements-browser-tests.txt in image",
+    "javascript_passed": 175,
+    "docker_suite_executed": false
+  },
+  "limits": [
+    "Synthetic GitHub Ubuntu Docker; production AlmaLinux not operated",
+    "M22 three-tab offline bootstrap P3 remains open",
+    "Source and ZIP refer to b4614b5; later evidence-only commits are not new CI runs",
+    "Windows isolated HTTP400 in earlier full suite remains without proved cause; bounded ten-repeat diagnostic passed",
+    "APT mutable and wheel hashes not pinned; no byte-identical image claim"
+  ],
+  "windows": {
+    "commit": "b4614b5ed4ab6daa174b23bd77c932d03e88e3c3",
+    "passed": 1536,
+    "skipped": 4,
+    "failed": 0,
+    "seconds": 416.59,
+    "python": "3.13.1",
+    "skip_scope": "POSIX/symlink capabilities"
+  },
+  "prior_windows_failure": {
+    "commit": "b61b5e8cfbd14a446850c2d38d15694424066476",
+    "passed": 1535,
+    "skipped": 4,
+    "failed": 1,
+    "seconds": 424.9,
+    "test": "test_pdf_failure_retains_draft_and_retry_builds_complete_bundle",
+    "observed": "HTTP400 before intended simulated500; original response body not retained by assertion",
+    "bounded_isolated_repeats": 10,
+    "bounded_repeats_passed": 10,
+    "cause": "unproven; later full suite passed and assertion now preserves response"
+  }
+}
