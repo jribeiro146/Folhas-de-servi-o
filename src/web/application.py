@@ -1766,6 +1766,7 @@ def _create_app(
 
         document_id = ""
         idempotency_key = ""
+        partial_draft_path = None
         try:
             received, photo_uploads, removed_photo_ids = parse_commit_request()
             prepared_photos = PhotoAttachmentService.prepare_uploads(photo_uploads)
@@ -1816,6 +1817,10 @@ def _create_app(
             resolved_signatures = signature_service.resolve_from_form_data(data)
             if graph_service is not None:
                 mark_dirty(draft_path.parent)
+            # A new copy does not mutate the original private workspace. For an
+            # existing draft, retain its autosave if a later bundle write fails.
+            if draft_path == path:
+                partial_draft_path = draft_path
             ExcelService(draft_path).write_link_from_form(
                 excel_form_data,
                 signatures=resolved_signatures,
@@ -1891,13 +1896,15 @@ def _create_app(
             return jsonify(result)
         except PhotoAttachmentError as exc:
             if document_id and idempotency_key:
-                editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
+                editing_state_service.fail_operation(document_id, idempotency_key, str(exc),
+                                                    partial_draft_path=partial_draft_path)
             return json_error(str(exc), 400, code="attachments_invalid")
         except EditingStateError as exc:
             return editing_error_response(exc)
         except GraphConflictError as exc:
             if document_id and idempotency_key:
-                editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
+                editing_state_service.fail_operation(document_id, idempotency_key, str(exc),
+                                                    partial_draft_path=partial_draft_path)
             return jsonify({
                 "success": False,
                 "error": redact_diagnostic_text(exc),
@@ -1906,11 +1913,13 @@ def _create_app(
             }), 409
         except ExcelValidationError as exc:
             if document_id and idempotency_key:
-                editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
+                editing_state_service.fail_operation(document_id, idempotency_key, str(exc),
+                                                    partial_draft_path=partial_draft_path)
             return json_error(str(exc), 400, code="document_invalid")
         except Exception as exc:
             if document_id and idempotency_key:
-                editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
+                editing_state_service.fail_operation(document_id, idempotency_key, str(exc),
+                                                    partial_draft_path=partial_draft_path)
             log_event(
                 app.logger,
                 logging.ERROR,

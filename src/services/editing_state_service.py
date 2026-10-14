@@ -567,11 +567,24 @@ class EditingStateService:
             operation.setdefault("context", {}).update(context)
             operation["updated_at"] = time.time()
 
-    def fail_operation(self, document_id: str, idempotency_key: str, message: str) -> None:
+    def fail_operation(
+        self, document_id: str, idempotency_key: str, message: str,
+        *, partial_draft_path: Path | None = None,
+    ) -> None:
         with self._state_transaction(document_id) as state:
             operation = (state.setdefault("operations", {})).get(idempotency_key)
             if not operation or operation.get("status") != "pending":
                 return
+            if partial_draft_path is not None:
+                if (operation.get("kind") != "draft"
+                        or self.resolve_document_id(partial_draft_path) != document_id):
+                    raise EditingStateError("A escrita parcial não pertence a este rascunho.")
+                # The caller still owns the document/bundle operation guards.
+                # Excel may already have changed when a later sidecar fails.
+                # Account for our own write before clearing pending, otherwise
+                # the next read treats it as external and deletes the autosave.
+                # A later external fingerprint change still invalidates normally.
+                state["fingerprint"] = self._fingerprint(partial_draft_path)
             operation["status"] = "failed"
             operation["error"] = message
             operation["updated_at"] = time.time()
