@@ -109,5 +109,7 @@
     "bounded_isolated_repeats": 10,
     "bounded_repeats_passed": 10,
     "cause": "unproven; later full suite passed and assertion now preserves response"
-  }
+  },
+  "historical_checkpoint": true,
+  "superseded_by": "EVIDENCIA_CI_2026-10-14_M22.json"
 }

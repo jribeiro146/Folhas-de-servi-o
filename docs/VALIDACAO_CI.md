@@ -1,6 +1,16 @@
 # Validação Linux/Docker e rastreabilidade
 
-## Candidato final confirmado em 14/10/2026
+## Retoma M22 confirmada em 14/10/2026
+
+[Run 38570674039](https://github.com/jribeiro146/Folhas-de-servi-o/actions/runs/38570674039), commit **`496bbaa80bca59955164e7932a7973ea16509efd`**: três jobs aprovados. Dois perfis Docker, UID/GID 10001:10001 e 100:101, Compose 5.6.0/2.27.0: **1537 Python aprovados/3 skips Windows** cada, PDF Chromium de duas páginas e toda a aceitação de init/migração/backup/verify/activate/restauro/release/Compose. JavaScript: **180 aprovados**.
+
+ZIP Windows e ambos Linux idênticos: **`51d1db08daa0b2c525c0b329ecf60aaa792a5f96ca8eea8443f8e57736eaecfc`**. Source `f676978aa63eb08c177c9313a9c38f43a085b3d603068ee84f38a06cf912b050`, 122 ficheiros. Inventários runtime15/QA20 iguais às constraints, quatro pip check aprovados, pytest ausente do runtime. Anexos e logs preservados localmente; os três digests dos downloads foram conferidos contra a API. [Evidência permanente M22](EVIDENCIA_CI_2026-10-14_M22.json).
+
+No mesmo código, Windows passou **1536 Python/4 skips**, 399,65 s; Chromium local passou **doze grupos**, incluindo bootstrap falhado, três abas, fecho e retry reais. O código foi aprovado em `20261014T131543Z_496bbaa8_86934d`, check0. As alterações posteriores são apenas documentação de resultados, com `[skip ci]`; o artefacto ensaiado mantém o SHA496bbaa e o ZIP acima. O parecer documental cumulativo fica no registo de colaboração.
+
+Este checkpoint fecha a validação sintética da correção M22. Não confirma o destino AlmaLinux, login Microsoft real ou entrega operacional. As ocorrências Windows históricas continuam documentadas com causa não demonstrada, e não há eliminação de históricos.
+
+## Histórico M20 de 14/10/2026
 
 [Run 38558533929](https://github.com/jribeiro146/Folhas-de-servi-o/actions/runs/38558533929), commit **`b4614b5ed4ab6daa174b23bd77c932d03e88e3c3`**: os três jobs passaram. Cada perfil Docker aprovou **1537 Python**, com três skips exclusivos de Windows; JavaScript aprovou **175**. UID/GID 10001:10001 e 100:101, Compose 5.6.0 e 2.27.0. PDF Chromium real de duas páginas em ambos; init/factories, recusa de legado/adulteração, migração, reposição pré-M06, backup/verify/activate/restore/release e permissões POSIX passaram.
 
@@ -10,7 +20,7 @@ O run anterior `38556971728`, em b61b5e8, falhou durante o build por não copiar
 
 A suite Windows completa do candidato b4614b5 passou **1536 Python/4 skips**, 416,59 s. A primeira suite em b61b5e8 tinha 1535 aprovados/4 skips/1 falha HTTP400 num teste que esperava500 simulado. Dez reproduções isoladas e a suite posterior passaram; a causa não foi demonstrada. O diagnóstico da asserção foi melhorado, sem alterar o comportamento SADI; logs anteriores permanecem preservados.
 
-A atualização documental posterior apenas regista esta evidência e usa `[skip ci]`; não é um novo ensaio nem produz automaticamente outro ZIP validado. O artefacto ensaiado continua a ser b4614b5 com o checksum acima. M22 permanece pendente; retenção não elimina dados; a instalação/AlmaLinux permanece fora destes testes.
+A atualização documental posterior apenas regista esta evidência e usa `[skip ci]`; não é um novo ensaio nem produz automaticamente outro ZIP validado. O artefacto ensaiado continua a ser b4614b5 com o checksum acima. Nesse checkpoint M20, M22 permanecia pendente; foi corrigido e validado no checkpoint posterior acima. Retenção não elimina dados; a instalação/AlmaLinux permanece fora destes testes.
 
 ## Histórico M15 de 14/10
 
