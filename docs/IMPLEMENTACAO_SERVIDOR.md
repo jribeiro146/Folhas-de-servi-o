@@ -2,6 +2,8 @@
 
 Este documento serve como checklist tecnica para colocar a webapp de Folhas de Servico num servidor Plesk ou equivalente, usando Microsoft Graph como armazenamento e Microsoft Entra ID como autenticacao.
 
+Antes de qualquer instalação autorizada, conferir [o estado da entrega](ESTADO_ENTREGA_2026-10-14.md), o commit/ZIP validado e os resultados [CI](VALIDACAO_CI.md). Os exemplos de configuração deste guia devem ser conferidos pelo instalador; não são uma leitura do estado atual do servidor. A chave existente deve ser preservada entre web/worker, backups e versões: não gerar outra numa atualização, pois valida sessões e assinaturas SADI.
+
 ## Objetivo do deploy
 
 A aplicacao Flask fica alojada no servidor e acessivel por um subdominio HTTPS, por exemplo:
@@ -23,22 +25,13 @@ O servidor nao deve depender do OneDrive Desktop. A app comunica diretamente com
 
 ## Versoes e dependencias
 
-Versao local testada:
+O CI Docker M15 observou Python 3.13.16 e Chromium 155.0.8059.39; os testes Windows locais usaram Python 3.13.1. Dependências Python diretas e transitivas constam de `requirements-linux-constraints.txt`; o inventário efetivamente instalado é conferido no CI. Não tratar outro Python/Plesk como validado por estes resultados. Ver [dependências e build](DEPENDENCIAS_E_BUILD.md).
 
-```text
-Python 3.13.1
-Flask 3.1.3
-openpyxl 3.1.5
-Pillow 12.1.1
-Werkzeug 3.1.8
-```
-
-Para servidor, usar preferencialmente Python 3.13.x. Se o Plesk nao disponibilizar Python 3.13, usar Python 3.12.x e testar antes de producao.
-
-Instalar dependencias de servidor com:
+Em ambiente Linux Python 3.13 preparado pelo instalador, reproduzir as constraints:
 
 ```bash
-pip install -r requirements-server.txt
+python -m pip install -c requirements-linux-constraints.txt -r requirements-server.txt
+python -m pip check
 ```
 
 Notas:
@@ -56,15 +49,9 @@ Notas:
 
 ## Estrutura a publicar
 
-Publicar estes elementos no servidor:
+Usar o pacote completo produzido por `tools/build_release.py` a partir do HEAD limpo e revisto. Conferir o checksum do ZIP e manter o manifesto `release-manifest.json`, requisitos/constraints, ferramentas e código tal como empacotados; uma lista manual de ficheiros deixa de ser uma entrega válida. [Identidade da versão](IDENTIDADE_DA_VERSAO.md) descreve a criação e verificação.
 
-```text
-src/
-requirements-server.txt
-passenger_wsgi.py
-docs/
-README.md
-```
+Antes de arrancar web/worker, preparar o armazenamento conforme [runtime](PREPARACAO_RUNTIME.md): instalação vazia usa init; legado usa [migração offline](MIGRACAO_OFFLINE.md); mudança compatível usa backup/verificação/activate. A reversão deve seguir [backup/restauro](BACKUP_RESTAURO.md) ou a reversão pré-M06 em [Docker](10_ALOJAMENTO_DOCKER.md), sem remover volumes ou baixar versões manualmente.
 
 Evitar publicar como codigo operacional:
 
@@ -119,8 +106,7 @@ A app WSGI e o worker precisam exatamente das mesmas variaveis, incluindo
 `FS_ENV_FILE`, guardar esse ficheiro fora do document root, legivel apenas pelo
 utilizador da subscricao, e definir a mesma variavel na app Python do Plesk.
 
-Usar `Run Now` no Plesk para confirmar que o comando termina com codigo zero e
-emite o evento `queue_worker_cycle_completed` no log. Em alojamentos onde as tarefas correm numa shell chroot,
+Depois da instalação e arranque autorizados pelo responsável, confirmar presença/ciclo/versão pelo [diagnóstico independente do worker](DIAGNOSTICO_WORKER.md). `Run Now` pode processar trabalhos e comunicações reais; não é um teste neutro. Um site a responder não demonstra que o worker está ativo. Em alojamentos onde as tarefas correm numa shell chroot,
 os caminhos do comando devem ser os caminhos visiveis dentro dessa subscricao.
 
 Referencias no codigo:
@@ -209,6 +195,10 @@ src/config.py - MICROSOFT_AUTH_REDIRECT_URI e MICROSOFT_AUTH_ALLOWED_DOMAINS
 src/config.py - FS_STORAGE_BACKEND, GRAPH_SITE_ID e GRAPH_DRIVE_ID
 src/config.py - GRAPH_ACTIVE_PATH, GRAPH_ARCHIVE_PATH e GRAPH_CACHE_DIR
 ```
+
+## Referência histórica de configuração e arquitetura
+
+As secções seguintes conservam o levantamento de setembro para consulta. Os identificadores, caminhos, linhas de código e recomendações de operação aqui registados não comprovam o estado atual do servidor. Para instalar, migrar, diagnosticar ou reverter, prevalecem o estado da entrega de 14/10 e os guias específicos ligados no início. Não executar recuperação manual antiga de ficheiros ou marcadores sobre o runtime atual.
 
 ## Onde mudar o URL
 
@@ -300,7 +290,7 @@ Sites.Selected
 Depois conceder permissao apenas ao site/biblioteca usados pela app.
 ```
 
-Nota de seguranca: o segredo de cliente ja foi usado em testes. Antes de producao, criar um novo segredo no Entra, atualizar o Plesk e remover/revogar o segredo antigo.
+A gestão ou rotação de `GRAPH_CLIENT_SECRET` cabe ao responsável da instalação e exige coordenação de web/worker. Este guia não atesta a validade atual do segredo nem autoriza modificá-lo. `FS_SECRET_KEY` é uma chave distinta e deve permanecer estável para conservar sessões/assinaturas; ver [chave SADI](ASSINATURAS_SADI_E_CHAVE.md).
 
 ## Funcionamento tecnico da app
 

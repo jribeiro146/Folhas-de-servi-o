@@ -1,8 +1,7 @@
 # Preparação explícita do runtime
 
 Comandos locais para o profissional que instala a aplicação. Esta alteração não
-executa nem autoriza instalação no servidor. O empacotamento final e validação
-Linux continuam etapas separadas do plano. A migração de formatos suportados tem
+executa nem autoriza instalação no servidor. O empacotamento e a validação Linux têm procedimentos e evidência próprios em [identidade da versão](IDENTIDADE_DA_VERSAO.md) e [CI](VALIDACAO_CI.md). Consultar o [estado da entrega](ESTADO_ENTREGA_2026-10-14.md) antes da intervenção. A migração de formatos suportados tem
 procedimento próprio em [M06](MIGRACAO_OFFLINE.md); a cópia e recuperação verificadas,
 com bloqueio até reconciliação dos efeitos externos, em [M07](BACKUP_RESTAURO.md).
 

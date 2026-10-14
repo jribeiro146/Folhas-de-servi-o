@@ -1,8 +1,8 @@
 ﻿# Folhas de Servico
 
-Esta revisão inclui a versão de produção das checklists de manutenção SADI.
+Esta árvore é a base canónica das Folhas de Serviço e checklists SADI. Consultar primeiro o [estado da entrega de 14/10/2026](docs/ESTADO_ENTREGA_2026-10-14.md): alterações aprovadas, evidência, configuração e pendências. O M22 conserva um problema conhecido de recuperação entre três abas; não há aprovação de instalação em produção.
 
-Para instalar em Plesk/Docker, publicar esta revisão e seguir [as notas de versão SADI](docs/RELEASE_NOTES_SADI_DEMO_2026-09-24.md) e `docs/IMPLEMENTACAO_SERVIDOR.md`. A tag antiga `v1.0.0-servidor` não inclui estas alterações.
+Para uma instalação autorizada em Plesk/Docker, usar o ZIP do commit validado com manifesto e checksum, seguindo [a entrega Docker](docs/10_ALOJAMENTO_DOCKER.md) e [a preparação do servidor](docs/IMPLEMENTACAO_SERVIDOR.md). Não instalar por cópia seletiva de ficheiros. A tag antiga `v1.0.0-servidor` e as notas SADI de setembro são referências históricas.
 A SADI fica ativa por defeito com `FS_ENVIRONMENT=production`, autenticação Microsoft e backend Graph. O ficheiro `.env.production.example` inclui `FS_MAINTENANCE_ENABLED=true`. Um valor explícito `false` no servidor mantém a funcionalidade desligada. São necessários Chromium e armazenamento privado persistente em `FS_APP_DATA_DIR`.
 Para a migracao do sincronismo transacional, seguir tambem `docs/SINCRONIZACAO_V2_ADMIN.md`.
 Para localizacao, rotacao e operacao dos logs, seguir `docs/LOGGING.md`.
@@ -17,8 +17,7 @@ Para cópias e recuperação, consultar [Backup/restauro offline — M07](docs/B
 cópia consistente, chave separada, restauro verificado e bloqueio até reconciliação.
 Para gerar uma entrega do commit exato, consultar [Identidade e pacote — M13](docs/IDENTIDADE_DA_VERSAO.md).
 O arranque operacional exige manifesto; desenvolvimento usa o lançador sintético.
-A entrega Docker (M14) usa esse artefacto. Os ensaios Linux estão pendentes e
-constam da [nota ao instalador](docs/VALIDACAO_DOCKER_INSTALADOR.md).
+A entrega Docker (M14) usa esse artefacto. Os ensaios sintéticos Linux/Docker foram executados nos commits identificados em [Validação CI](docs/VALIDACAO_CI.md). A [nota ao instalador](docs/VALIDACAO_DOCKER_INSTALADOR.md) conserva os procedimentos e a verificação específica do destino AlmaLinux.
 Os testes locais não aprovam uma instalação real.
 
 Estrutura principal do projeto:
@@ -58,7 +57,7 @@ Notas de consistencia:
 ## Administração operacional
 
 A conta Microsoft autenticada `jribeiro@sensorpoint.pt` recebe o papel
-`special_admin`, calculado no servidor pelo endereço completo. O acesso SADI
+`special_admin` apenas quando o email e os GUIDs Microsoft de tenant e objeto coincidem com `FS_ADMIN_TENANT_ID` e `FS_ADMIN_OBJECT_ID`. Configuração ausente ou sessão antiga sem identidade completa recusa o privilégio; ver [identidade administrativa](docs/IDENTIDADE_ADMINISTRATIVA.md). O acesso SADI
 existente mantém-se. Abrir **Administração operacional** na barra lateral ou
 `/admin` para consultar reservas, gravações automáticas, fila e histórico.
 
@@ -79,7 +78,7 @@ Envios incertos, resultados sem comprovativo e dados inválidos continuam retido
 para revisão. Não há alterações às permissões Entra, às credenciais ou aos dados
 comerciais. O painel não funciona sem autenticação Microsoft e não divulga tokens
 de edição nem conteúdo dos autosaves. A tabela `admin_actions` integra o backup
-de `editing-state.sqlite3` e é criada no primeiro arranque.
+de `editing-state.sqlite3`. Instalações novas criam o formato atual; bases antigas exigem preparação offline M06, sem criação ou conversão implícita do legado.
 
 Na revisão de 07/10/2026, as respostas atrasadas de gravação ou retoma deixaram de
 reativar uma página expulsa ou de limpar a sua recuperação pendente. Uma resposta
@@ -89,8 +88,7 @@ pelas mesmas proteções do painel: apenas o administrador Microsoft, CSRF, moti
 obrigatório, avaliação de envio incerto e auditoria. Integrações que usavam essa
 rota sem estes requisitos devem passar a usar o painel administrativo.
 
-A implementação foi aplicada também ao pacote de migração, preservando o perfil
-de demonstração. Não houve deploy, reinício operacional ou envio real.
+O registo de 07/10 descrevia também alterações no pacote de demonstração. A consolidação posterior é feita nesta árvore canónica; não pressupor igualdade com `App_Folhas_Checklists/aplicacao` nem copiar uma árvore sobre a outra. Não houve deploy, reinício operacional ou envio real nesta sequência.
 
 ## Revisão da sincronização de 07/10/2026
 

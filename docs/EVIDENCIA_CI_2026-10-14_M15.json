@@ -1,0 +1,64 @@
+{
+  "run": "https://github.com/jribeiro146/Folhas-de-servi-o/actions/runs/38544935797",
+  "commit": "fd1128f824b86b0143b11f8d32e4c3459affbf39",
+  "zip_sha256": "47d2cbf023e6012c07d3adf9acad0fec9e7337768d4aed7cc55faa84478e6227",
+  "source_sha256": "816e6506c4c9f373154adef0fe6236f8f0b2b32443399ee95bae6ee2749bad61",
+  "javascript": {
+    "passed": 174,
+    "failed": 0
+  },
+  "profiles": [
+    {
+      "identity": "10001:10001",
+      "pytest": {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "3",
+        "tests": "1520",
+        "time": "81.625",
+        "timestamp": "2026-10-14T09:48:30.282394+00:00",
+        "hostname": "138796ecbab0"
+      },
+      "python": "Python 3.13.16",
+      "chromium": "Chromium 155.0.8059.39 built on Debian GNU/Linux 13 (trixie)",
+      "image": "sha256:87a00db0f109a821f1f3a8e65aec2476f543655c20fc7cf8009601ac62c3edf6",
+      "qa_image": "sha256:a0097fba15eacb2c1f097f008cca2b2b3a15667b0e25a83a1632038fbc73c1cb",
+      "inventories_match_constraints": true,
+      "runtime_has_pytest": false,
+      "acceptance": "PASS"
+    },
+    {
+      "identity": "100:101",
+      "pytest": {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "3",
+        "tests": "1520",
+        "time": "53.563",
+        "timestamp": "2026-10-14T09:48:19.150614+00:00",
+        "hostname": "03b6eab76ccb"
+      },
+      "python": "Python 3.13.16",
+      "chromium": "Chromium 155.0.8059.39 built on Debian GNU/Linux 13 (trixie)",
+      "image": "sha256:bc5dc0086ee3c59654584ad4c32fe6e86813bf5f19c6691a0028a769d615ed39",
+      "qa_image": "sha256:92063a0fbf4d2a901d916944c0d040f03dfc1f8357d92e2ab47ba71771cd0756",
+      "inventories_match_constraints": true,
+      "runtime_has_pytest": false,
+      "acceptance": "PASS"
+    }
+  ],
+  "review": {
+    "run": "20261014T094545Z_fd1128f8_8a921e",
+    "verdict": "approve",
+    "check_exit": 0,
+    "report_sha256": "eec1d9817d09bf8dae3733d08d3b8c9823a5193f9669faa28dad752517e5c2a9"
+  },
+  "limits": [
+    "Synthetic GitHub Ubuntu Docker; no production AlmaLinux execution",
+    "M22 remains pending",
+    "Later source commits require their own CI evidence",
+    "APT mutable and wheels without hashes; image byte reproducibility not claimed"
+  ]
+}

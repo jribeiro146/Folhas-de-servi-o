@@ -1,0 +1,47 @@
+# Estado da entrega — 14/10/2026
+
+## Árvore e estado atual
+
+A base canónica é `qa-output/production-delivery-20260928`, com Git próprio, branch local `codex/p2-folhas-sadi-20261012`. `App_Folhas_Checklists/aplicacao` é o pacote/demo, com diferenças históricas; não é uma cópia desta entrega. Não copiar uma árvore sobre a outra. O [inventário de 07/10](RECONCILIACAO_2026-10-07.md) fica como proveniência, não como lista atual de trabalho por executar.
+
+M01–M21 estão implementados e aprovados nos seus âmbitos anteriores, com exceção do próprio M20, cuja consolidação documental e validação final estão em curso neste checkpoint. O **M22 permanece pendente**, com o limite abaixo. A aprovação de um ponto não aprova esse problema herdado nem autoriza instalação. Não houve deploy, merge em main, reinício do servidor ou comunicação operacional nesta sequência.
+
+O último código operacional aprovado é `4b7dd6a0db18bec6a8f4d293867cda9db56b1000` (M12). O último Docker confirmado antes da consolidação M20 é `fd1128f824b86b0143b11f8d32e4c3459affbf39` (M15), [run 38544935797](https://github.com/jribeiro146/Folhas-de-servi-o/actions/runs/38544935797). Os resultados deste run não abrangem as alterações posteriores. O CI final deve testar o commit documental revisto e o ZIP exato, pela branch autorizada `codex/validacao-linux-20261012`; registar os resultados em [Validação CI](VALIDACAO_CI.md) depois de os obter. Não alterar main nem instalar para satisfazer esta validação.
+
+## Mapa de mudanças e provas
+
+| Área | Decisão e commit | Evidência/guia |
+|---|---|---|
+| P1: edição, cancelamento, formatos e entrega | Consolidação `4ae35db0`; bases legadas não se convertem no arranque; instalação por manifesto | [Quarentena](QUARENTENA_EDICAO.md), [cancelamento](CANCELAMENTO_RECUPERAVEL.md), [M06](MIGRACAO_OFFLINE.md), [M07](BACKUP_RESTAURO.md), [pacote](IDENTIDADE_DA_VERSAO.md), [Docker](10_ALOJAMENTO_DOCKER.md); CI `0869bfa` e depois M15 |
+| M01/M02 | `5e237039` / `211cf1be`: identidade Microsoft coerente e administrador por email+tenant+objeto | [Autenticação](AUTENTICACAO_MICROSOFT.md), [identidade administrativa](IDENTIDADE_ADMINISTRATIVA.md); 212/231 Python nos respetivos fechos, com 1 skip Windows |
+| M03/M09 | `a1e65afd` / `94f2d1f`: estado de trabalho só para dono/admin e diagnósticos sem conteúdo privado | [Trabalhos privados](ESTADO_PRIVADO_TRABALHOS.md), [diagnósticos](DIAGNOSTICOS_SEGUROS.md); regressões de autorização/privacidade e CI M15 |
+| M08 | `884b7669`: decisões com prova/auditoria e revalidação do commit local sem libertar envios incertos | [Reconciliação](RECONCILIACAO_TRABALHOS.md); 444 Python/101 JS no fecho |
+| M10/M11 | `be7101d1` / `8acaba82`: acompanhamento só por GET, limitado à sessão; presença do worker independente da web | [Retoma](RETOMA_ACOMPANHAMENTO_EMAIL.md), [worker](DIAGNOSTICO_WORKER.md); 227 Python/139 JS e 371 Python/110 JS nos respetivos fechos |
+| M19/M21 | `44e24745` / `0e6d61ff`: cache por versão sem substituir formulário aberto; concorrência Graph por identidade | [Cache](CACHE_PWA_VERSAO.md), [pastas Graph](CRIACAO_PASTAS_GRAPH.md); seis cenários Chromium e 314 Python no M21 |
+| M15 | `fd1128f8`: digest base e constraints, manifesto LF, fixtures alinhadas com autorização/cache | [Dependências](DEPENDENCIAS_E_BUILD.md); CI dois perfis, 1517 Python por perfil/174 JS; Windows 1516 Python |
+| M16 | `a2b40e95`: autosave conservado após Excel gravado e sidecar falhado; repetição explícita reconcilia | [Percursos integrados](PERCURSOS_INTEGRADOS.md); 1519 Python/4 skips e onze grupos Chromium, worker separado, um email e um Teams simulados |
+| M17 | `8370a10c` (código `8a8878ed`): fase de preparação antes do upload; falha anterior ao envio pode ser repetida sem libertar legados incertos | [Queixas e regressões](QUEIXAS_E_REGRESSOES.md); 507 Python/1 skip e 175 JS |
+| M18 | `a1cd5d34`: matriz SADI com três perfis, legado, assinaturas, cliente ausente, PDFs reais separados e anexo só da folha | [Matriz SADI/PDF](MATRIZ_SADI_E_PDFS.md); 276 Python/1 skip, 175 JS, cinco grupos PDF e inspeção de todas as páginas |
+| M12 | `4b7dd6a0`: evitar varrimentos inúteis de uploads em repouso; simulação 90/180/365 dias, sem eliminar | [Histórico/retenção](HISTORICO_E_RETENCAO.md); 242 Python, quatro benchmarks; 100 mil uploads de 119,4 s para 0,81 s por ciclo no ensaio Windows |
+
+Os números de cada linha pertencem ao respetivo checkpoint e não devem ser somados como testes distintos. Os ensaios são sintéticos, isolados e sem entrega a destinatários. Logs, artefactos e pareceres integrais ficam no registo local de QA; dados operacionais e configuração privada não entram nos pacotes de revisão.
+
+Revisões recentes, todas com `approve`, sem achados/contexto em falta e `check=0` no HEAD indicado: M15 `20261014T094545Z_fd1128f8_8a921e` (segunda ronda), M16 `20261014T102529Z_a2b40e95_2c977e`, M17 `20261014T103655Z_8370a10c_394d4b`, M18 `20261014T105307Z_a1cd5d34_ee754a` e M12 `20261014T111624Z_4b7dd6a0_18e83f` (primeiras rondas). O revisor fez análise estática; a execução dos testes foi feita pelo Codex.
+
+## Configuração e sequência do instalador
+
+1. Conferir o commit aprovado, o checksum do ZIP entregue e `release-manifest.json`. Construir a imagem a partir desse pacote, mantendo código fora dos volumes de dados. Usar as constraints e o digest descritos no [build](DEPENDENCIAS_E_BUILD.md); APT continua mutável, sem promessa de imagem binariamente idêntica.
+2. Inventariar as raízes persistentes e parar todos os escritores na intervenção autorizada. Preservar a chave existente e as configurações privadas. A administração exige `FS_ADMIN_TENANT_ID` e `FS_ADMIN_OBJECT_ID`, além do email esperado; são valores do utilizador administrador, não da aplicação. Novo login é necessário para sessões antigas sem identidade completa.
+3. Escolher o procedimento pela situação real: volume novo usa [init](PREPARACAO_RUNTIME.md); legado usa [prepare/apply M06](MIGRACAO_OFFLINE.md); atualização compatível usa [backup/verify M07](BACKUP_RESTAURO.md) e activate. Não trocar manualmente PRAGMA, epoch ou hashes para contornar uma recusa.
+4. Conferir montagens, dono dos volumes, diretórios de logs/cache/diagnóstico e a mesma chave/configuração nas funções web e worker. `FS_GRAPH_QUEUE_IN_WEB=false` mantém o processamento no worker separado. A presença do site não comprova o worker; usar [o diagnóstico próprio](DIAGNOSTICO_WORKER.md).
+5. Manter `FS_SECRET_KEY` estável, armazenada privadamente, e preservar o armazenamento SADI. [Assinaturas e chave](ASSINATURAS_SADI_E_CHAVE.md) explica o efeito de mudar a chave. O instalador ainda confirma Chromium/PDF e permissões no destino AlmaLinux, com dados fictícios; CI Ubuntu/Docker não testa esse kernel/configuração.
+6. Se for preciso reverter, seguir [restauro M07](BACKUP_RESTAURO.md) ou a [reversão legada pré-M06](10_ALOJAMENTO_DOCKER.md). Uma cópia antiga não desfaz email/Teams/Graph já aceites: os efeitos posteriores ficam retidos para reconciliação antes de qualquer libertação. Não apagar volumes nem copiar uma base antiga por cima de outra em uso.
+
+Estes são procedimentos de entrega; não constituem uma ação operacional já executada. Guias de setembro e respostas antigas a revisões mantêm contexto histórico; esta página e os guias específicos acima definem a sequência atual.
+
+## Limites e decisões por tomar
+
+- **M22, P3:** se o bootstrap offline da aba A falhar antes de obter sessionToken, uma aba B ativa e uma mensagem de C podem deixar A a indicar outra aba e esconder o botão de repetir depois de B fechar. Recarregar recupera a interface; a cópia IndexedDB permanece. Cinco avaliações técnicas já foram usadas; não houve nova ronda nesta sequência. Diagnóstico local `p2-m22-offline-bootstrap-reproduction.txt` conserva a falha esperada, fora das contagens aprovadas. Parecer final `20261014T083155Z_59fc5428_496e0f=revise`, check2. Corrigir/fechar requer retoma autorizada desse ponto.
+- **Retenção:** João escolheu simular 90/180/365 dias e decidir depois. Não existe prazo de eliminação escolhido. Todos os IDs, recibos, incertezas e auditoria continuam protegidos; a ferramenta é só de leitura.
+- **Windows SADI:** o WinError5 histórico em rename continua sem causa demonstrada. Os testes posteriores passam e uma injeção determinística confirma conservação do rascunho/repetição explícita; isso não identifica a causa ambiental antiga.
+- **Destino e fornecedores:** não houve instalação no servidor, login Microsoft real nesta matriz nem envio operacional de email/Teams/Graph. Uma aceitação simulada não prova entrega. Continuam aplicáveis as verificações do instalador e as autorizações operacionais do projeto.

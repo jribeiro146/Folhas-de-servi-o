@@ -1,5 +1,7 @@
 # Fronteiras de transporte — implementação por etapas
 
+**Estado de 14/10/2026:** contratos e limites operacionais abaixo permanecem aplicáveis. As notas de execução e «etapas seguintes» preservam a sequência histórica dos checkpoints; implementação posterior, testes globais e pendências atuais estão no [estado da entrega](ESTADO_ENTREGA_2026-10-14.md) e no [registo CI](VALIDACAO_CI.md).
+
 ## Guarda direta e transporte de teste (08/10/2026)
 
 `GraphMailService` e `TeamsNotificationService` aceitam `transport=` como argumento

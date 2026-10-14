@@ -1,6 +1,10 @@
 # Validação Linux/Docker e rastreabilidade
 
-**Atualização M15 de 14/10/2026:** o primeiro run novo `38543107104` confirmou dependências e ZIP reproduzível, mas falhou em quatro fixtures anteriores desatualizadas; não é uma aceitação completa. Correções e limites em [dependências e build](DEPENDENCIAS_E_BUILD.md). Os resultados de 12/10 abaixo pertencem exclusivamente ao commit indicado.
+**M15 confirmado em 14/10/2026:** [run 38544935797](https://github.com/jribeiro146/Folhas-de-servi-o/actions/runs/38544935797), commit `fd1128f824b86b0143b11f8d32e4c3459affbf39`, três jobs aprovados. Cada perfil Docker passou 1517 Python/3 skips Windows; JavaScript passou 174. PDF real de duas páginas, permissões POSIX, init/migração/backup/activate/restauro, Compose 5.6.0 e 2.27.0 passaram. As duas identidades foram 10001:10001 e 100:101. Windows e ambos Linux produziram o mesmo ZIP SHA256 `47d2cbf023e6012c07d3adf9acad0fec9e7337768d4aed7cc55faa84478e6227`; source `816e6506c4c9f373154adef0fe6236f8f0b2b32443399ee95bae6ee2749bad61`. [Evidência permanente M15](EVIDENCIA_CI_2026-10-14_M15.json).
+
+O primeiro run `38543107104` falhou em quatro fixtures desatualizadas e permanece registado como falha. Correções e limites em [dependências e build](DEPENDENCIAS_E_BUILD.md). M16/M17/M18/M12 são posteriores a fd1128f e exigem o CI final identificado no [estado da entrega](ESTADO_ENTREGA_2026-10-14.md); a aprovação M15 não os valida retroativamente. O ensaio específico no destino AlmaLinux continua a cargo do instalador.
+
+## Histórico confirmado de 12/10
 
 **Resultado confirmado em 12/10/2026:** validação sintética Linux/Docker aprovada
 para o commit `0869bfa810794d80dbde6494cd603f6a3d764597`.

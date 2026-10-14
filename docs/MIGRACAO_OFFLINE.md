@@ -172,7 +172,7 @@ no resultado atual, além da cópia textual original. O indicador de reconcilia�
 continua disponível ao monitor de email e ao painel; quarentena não significa
 que o email não tenha sido aceite. Há teste real POSIX de permissões que é
 ignorado em Windows, além de testes simulados de UID/GID e falha de chown.
-O ensaio Linux permanece pendente; uma simulação não o substitui.
+Os testes POSIX e a migração foram posteriormente executados nos dois perfis Docker identificados em [VALIDACAO_CI.md](VALIDACAO_CI.md). Isso não substitui a preparação do destino pelo instalador.
 
 Resultados JSON legados com tipos inválidos (fase, aceitação, recibo, prazo Teams
 ou intenção de cancelamento) ficam apenas no campo textual original; não se

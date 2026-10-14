@@ -1,5 +1,7 @@
 # Reconciliação da versão de produção — 07/10/2026
 
+**Inventário histórico de 07/10, preservado como proveniência.** Para decisões implementadas e entrega atual, seguir [Estado de 14/10](ESTADO_ENTREGA_2026-10-14.md). A autorização posterior de 12/10 permite publicar apenas a branch de testes para CI; não altera a distinção entre árvore canónica e demo nem autoriza deploy. Os termos «pendente», «comparar» e «sem publicar» da tabela descrevem a decisão naquele dia.
+
 Base: `0cb5a54`. Branch local: `codex/producao-consolidada-20261007`. O utilizador suspendeu qualquer publicação no GitHub. Não há pressuposto de ancestral comum com o pacote exterior modificado.
 
 Os ficheiros iguais são preservados. A tabela identifica decisões para diferenças de conteúdo; a execução e evidência de cada funcionalidade constarão do registo de implementação. 'Comparar cobertura' é trabalho pendente, não integração concluída.
