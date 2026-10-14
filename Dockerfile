@@ -1,4 +1,5 @@
-FROM python:3.13-slim AS runtime
+# Same base digest exercised by CI run 38243794527. Updates require a new run.
+FROM python:3.13-slim@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f AS runtime
 
 # Offline migration/backup require data outside the verified code artifact.
 # Keep historical data paths (/app/data) and move only the image's code root.
@@ -14,10 +15,10 @@ RUN test "$APP_UID" -gt 0 && test "$APP_GID" -gt 0 \
  && addgroup --system --gid "$APP_GID" appgroup \
  && adduser --system --uid "$APP_UID" --ingroup appgroup --home /home/appuser appuser
 
-COPY requirements-server.txt requirements-smoke.txt ./
-RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir gunicorn \
- && pip install --no-cache-dir -r requirements-server.txt -r requirements-smoke.txt
+COPY requirements-server.txt requirements-smoke.txt requirements-linux-constraints.txt ./
+RUN python -m pip install --no-cache-dir -c requirements-linux-constraints.txt --upgrade pip \
+ && python -m pip install --no-cache-dir -c requirements-linux-constraints.txt gunicorn -r requirements-server.txt -r requirements-smoke.txt \
+ && python -m pip check
 
 COPY src/ src/
 COPY tools/ tools/
@@ -51,7 +52,8 @@ USER root
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git \
  && rm -rf /var/lib/apt/lists/* \
- && pip install --no-cache-dir pytest
+ && python -m pip install --no-cache-dir -c requirements-linux-constraints.txt pytest \
+ && python -m pip check
 COPY tests/ tests/
 USER appuser
 ENV PYTEST_DISABLE_PLUGIN_AUTOLOAD=1

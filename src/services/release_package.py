@@ -16,7 +16,8 @@ REQUIRED = {
     "src/web/application.py", "src/queue_worker.py", "src/services/release_identity.py",
     "tools/build_release.py", "tools/prepare_runtime.py", "tools/migrate_runtime.py",
     "tools/backup_runtime.py", "passenger_wsgi.py", "requirements-server.txt",
-    "requirements-smoke.txt", "Dockerfile", "docker-compose.yml", ".dockerignore",
+    "requirements-smoke.txt", "requirements-linux-constraints.txt",
+    "Dockerfile", "docker-compose.yml", ".dockerignore",
 }
 
 

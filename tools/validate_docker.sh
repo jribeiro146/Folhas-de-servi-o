@@ -23,6 +23,18 @@ uname -a > "$QA_EVIDENCE/kernel.txt"
 docker build --build-arg "APP_UID=$QA_UID" --build-arg "APP_GID=$QA_GID" --target production -t "$QA_IMAGE" .
 docker build --build-arg "APP_UID=$QA_UID" --build-arg "APP_GID=$QA_GID" --target qa -t "$QA_TEST_IMAGE" .
 docker image inspect "$QA_IMAGE" --format '{{.Id}}' | tee "$QA_EVIDENCE/image.txt"
+docker image inspect "$QA_TEST_IMAGE" --format '{{.Id}}' > "$QA_EVIDENCE/qa-image.txt"
+# Version evidence is deliberately separate from code identity. APT repositories
+# remain mutable, so the source hash alone must never stand for installed bytes.
+for QA_PROFILE in runtime qa; do
+  QA_INSPECT_IMAGE="$QA_IMAGE"
+  if [ "$QA_PROFILE" = qa ]; then QA_INSPECT_IMAGE="$QA_TEST_IMAGE"; fi
+  docker run --rm --network none "$QA_INSPECT_IMAGE" python --version > "$QA_EVIDENCE/$QA_PROFILE-python.txt"
+  docker run --rm --network none "$QA_INSPECT_IMAGE" python -m pip list --format=json > "$QA_EVIDENCE/$QA_PROFILE-pip.json"
+  docker run --rm --network none "$QA_INSPECT_IMAGE" python -m pip check > "$QA_EVIDENCE/$QA_PROFILE-pip-check.txt"
+  docker run --rm --network none "$QA_INSPECT_IMAGE" dpkg-query -W '-f=${binary:Package}\t${Version}\n' > "$QA_EVIDENCE/$QA_PROFILE-debian.tsv"
+  docker run --rm --network none "$QA_INSPECT_IMAGE" chromium --version > "$QA_EVIDENCE/$QA_PROFILE-chromium.txt"
+done
 QA_ACTUAL=$(docker run --rm --network none "$QA_IMAGE" sh -c 'printf "%s:%s" "$(id -u)" "$(id -g)"')
 printf '%s\n' "$QA_ACTUAL" | tee "$QA_EVIDENCE/identity.txt"
 test "$QA_ACTUAL" = "$QA_UID:$QA_GID"

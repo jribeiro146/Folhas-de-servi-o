@@ -36,6 +36,21 @@ def test_packaged_release_refuses_modified_or_missing_source(tmp_path):
         get_release_info(tmp_path)
 
 
+def test_manifest_has_exact_lf_bytes_for_windows_and_linux_source_trees(tmp_path):
+    from src.services.release_identity import write_release_manifest
+    manifests = []
+    for name, newline in (("linux", b"\n"), ("windows", b"\r\n")):
+        staging = tmp_path / name
+        (staging / "src").mkdir(parents=True)
+        (staging / "src/entry.py").write_bytes(b"synthetic = 1" + newline)
+        write_release_manifest(staging, revision="a" * 40)
+        raw = (staging / "release-manifest.json").read_bytes()
+        assert raw == (json.dumps(json.loads(raw), sort_keys=True) + "\n").encode("utf-8")
+        assert b"\r" not in raw
+        manifests.append(raw)
+    assert manifests[0] == manifests[1]
+
+
 def test_web_processes_and_worker_report_the_same_source_identity():
     from src.web.application import create_app
     from src.queue_worker import build_queue

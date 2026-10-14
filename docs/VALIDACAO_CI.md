@@ -28,16 +28,17 @@ Os dois runners produziram o mesmo ZIP SHA256:
 O source_sha256 é
 `49a3dd6fcda4597be22b9d203590d21d8a2942755a88eed15397cdefc4048522`.
 
-**Nota de empacotamento entre plataformas:** o builder Windows escreve CRLF no
+**Nota histórica de empacotamento (commit 0869bfa):** o builder Windows escrevia CRLF no
 único fim de linha do manifesto e produz ZIP SHA256
 `618a768d477ab7fdce8309533dd7dc174aefc43b0c6c159d50e8c0350aebd92e`.
 Normalizar apenas esse fim de linha para LF, preservando todas as outras entradas
 e metadados, reproduziu exatamente o hash dos dois runners. A cópia local
 `ci-validated-0869bfa-linux-identical.zip` foi assim conferida byte a byte por hash.
 Não houve alteração do código ou da identidade operacional. Comparar sempre o
-checksum do ZIP efetivamente entregue; não prometer igualdade binária entre
-plataformas com o builder atual. A uniformização automática desse fim de linha é
-uma melhoria de empacotamento registada, sem impacto no funcionamento da aplicação.
+checksum do ZIP efetivamente entregue; não atribuir igualdade binária entre
+plataformas àquele builder. O M15 uniformiza esse fim de linha e fixa a base e
+dependências Python do Docker; ver [dependências e build](DEPENDENCIAS_E_BUILD.md)
+para o âmbito, inventários, atualizações e validação do código novo.
 
 A publicação posterior deste resultado altera apenas documentação e usa `[skip ci]`
 para evitar repetir o mesmo ensaio. O SHA testado continua a ser o indicado acima;

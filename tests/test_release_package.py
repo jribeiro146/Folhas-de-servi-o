@@ -33,6 +33,7 @@ def source_repo(tmp_path):
         "passenger_wsgi.py": "synthetic = 1\n",
         "requirements-server.txt": "synthetic==1\n",
         "requirements-smoke.txt": "synthetic==1\n",
+        "requirements-linux-constraints.txt": "synthetic==1\n",
         "Dockerfile": "FROM synthetic\n",
         "docker-compose.yml": "services: {}\n",
         ".dockerignore": ".env\n",
@@ -72,6 +73,8 @@ def test_builds_identical_artifacts_from_commit_without_private_or_git_data(sour
         assert "src/queue_worker.py" in archive.namelist()  # export-ignore cannot silently omit code.
         assert "tools/backup_runtime.py" in archive.namelist()
         assert "tests/test_synthetic.py" in archive.namelist()
+        manifest = archive.read("release-manifest.json")
+        assert manifest == (json.dumps(json.loads(manifest), sort_keys=True) + "\n").encode("utf-8")
         assert not any(name.startswith((".git", ".env", "private-data/")) for name in archive.namelist())
         archive.extractall(staging)
     info = get_release_info(staging)
@@ -79,7 +82,7 @@ def test_builds_identical_artifacts_from_commit_without_private_or_git_data(sour
     assert not (repo / "release-manifest.json").exists()
 
 
-@pytest.mark.parametrize("change", ["tracked", "untracked", "staged", "wrong-sha", "short-sha", "existing", "missing-file"])
+@pytest.mark.parametrize("change", ["tracked", "untracked", "staged", "wrong-sha", "short-sha", "existing", "missing-file", "missing-constraints"])
 def test_refuses_unreviewed_or_incomplete_release_without_overwriting(source_repo, tmp_path, change):
     repo, revision = source_repo
     destination = tmp_path / "result.zip"
@@ -95,8 +98,8 @@ def test_refuses_unreviewed_or_incomplete_release_without_overwriting(source_rep
         revision = revision[:8]
     elif change == "existing":
         destination.write_bytes(b"earlier synthetic release")
-    elif change == "missing-file":
-        git(repo, "rm", "tools/backup_runtime.py")
+    elif change in {"missing-file", "missing-constraints"}:
+        git(repo, "rm", "tools/backup_runtime.py" if change == "missing-file" else "requirements-linux-constraints.txt")
         git(repo, "-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.invalid", "commit", "-qm", "Missing tool")
         revision = git(repo, "rev-parse", "HEAD")
     result = build(repo, revision, destination)

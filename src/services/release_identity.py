@@ -110,7 +110,8 @@ def write_release_manifest(root: Path, *, revision: str) -> dict:
                "source_files": len(files), "files": files}
     temporary = root / (".release-" + uuid.uuid4().hex + ".tmp")
     try:
-        temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        # Fixed bytes across Windows/Linux; the manifest is part of the ZIP.
+        temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
         temporary.replace(root / MANIFEST_NAME)
     finally:
         temporary.unlink(missing_ok=True)
