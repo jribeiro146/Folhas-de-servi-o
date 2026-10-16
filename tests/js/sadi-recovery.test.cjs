@@ -208,6 +208,21 @@ for(const kind of ['send','draft']) for(const obstruction of ['none','busy','off
     assert.equal(app.records.get('user:doc').payload.observations,latest.observations);
 });
 
+test('an unavailable retired partial copy clears only its reference and keeps the current form',async t=>{
+    let receipt=null,cleared=0;
+    const tracker={read:()=>receipt?.record,lookup:async()=>receipt,clear:()=>{cleared++;receipt=null;}};
+    const app=harness(t,{remote:signed('fresh-valid'),commitRecovery:tracker});
+    await waitFor(()=>!app.element('btn-save-draft').disabled);
+    const latest=signed('fresh-valid');latest.observations='Texto atual preservado';
+    app.setPayload(latest);app.coordinator.markDirty();
+    const key=app.coordinator.operationMetadata('draft').idempotency_key;
+    receipt={kind:'draft',status:'failed',result:{code:'draft_copy_unavailable'},record:{kind:'draft',documentId:'doc',operationId:key}};
+    assert.equal(await app.coordinator.recoverPendingCommit(),false);
+    assert.equal(cleared,1);
+    assert.equal(app.payload().observations,latest.observations);
+    assert.notEqual(app.coordinator.operationMetadata('draft').idempotency_key,key);
+});
+
 test('changed session preserves the latest form and the recovery action reloads instead of retrying the old scope',async t=>{
     let changed=false, lookups=0;
     const tracker={read:()=>null,lookup:async()=>{lookups++;if(changed)throw Object.assign(new Error('Sessão mudou'),{code:'mail_monitor_session_changed'});return null;}};

@@ -687,7 +687,7 @@ const startEditingCoordinator = () => {
             // Draft retries rewrite the current form into the already recorded
             // copy. Keep its key across reloads; a fresh key would create a second
             // copy. Send retries need a new immutable archive instead.
-            if (operation.kind === "send") {
+            if (operation.kind === "send" || operation.result?.code === "draft_copy_unavailable") {
                 operationKeys.delete(operation.kind);
                 recovery.clear(activeFileName);
             }

@@ -28,7 +28,8 @@
             try {
                 storage.setItem(key(file), JSON.stringify(record));
                 if (storage.getItem(key(file)) !== JSON.stringify(record)) throw new Error();
-            } catch (_) { throw new Error("O navegador não conseguiu guardar a referência da operação. A folha não foi enviada."); }
+            } catch (_) { throw new Error("O navegador não conseguiu guardar a referência da operação. "
+                + (kind === "draft" ? "O rascunho não foi guardado." : "A folha não foi enviada.")); }
             return {"X-Mail-Monitor-Scope": scope};
         };
         const clear = file => {

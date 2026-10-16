@@ -168,6 +168,10 @@ class EditingStateService:
         with self._state_transaction(document_id) as state:
             return self._public_snapshot(state)
 
+    def document_is_closed(self, document_id: str) -> bool:
+        with self._state_transaction(document_id) as state:
+            return bool(state.get("closed_by_operation"))
+
     def acquire_lease(
         self,
         path: str | Path,
@@ -578,8 +582,11 @@ class EditingStateService:
         if operation['kind'] == 'draft':
             allowed.update({'file', 'created_copy'})
         response = operation.get('response') or {}
+        result = {key: value for key, value in response.items() if key in allowed}
+        if operation['kind'] == 'draft' and operation.get('context', {}).get('draft_copy_unavailable'):
+            result['code'] = 'draft_copy_unavailable'
         return {'kind': operation['kind'], 'status': 'interrupted' if interrupted else operation['status'],
-                'result': {key: value for key, value in response.items() if key in allowed}}
+                'result': result}
 
     def finalizations_to_retire(self):
         with self.repository._connect() as connection:
@@ -615,7 +622,7 @@ class EditingStateService:
 
     def fail_operation(
         self, document_id: str, idempotency_key: str, message: str,
-        *, partial_draft_path: Path | None = None,
+        *, partial_draft_path: Path | None = None, draft_copy_unavailable: bool = False,
     ) -> None:
         with self._state_transaction(document_id) as state:
             operation = (state.setdefault("operations", {})).get(idempotency_key)
@@ -632,6 +639,8 @@ class EditingStateService:
                 # A later external fingerprint change still invalidates normally.
                 state["fingerprint"] = self._fingerprint(partial_draft_path)
             operation["status"] = "failed"
+            if draft_copy_unavailable and operation.get("kind") == "draft":
+                operation.setdefault("context", {})["draft_copy_unavailable"] = True
             operation["error"] = message
             operation["updated_at"] = time.time()
 

@@ -74,3 +74,35 @@ def test_failed_copy_retains_key_and_latest_form_across_bootstrap(quarantine_app
     assert set(path.parent.glob('*/*.xlsx')) == before_copies
     assert DocumentDataService(copy).read()['intervention_report'] == payload['intervention_report']
     assert path.read_bytes() == before_file
+
+
+@pytest.mark.parametrize('retired', [False, True])
+def test_partial_copy_closed_or_removed_allows_explicit_new_key(quarantine_app, monkeypatch, retired):
+    app, service, path, client, headers, metadata = draft_session(quarantine_app, True)
+    original_bytes = path.read_bytes()
+    original_write = DocumentDataService.write
+    monkeypatch.setattr(DocumentDataService, 'write', lambda *args: (_ for _ in ()).throw(OSError('Synthetic failure')))
+    payload = {'intervention_report':'Texto preservado', '_edit':metadata}
+    assert client.post(f'/api/file/{path.stem}/draft', json=payload, headers=headers).status_code == 500
+    operation = service.operation(metadata['document_id'], 'recover-draft')
+    copy = Path(operation['context']['draft_path'])
+    # Simulate the durable cancellation boundary, with or without source retirement.
+    from src.services.editing_state_service import EditorIdentity
+    owner = EditorIdentity('synthetic-user', 'Synthetic')
+    lease = service.acquire_lease(copy, owner, 'cancel-tab')
+    assert lease['document_id'] == operation['context']['draft_document_id']
+    service.claim_operation(document_id=lease['document_id'], kind='cancel', idempotency_key='synthetic-cancel',
+        identity=owner, client_id='cancel-tab', lease_token=lease['lease']['token'], base_revision=lease['revision'])
+    service.commit_operation(document_id=lease['document_id'], idempotency_key='synthetic-cancel',
+        path=copy, response={'success':True}, release_lease=True)
+    if retired:
+        copy.unlink()
+    monkeypatch.setattr(DocumentDataService, 'write', original_write)
+    blocked = client.post(f'/api/file/{path.stem}/draft', json=payload, headers=headers)
+    assert blocked.status_code == 409 and blocked.json['code'] == 'draft_copy_unavailable'
+    receipt = client.get(f'/api/editing/operations/{metadata["document_id"]}/recover-draft', headers=headers).json['operation']
+    assert receipt['status'] == 'failed' and receipt['result']['code'] == 'draft_copy_unavailable'
+    metadata['idempotency_key'] = 'new-explicit-copy'
+    saved = client.post(f'/api/file/{path.stem}/draft', json=payload, headers=headers)
+    assert saved.status_code == 200, saved.json
+    assert saved.json['file'] != copy.stem and path.read_bytes() == original_bytes

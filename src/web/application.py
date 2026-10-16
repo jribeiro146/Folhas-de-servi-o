@@ -1824,6 +1824,21 @@ def _create_app(
             created_copy = bool(context.get("created_copy"))
             created_this_attempt = False
 
+            if context.get("draft_path") and created_copy:
+                # A partial copy can have been retired from another page. Its
+                # old key must not trap this private workspace in repeated 500s.
+                current_copy = file_service.get_file_by_name(draft_path.stem)
+                copy_id = editing_state_service.resolve_document_id(draft_path)
+                if (not draft_path.is_file() or not file_service.is_draft_file(draft_path)
+                        or not draft_path.resolve().is_relative_to(file_service.directory.resolve())
+                        or current_copy is None or current_copy.resolve() != draft_path.resolve()
+                        or (context.get("draft_document_id") and context["draft_document_id"] != copy_id)
+                        or editing_state_service.document_is_closed(copy_id)):
+                    editing_state_service.fail_operation(document_id, idempotency_key,
+                        "A cópia parcial já não está ativa.", draft_copy_unavailable=True)
+                    return jsonify(success=False, code="draft_copy_unavailable",
+                        error="A cópia anterior já não está ativa. Guarde novamente para criar um rascunho com estas alterações."), 409
+
             if not context.get("draft_path") and not file_service.is_draft_file(path):
                 draft_path = file_service.create_draft_copy(
                     path,
@@ -1836,6 +1851,7 @@ def _create_app(
                     idempotency_key,
                     draft_path=str(draft_path),
                     created_copy=created_copy,
+                    draft_document_id=editing_state_service.resolve_document_id(draft_path),
                 )
 
             document_data = normalize_document_for_write(data, draft_path)

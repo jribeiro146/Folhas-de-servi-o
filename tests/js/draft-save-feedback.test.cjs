@@ -7,6 +7,18 @@ const vm = require("node:vm");
 const editor = fs.readFileSync(path.join(__dirname, "../../src/web/static/js/document-editor.js"), "utf8");
 const save = editor.slice(editor.indexOf("    const commitMessageKey ="), editor.indexOf("    const sendFile ="));
 
+for (const kind of ['draft', 'send']) test('confirmed ' + kind + ' receipt clears pending photos before navigation', async () => {
+    let pendingPhotos = true;
+    const calls = [];
+    const context = {commitPhotoState:()=>{pendingPhotos=false;calls.push('photos');},
+        resumeDraftCommit:()=>{assert.equal(pendingPhotos,false);calls.push('draft');},
+        navigateAfterCommit:()=>{assert.equal(pendingPhotos,false);calls.push('send');},window:{}};
+    const method=editor.slice(editor.indexOf('        async resumeCompletedCommit('),editor.indexOf('        collectFormData,',editor.indexOf('        async resumeCompletedCommit(')));
+    vm.runInNewContext('this.editor={'+method+'};',context);
+    await context.editor.resumeCompletedCommit({success:true,file:'synthetic-copy'},kind,'scope');
+    assert.deepEqual(calls,['photos',kind]);
+});
+
 for (const code of ["state_contract_busy", "state_contract_invalid"]) {
     test("draft preserves local form and stays open after " + code, async () => {
         const messages = [];

@@ -68,3 +68,35 @@ a versão local no conflito legítimo após falha parcial. O teste foi ajustado 
 exigir que essa escolha obtém HTTP200 e deixa gravar sem ciclo de conflitos.
 Dados e transportes fictícios, rede externa bloqueada, sem atualização das
 instâncias locais do utilizador nem publicação em produção.
+
+## Segunda revisão: fronteiras adicionais
+
+Aceites os dois P2 da primeira revisão. Antes de reutilizar uma cópia parcial,
+o servidor confirma o caminho ativo e contido, a identidade original da cópia e
+que não foi encerrada. Caso contrário, regista `draft_copy_unavailable` no recibo
+failed e devolve409. Mesmo se essa resposta se perder, a consulta permite limpar
+a referência e a chave; só o próximo clique explícito cria outra cópia, mantendo
+o texto. Uma cópia encerrada ainda por retirar também é recusada.
+
+O percurso de recibo completo, tanto draft como send, limpa os anexos pendentes
+antes de navegar. Assim, fotografias já guardadas não provocam beforeunload nem
+permitem cancelar a navegação e iniciar inadvertidamente outra cópia.
+
+P3: o erro de sessionStorage indica agora que o rascunho não foi guardado. A recusa
+antes do POST é deliberada: permitir uma gravação sem referência persistível
+reintroduziria o F02 após recarga. Não existe fallback que afirme uma gravação ou
+repita uma operação incerta. O formulário/autosave continua disponível; este
+percurso exige armazenamento de sessão funcional. É um limite explícito.
+
+200 testes JS PASS (`f02-js-r2.txt`). 91 testes Python distintos PASS:89 na suite
+direcionada (`f02-python-r2.txt`) e os dois novos casos, com repetição dos quatro
+casos do módulo (`f02-python-r2-boundaries.txt`,6PASS). A primeira fixture destes
+dois testes foi corretamente recusada pelo validador por construir um recibo
+incompleto; corrigida para usar acquire/claim/commit de cancelamento reais.
+Não foi necessário alterar código da aplicação por esse diagnóstico.
+
+Os 25 grupos Chromium passaram novamente em
+`output/playwright/m16-fst-50e9aa6c/result.json`, log `f02-browser-r2.txt`.
+O caso de criação com resposta perdida inclui agora uma fotografia fictícia,
+recusa qualquer diálogo beforeunload e confirma uma fotografia numa única cópia.
+Todas as regressões F01 e as proteções de rede/efeitos continuaram aprovadas.

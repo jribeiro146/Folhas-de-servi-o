@@ -6,6 +6,7 @@ editing coordinator, HTTP routes, SQLite queue and worker loop remain real.
 """
 from __future__ import annotations
 import atexit
+import base64
 import hashlib
 import json
 import os
@@ -377,6 +378,14 @@ def main():
                 text = 'F02 texto preservado ' + scenario
                 page.locator('#intervention-report').fill(text)
                 saved(page)
+                dialogs = []
+                if scenario == 'new-same-page':
+                    def refuse_unsaved_dialog(dialog):
+                        dialogs.append(dialog.type)
+                        dialog.dismiss()
+                    page.on('dialog', refuse_unsaved_dialog)
+                    page.locator('#photos-input').set_input_files({'name':'synthetic.png','mimeType':'image/png',
+                        'buffer':base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aC7kAAAAASUVORK5CYII=')})
                 copies_before = set(sources[3].parent.glob('*/*.xlsx'))
                 effects_before = effect_rows()
                 requests, replies = [], []
@@ -406,6 +415,9 @@ def main():
                 expect(page.locator('#btn-save-draft')).to_be_enabled(timeout=15000)
                 expect(page.locator('#intervention-report')).to_have_value(text)
                 assert len(requests) == 1
+                assert dialogs == [], 'Confirmed attachments must not trigger beforeunload'
+                if scenario == 'new-same-page':
+                    assert len(list((recovered.parent / 'Fotografias').glob('fotografia_*'))) == 1
                 assert DocumentDataService(recovered).read()['intervention_report'] == text
                 assert set(sources[3].parent.glob('*/*.xlsx')) - copies_before == ({recovered} if scenario.startswith('new-') else set())
                 assert sources[3].read_bytes() == original_bytes and effect_rows() == effects_before

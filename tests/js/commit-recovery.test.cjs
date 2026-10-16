@@ -49,6 +49,7 @@ test('another session never reads or erases the previous account reference', asy
 test('unavailable storage refuses before any send can be prepared', () => {
     const tracker = create({scope, storage:{setItem() {throw new Error('quota');}}});
     assert.throws(() => tracker.begin('synthetic', metadata), /não foi enviada/);
+    assert.throws(() => tracker.begin('synthetic', metadata, 'draft'), /rascunho não foi guardado/);
 });
 
 test('missing operation retains the same reference for explicit retry', async () => {

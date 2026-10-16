@@ -2065,6 +2065,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
     window.__FILES_EDITOR__ = {
         async resumeCompletedCommit(result, kind, scope) {
+            if (!["draft", "send"].includes(kind)) throw new Error("Tipo de conclusão inválido.");
+            // The receipt confirms that attachments were saved too. Otherwise a
+            // stale pending-photo flag can cancel navigation via beforeunload.
+            commitPhotoState();
             if (kind === "draft") {
                 if (!result.file) throw new Error("O rascunho confirmado não indicou a folha criada.");
                 resumeDraftCommit(result);
