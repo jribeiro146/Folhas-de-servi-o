@@ -1,5 +1,6 @@
 """Draft receipts recover navigation and retain the partial copy on explicit retry."""
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import pytest
 
@@ -151,9 +152,17 @@ def test_new_copy_write_holds_its_own_editing_mutex(quarantine_app, monkeypatch)
     refused = []
     def inspect_write(instance, document):
         copy = Path(service.operation(metadata['document_id'], 'recover-draft')['context']['draft_path'])
-        response = client.get(f'/api/file/{copy.stem}/bootstrap?client_id=other-tab')
-        refused.append(response.status_code)
-        assert response.status_code == 409 and response.json['code'] == 'operation_in_progress'
+        # A competing browser request has its own Flask/contextvars context.
+        # Re-entering the writer's client here reused g, overwrote its logging
+        # tokens and contaminated later tests with an unfinished request ID.
+        def competing_request():
+            with app.test_client() as other_client:
+                response = other_client.get(f'/api/file/{copy.stem}/bootstrap?client_id=other-tab')
+                return response.status_code, response.json
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            status, payload = executor.submit(competing_request).result(timeout=5)
+        refused.append(status)
+        assert status == 409 and payload['code'] == 'operation_in_progress'
         return write(instance, document)
     monkeypatch.setattr(DocumentDataService, 'write', inspect_write)
     response = client.post(f'/api/file/{path.stem}/draft', json={'_edit':metadata,'intervention_report':'Novo texto'}, headers=headers)

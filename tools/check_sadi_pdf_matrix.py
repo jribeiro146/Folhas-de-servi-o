@@ -200,7 +200,7 @@ def main():
                     'pytest':version('pytest'),
                     'runtime':str(root), 'limits':['Synthetic Microsoft login exchange and Graph/mail transport',
                     'PDFs still require visual inspection', 'Historical Windows rename cause remains unproven',
-                    'M22 three-tab offline bootstrap issue remains open']}
+                    'Three-tab bootstrap recovery is covered separately by check_integrated_journeys.py']}
                 (output / 'result.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
                 print(json.dumps({'status':'PASS','output':str(output)},ensure_ascii=False),flush=True)
         finally:
