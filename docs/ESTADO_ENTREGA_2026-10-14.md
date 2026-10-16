@@ -1,5 +1,9 @@
 # Estado da entrega — 14/10/2026
 
+**Checkpoint histórico.** O estado local posterior, incluindo F01–F03, está na
+[validação de 16/10/2026](ESTADO_ENTREGA_2026-10-16.md). Os commits, ZIPs e resultados
+Linux desta página continuam associados exclusivamente às versões aqui identificadas.
+
 ## Árvore e estado atual
 
 A base canónica é `qa-output/production-delivery-20260928`, com Git próprio, branch local `codex/p2-folhas-sadi-20261012`. `App_Folhas_Checklists/aplicacao` é o pacote/demo, com diferenças históricas; não é uma cópia desta entrega. Não copiar uma árvore sobre a outra. O [inventário de 07/10](RECONCILIACAO_2026-10-07.md) fica como proveniência, não como lista atual de trabalho por executar.

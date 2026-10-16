@@ -1,5 +1,14 @@
 # Validação Linux/Docker e rastreabilidade
 
+## Estado em 16/10/2026
+
+A [validação local final](ESTADO_ENTREGA_2026-10-16.md) inclui F01–F03 e uma correção
+do isolamento de um teste. **Ainda não existe execução Linux/Docker destes commits.**
+João determinou concluir a validação antes de publicar; não houve push nesta fase.
+Este computador não tem Docker nem WSL instalados. Os resultados abaixo são
+históricos e não aprovam retroativamente a versão atual. O ensaio seguinte exige um
+ambiente Linux/Docker autorizado, seguindo a [nota ao instalador](VALIDACAO_DOCKER_INSTALADOR.md).
+
 ## Retoma M22 confirmada em 14/10/2026
 
 [Run 38570674039](https://github.com/jribeiro146/Folhas-de-servi-o/actions/runs/38570674039), commit **`496bbaa80bca59955164e7932a7973ea16509efd`**: três jobs aprovados. Dois perfis Docker, UID/GID 10001:10001 e 100:101, Compose 5.6.0/2.27.0: **1537 Python aprovados/3 skips Windows** cada, PDF Chromium de duas páginas e toda a aceitação de init/migração/backup/verify/activate/restauro/release/Compose. JavaScript: **180 aprovados**.
