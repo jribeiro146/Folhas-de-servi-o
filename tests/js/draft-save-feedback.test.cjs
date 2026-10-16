@@ -21,7 +21,7 @@ for (const code of ["state_contract_busy", "state_contract_invalid"]) {
                 requests.push(url);
                 return {ok: false, status: 503, json: async () => ({success: false, code, error: "Aguarde atualização"})};
             },
-            window: { location: {href: "original"},
+            window: { location: {href: "original"}, SensorpointCommitRecovery: {begin: () => ({}), clear() {}},
                 __EDITING_COORDINATOR__: {
                     handleConflict: () => false,
                     markCommitted: () => assert.fail("Refused draft cannot be committed"),
@@ -50,6 +50,7 @@ for (const status of ["pending", "local"]) {
             buildCommitRequest: () => ({}), showToast: () => assert.fail("Unexpected save failure"),
             fetch: async (url, options) => { requests.push([url, options.method]); return {ok: true, json: async () => result}; },
             window: {
+                SensorpointCommitRecovery: {begin: () => ({}), clear() {}},
                 location: { href: "" },
                 sessionStorage: { setItem: (key, value) => stored.set(key, value) },
                 __EDITING_COORDINATOR__: { markCommitted: async (value) => commits.push(value) },

@@ -171,23 +171,23 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
         recoverNetwork:()=>{failVerification=false;failBootstrap=false;heartbeatRequired=false;leaseOwner='';}};
 }
 
-for(const obstruction of ['none','busy','offline','verification'])test(`interrupted finalization resumes the same form before editing (${obstruction})`,async t=>{
+for(const kind of ['send','draft']) for(const obstruction of ['none','busy','offline','verification'])test(`interrupted ${kind} resumes the same form before editing (${obstruction})`,async t=>{
     let receipt=null, cleared=0;
-    const commitRecovery={read:()=>null,lookup:async()=>receipt,clear:()=>{cleared++;receipt=null;}};
+    const commitRecovery={read:()=>receipt?.record,lookup:async()=>receipt,clear:()=>{cleared++;receipt=null;}};
     const original=signed('fresh-valid');
     const app=harness(t,{remote:original,commitRecovery});
     await waitFor(()=>!app.element('btn-save-send').disabled);
     const latest=signed('fresh-valid');latest.observations='Texto mais recente ainda nesta página';
     app.setPayload(latest);app.coordinator.markDirty();
-    const oldKey=app.coordinator.operationMetadata('send').idempotency_key;
+    const oldKey=app.coordinator.operationMetadata(kind).idempotency_key;
     app.coordinator.setCommitPending(true);
-    receipt={status:'interrupted',kind:'send'};
+    receipt={status:'interrupted',kind,record:{kind,documentId:'doc',operationId:oldKey}};
     if(obstruction==='busy')app.busyBootstrap(true);
     if(obstruction==='offline')app.navigator.onLine=false;
     if(obstruction==='verification')app.failVerification();
     assert.equal(await app.coordinator.recoverPendingCommit(),false);
     app.coordinator.setCommitPending(false); // sendFile's finally
-    assert.equal(cleared,1);
+    assert.equal(cleared,kind==='send'?1:0);
     if(obstruction!=='none') {
         assert.equal(app.element('btn-save-send').disabled,true);
         assert.equal(app.element('service-form').classList.contains('is-readonly'),true);
@@ -203,7 +203,8 @@ for(const obstruction of ['none','busy','offline','verification'])test(`interrup
     assert.equal(app.payload().observations,latest.observations);
     assert.equal(app.payload().maintenance_checklists[0].signatures.technician.token,'fresh-valid');
     await waitFor(()=>app.saveCount()===1);
-    assert.notEqual(app.coordinator.operationMetadata('send').idempotency_key,oldKey);
+    if(kind==='send')assert.notEqual(app.coordinator.operationMetadata(kind).idempotency_key,oldKey);
+    else assert.equal(app.coordinator.operationMetadata(kind).idempotency_key,oldKey);
     assert.equal(app.records.get('user:doc').payload.observations,latest.observations);
 });
 

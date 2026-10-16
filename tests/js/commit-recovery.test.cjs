@@ -19,12 +19,12 @@ test('damaged references preserve evidence and do not break normal bootstrap or 
     }
 });
 
-test('a reload recovers the completed send through GET only, without retaining form or lease', async () => {
+for (const kind of ['send', 'draft']) test('a reload recovers the completed ' + kind + ' through GET only, without retaining form or lease', async () => {
     const store = storage(), calls = [];
     const fetchFn = async (url, options) => {calls.push({url, options}); return {ok:true, status:200,
-        json:async () => ({success:true, operation:{kind:'send', status:'complete', result:{success:true, graph_job_id:'send:one'}}})};};
+        json:async () => ({success:true, operation:{kind, status:'complete', result:{success:true, graph_job_id:'send:one'}}})};};
     const first = create({scope, storage:store, fetchFn});
-    assert.deepEqual(first.begin('synthetic', metadata), {'X-Mail-Monitor-Scope':scope});
+    assert.deepEqual(first.begin('synthetic', metadata, kind), {'X-Mail-Monitor-Scope':scope});
     assert.doesNotMatch([...store.values.values()].join(), /SECRET|lease_token/);
     const afterReload = create({scope, storage:store, fetchFn});
     const receipt = await afterReload.lookup('synthetic');

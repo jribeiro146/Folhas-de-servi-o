@@ -1814,6 +1814,7 @@ def _create_app(
                 client_id=str(metadata["client_id"]),
                 lease_token=str(metadata["lease_token"]),
                 base_revision=int(metadata["base_revision"]),
+                recovery_owner=current_job_owner(),
             )
             if claim["status"] == "replay":
                 return jsonify(claim["operation"]["response"])

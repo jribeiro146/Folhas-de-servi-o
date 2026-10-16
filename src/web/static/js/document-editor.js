@@ -1484,9 +1484,15 @@ document.addEventListener("DOMContentLoaded", () => {
             const payload = collectFormData();
             payload._edit = await requireOperationMetadata("draft");
             const requestOptions = buildCommitRequest(payload);
+            if (!window.SensorpointCommitRecovery) {
+                throw new Error("O acompanhamento da gravação não está disponível. Recarregue a folha antes de guardar.");
+            }
+            const recoveryHeaders = window.SensorpointCommitRecovery.begin(activeFileName, payload._edit, "draft");
+            window.__EDITING_COORDINATOR__?.setCommitPending?.(true);
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/draft`, {
                 method: "POST",
-                ...requestOptions
+                ...requestOptions,
+                headers: {...requestOptions.headers, ...recoveryHeaders}
             });
             const result = await response.json();
 
@@ -1497,6 +1503,24 @@ document.addEventListener("DOMContentLoaded", () => {
 
             commitPhotoState(result.photos || []);
             await window.__EDITING_COORDINATOR__?.markCommitted(result, "draft");
+            window.SensorpointCommitRecovery.clear(activeFileName);
+            resumeDraftCommit(result);
+        } catch (error) {
+            try {
+                if (await window.__EDITING_COORDINATOR__?.recoverPendingCommit?.()) return;
+            } catch (recoveryError) {
+                showToast(recoveryError.message, "error");
+                return;
+            }
+            showToast(error.message, "error");
+        } finally {
+            window.__EDITING_COORDINATOR__?.setCommitPending?.(false);
+            setBusy(false);
+        }
+    };
+
+    // Both a normal response and an owned receipt use the same draft workflow.
+    const resumeDraftCommit = (result) => {
             const nextFileName = result.file || activeFileName;
             const publicationPending = result.publication_status === "pending";
             const successMessage = publicationPending
@@ -1507,11 +1531,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
             navigateAfterCommit(`/?file=${encodeURIComponent(nextFileName)}`, successMessage,
                 publicationPending ? "info" : "success");
-        } catch (error) {
-            showToast(error.message, "error");
-        } finally {
-            setBusy(false);
-        }
     };
 
     const sendFile = async (payload) => {
@@ -2046,6 +2065,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     window.__FILES_EDITOR__ = {
         async resumeCompletedCommit(result, kind, scope) {
+            if (kind === "draft") {
+                if (!result.file) throw new Error("O rascunho confirmado não indicou a folha criada.");
+                resumeDraftCommit(result);
+                return;
+            }
             if (kind !== "send") throw new Error("Tipo de conclusão inválido.");
             if (result.email_status === "pending" && result.graph_job_id) {
                 window.SensorpointMailFollowup?.remember(result.graph_job_id, scope);

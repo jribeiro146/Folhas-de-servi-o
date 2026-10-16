@@ -368,6 +368,80 @@ def main():
             assert DocumentDataService(new_draft).read()['intervention_report'] == 'Novo rascunho criado no navegador'
             assert sources[3].read_bytes() == original_bytes and effect_rows() == effects
             passed('Creating a draft through the real UI preserves the original and creates no delivery')
+            for scenario in ('new-same-page', 'new-reload', 'existing-reload'):
+                ctx.close()
+                ctx = context()
+                page = ctx.new_page()
+                target = new_draft if scenario == 'existing-reload' else sources[3]
+                open_draft(page, target)
+                text = 'F02 texto preservado ' + scenario
+                page.locator('#intervention-report').fill(text)
+                saved(page)
+                copies_before = set(sources[3].parent.glob('*/*.xlsx'))
+                effects_before = effect_rows()
+                requests, replies = [], []
+                page.on('request', lambda request: requests.append(request.url) if request.url.endswith('/draft') else None)
+                def lose_draft_response(route):
+                    response = route.fetch()
+                    assert response.status == 200
+                    replies.append(response.json())
+                    route.abort()
+                page.route('**/draft', lose_draft_response, times=1)
+                if scenario.endswith('reload'):
+                    page.route('**/api/editing/operations/**', lambda route:route.abort())
+                if scenario.endswith('reload'):
+                    page.locator('#btn-save-draft').click()
+                    expect(page.locator('#btn-retry-lease')).to_be_visible(timeout=15000)
+                    page.reload()
+                    expect(page.locator('#btn-retry-lease')).to_be_visible(timeout=15000)
+                    page.unroute('**/api/editing/operations/**')
+                    with page.expect_navigation(wait_until='load'):
+                        page.locator('#btn-retry-lease').click()
+                else:
+                    with page.expect_navigation(wait_until='load'):
+                        page.locator('#btn-save-draft').click()
+                assert len(replies) == 1
+                recovered = files.get_file_by_name(replies[0]['file'])
+                page.wait_for_url(base+'/?file='+quote(recovered.stem))
+                expect(page.locator('#btn-save-draft')).to_be_enabled(timeout=15000)
+                expect(page.locator('#intervention-report')).to_have_value(text)
+                assert len(requests) == 1
+                assert DocumentDataService(recovered).read()['intervention_report'] == text
+                assert set(sources[3].parent.glob('*/*.xlsx')) - copies_before == ({recovered} if scenario.startswith('new-') else set())
+                assert sources[3].read_bytes() == original_bytes and effect_rows() == effects_before
+                passed('F02 lost draft response resumes correct editable file with one POST: ' + scenario)
+            ctx.close()
+            ctx = context()
+            page = ctx.new_page()
+            open_draft(page, sources[3])
+            page.locator('#intervention-report').fill('F02 primeira tentativa parcial')
+            saved(page)
+            copies_before = set(sources[3].parent.glob('*/*.xlsx'))
+            effects_before = effect_rows()
+            (root / 'fault-disk-full').touch()
+            with page.expect_response(lambda r:r.url.endswith('/draft') and r.status == 500):
+                page.locator('#btn-save-draft').click()
+            expect(page.locator('#btn-save-draft')).to_be_enabled(timeout=15000)
+            page.reload()
+            page.wait_for_function("() => !document.getElementById('btn-save-draft').disabled || !document.getElementById('recovery-panel').hidden")
+            if page.locator('#recovery-panel').is_visible():
+                # Local close/autosave can leave different revisions. Use the
+                # normal explicit choice and prove it no longer loops on 409.
+                expect(page.locator('#intervention-report')).to_have_value('F02 primeira tentativa parcial')
+                with page.expect_response(lambda r:r.url.endswith('/autosave') and r.status == 200):
+                    page.locator('#btn-restore-recovery').click()
+            expect(page.locator('#btn-save-draft')).to_be_enabled(timeout=15000)
+            created = set(sources[3].parent.glob('*/*.xlsx')) - copies_before
+            assert len(created) == 1
+            page.locator('#intervention-report').fill('F02 texto novo após falha e recarga')
+            saved(page)
+            with page.expect_navigation(wait_until='load'):
+                page.locator('#btn-save-draft').click()
+            expect(page.locator('#btn-save-draft')).to_be_enabled(timeout=15000)
+            assert set(sources[3].parent.glob('*/*.xlsx')) - copies_before == created
+            assert DocumentDataService(next(iter(created))).read()['intervention_report'] == 'F02 texto novo após falha e recarga'
+            assert sources[3].read_bytes() == original_bytes and effect_rows() == effects_before
+            passed('F02 failed partial copy survives reload and explicit retry updates one copy with current form')
             for reload_before_recovery in (False, True):
                 ctx.close()
                 ctx = context()

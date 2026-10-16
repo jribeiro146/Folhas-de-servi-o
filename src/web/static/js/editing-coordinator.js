@@ -314,7 +314,7 @@ const startEditingCoordinator = () => {
                 "A sessão de edição ainda não está pronta. Aguarde alguns segundos e tente novamente."
             );
         }
-        const pending = kind === "send" ? window.SensorpointCommitRecovery?.read(activeFileName) : null;
+        const pending = ["send", "draft"].includes(kind) ? window.SensorpointCommitRecovery?.read(activeFileName) : null;
         if (pending?.kind === kind && pending.documentId === editing.document_id) {
             operationKeys.set(kind, pending.operationId);
         }
@@ -684,8 +684,13 @@ const startEditingCoordinator = () => {
         if (["failed", "interrupted"].includes(operation.status)) {
             // A confirmed failed attempt may have an old prepared archive. The
             // next explicit save must capture the current form under a new key.
-            operationKeys.delete(operation.kind);
-            recovery.clear(activeFileName);
+            // Draft retries rewrite the current form into the already recorded
+            // copy. Keep its key across reloads; a fresh key would create a second
+            // copy. Send retries need a new immutable archive instead.
+            if (operation.kind === "send") {
+                operationKeys.delete(operation.kind);
+                recovery.clear(activeFileName);
+            }
             if (operation.status === "interrupted" && initialized && !initializing) {
                 // GET only proves that the writer stopped; bootstrap must retire
                 // its pending state before autosave can resume. Preserve this

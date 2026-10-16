@@ -9,7 +9,7 @@
                 const raw = storage?.getItem(key(file));
                 if (!raw || raw.length > 2048) return null;
                 const record = JSON.parse(raw);
-                if (record?.scope !== scope || record.kind !== "send" || !validId(record.documentId)
+                if (record?.scope !== scope || !["send", "draft"].includes(record.kind) || !validId(record.documentId)
                         || !validId(record.operationId)) return null;
                 return {scope, kind: record.kind, documentId: record.documentId, operationId: record.operationId};
             } catch (_) {
@@ -19,10 +19,10 @@
                 return null;
             }
         };
-        const begin = (file, metadata) => {
-            if (!/^[a-f0-9]{64}$/.test(scope || "") || !validId(metadata.document_id)
+        const begin = (file, metadata, kind = "send") => {
+            if (!["send", "draft"].includes(kind) || !/^[a-f0-9]{64}$/.test(scope || "") || !validId(metadata.document_id)
                     || !validId(metadata.idempotency_key)) throw new Error("A sessão de gravação não está pronta.");
-            const record = {scope, kind: "send", documentId: metadata.document_id, operationId: metadata.idempotency_key};
+            const record = {scope, kind, documentId: metadata.document_id, operationId: metadata.idempotency_key};
             // Save before the POST: a lost response/reload must remain consultable.
             // Refuse to send when this browser cannot retain the opaque reference.
             try {

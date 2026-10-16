@@ -551,7 +551,7 @@ class EditingStateService:
                 return None
             state = decode_editing_state(row['state_json'], document_id)
             operation = state.get('operations', {}).get(idempotency_key)
-            if (not operation or operation.get('kind') != 'send' or not owner
+            if (not operation or operation.get('kind') not in {'send', 'draft'} or not owner
                     or operation.get('context', {}).get('recovery_owner') != owner):
                 return None
             return operation
@@ -575,6 +575,8 @@ class EditingStateService:
         # path, lease, signatures, recipients or private observations are exposed.
         allowed = {'success', 'document_id', 'revision', 'etag', 'email_status',
                    'graph_job_id', 'publication_status', 'maintenance_bundle_url'}
+        if operation['kind'] == 'draft':
+            allowed.update({'file', 'created_copy'})
         response = operation.get('response') or {}
         return {'kind': operation['kind'], 'status': 'interrupted' if interrupted else operation['status'],
                 'result': {key: value for key, value in response.items() if key in allowed}}
