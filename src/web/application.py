@@ -12,7 +12,7 @@ import secrets
 import time
 import uuid
 from functools import wraps
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from pathlib import Path
 
 from flask import Flask, g, jsonify, redirect, render_template, request, send_from_directory, session, url_for
@@ -80,6 +80,7 @@ from src.services.editing_state_service import (
     EditingStateQuarantinedError,
     EditingSessionMetadataError,
     EditingStateService,
+    DraftCopyUnavailableError,
     EditorIdentity,
     LeaseConflictError,
     LeaseRequiredError,
@@ -1795,6 +1796,7 @@ def _create_app(
         document_id = ""
         idempotency_key = ""
         partial_draft_path = None
+        copy_guards = ExitStack()
         try:
             received, photo_uploads, removed_photo_ids = parse_commit_request()
             prepared_photos = PhotoAttachmentService.prepare_uploads(photo_uploads)
@@ -1832,12 +1834,8 @@ def _create_app(
                 if (not draft_path.is_file() or not file_service.is_draft_file(draft_path)
                         or not draft_path.resolve().is_relative_to(file_service.directory.resolve())
                         or current_copy is None or current_copy.resolve() != draft_path.resolve()
-                        or (context.get("draft_document_id") and context["draft_document_id"] != copy_id)
-                        or editing_state_service.document_is_closed(copy_id)):
-                    editing_state_service.fail_operation(document_id, idempotency_key,
-                        "A cópia parcial já não está ativa.", draft_copy_unavailable=True)
-                    return jsonify(success=False, code="draft_copy_unavailable",
-                        error="A cópia anterior já não está ativa. Guarde novamente para criar um rascunho com estas alterações."), 409
+                        or (context.get("draft_document_id") and context["draft_document_id"] != copy_id)):
+                    raise DraftCopyUnavailableError()
 
             if not context.get("draft_path") and not file_service.is_draft_file(path):
                 draft_path = file_service.create_draft_copy(
@@ -1853,6 +1851,14 @@ def _create_app(
                     created_copy=created_copy,
                     draft_document_id=editing_state_service.resolve_document_id(draft_path),
                 )
+
+            if created_copy:
+                try:
+                    copy_guards.enter_context(editing_state_service.draft_copy_guard(
+                        draft_path, document_id, idempotency_key, fresh=created_this_attempt,
+                        expected_fingerprint=context.get("draft_copy_fingerprint")))
+                except FileMutexBusy as exc:
+                    raise OperationInProgressError("A cópia está a ser utilizada. Volte a consultar antes de guardar.") from exc
 
             document_data = normalize_document_for_write(data, draft_path)
             if document_data.get("client_not_present"):
@@ -1939,6 +1945,11 @@ def _create_app(
                 publication_queued=graph_sync_job is not None,
             )
             return jsonify(result)
+        except DraftCopyUnavailableError:
+            editing_state_service.fail_operation(document_id, idempotency_key,
+                "A cópia parcial já não pertence exclusivamente a esta operação.", draft_copy_unavailable=True)
+            return jsonify(success=False, code="draft_copy_unavailable",
+                error="A cópia anterior foi alterada ou encerrada. Guarde novamente para criar um rascunho com estas alterações."), 409
         except PhotoAttachmentError as exc:
             if document_id and idempotency_key:
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc),
@@ -1974,6 +1985,9 @@ def _create_app(
                 exc_info=True,
             )
             return diagnostic_failure("operation_failed", 500)
+
+        finally:
+            copy_guards.close()
 
     @app.route("/api/file/<name>/send", methods=["POST"])
     @exclusive_operation

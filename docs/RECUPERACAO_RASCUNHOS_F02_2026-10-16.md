@@ -100,3 +100,37 @@ Os 25 grupos Chromium passaram novamente em
 O caso de criação com resposta perdida inclui agora uma fotografia fictícia,
 recusa qualquer diálogo beforeunload e confirma uma fotografia numa única cópia.
 Todas as regressões F01 e as proteções de rede/efeitos continuaram aprovadas.
+
+## Terceira revisão: preservar edições independentes da cópia
+
+Aceite o P2 da segunda ronda. A área original e a cópia são documentos distintos:
+o bloqueio da primeira não protegia a segunda. `draft_copy_guard` passa a deter o
+mutex de edição da própria cópia e o bloqueio do seu bundle, desde a verificação
+até ao fim da escrita e do checkpoint, na mesma ordem das restantes escritas.
+Não usa operation_guard para examinar a cópia, pois isso poderia normalizar uma
+operação pendente de outro editor. A leitura do estado é feita sem o modificar.
+
+Só reutiliza uma cópia sem dono, sessões, autosave, operações ou revisão posterior
+à inicial, e com fingerprint igual ao registado pela tentativa anterior. Uma
+aba que a tenha aberto, um autosave, uma gravação ou uma alteração externa fazem
+a original receber `draft_copy_unavailable`; nenhum byte, revisão ou autosave da
+cópia é substituído. O formulário da original pode ser guardado numa nova cópia
+apenas através de nova ação explícita. Uma escrita concorrente mantém o mutex
+ocupado e é recusada sem desbloquear o outro editor.
+
+O fingerprint é registado antes da escrita e no finally ainda sob os bloqueios.
+Exceções controladas, incluindo SystemExit no teste, conservam prova da escrita
+parcial para a retoma. Uma morte abrupta sem finally, com bytes já alterados,
+não fornece essa prova: a cópia incerta fica preservada e não é sobrescrita. O
+utilizador pode abrir essa cópia pela lista ou criar outra explicitamente. Igual
+prudência aplica-se a cópias antigas sem checkpoint e a falhas posteriores à
+atribuição de proprietário. Não se promete reutilização automática nesses casos.
+
+96 regressões Python PASS (`f02-python-r3.txt`), incluindo quatro cenários de
+adoção/alteração independente e uma tentativa de bootstrap da cópia durante a
+escrita, recusada com409. Estado e ficheiros da cópia são comparados antes/depois
+da recusa. Frontend inalterado desde os200JS aprovados na ronda2. Mais92 testes
+Python PASS de arquivo/web, publicação Graph, fila de finalização e fotografias
+(`f02-python-r3-integrations.txt`): total188Python distintos no candidato.
+Os25gruposChromium passaram em `output/playwright/m16-fst-1412bedb/result.json`,
+log `f02-browser-r3.txt`, mantendo a fotografia e todas as regressões F01/F02.

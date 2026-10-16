@@ -106,3 +106,56 @@ def test_partial_copy_closed_or_removed_allows_explicit_new_key(quarantine_app, 
     saved = client.post(f'/api/file/{path.stem}/draft', json=payload, headers=headers)
     assert saved.status_code == 200, saved.json
     assert saved.json['file'] != copy.stem and path.read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize('other_action', ['session', 'autosave', 'commit', 'external'])
+def test_partial_copy_adopted_or_changed_elsewhere_is_never_overwritten(quarantine_app, monkeypatch, other_action):
+    app, service, path, client, headers, metadata = draft_session(quarantine_app, True)
+    write = DocumentDataService.write
+    def fail(*args):
+        raise OSError('Synthetic failure before sidecar')
+    monkeypatch.setattr(DocumentDataService, 'write', fail)
+    payload = {'intervention_report':'Texto da aba original', '_edit':metadata}
+    assert client.post(f'/api/file/{path.stem}/draft', json=payload, headers=headers).status_code == 500
+    operation = service.operation(metadata['document_id'], 'recover-draft')
+    copy = Path(operation['context']['draft_path'])
+    copy_id = operation['context']['draft_document_id']
+    monkeypatch.setattr(DocumentDataService, 'write', write)
+    if other_action == 'external':
+        DocumentDataService(copy).write({'intervention_report':'Alteração externa preservada'})
+    else:
+        boot = client.get(f'/api/file/{copy.stem}/bootstrap?client_id=other-tab')
+        assert boot.status_code == 200
+        lease = boot.json['editing']
+        other_metadata = dict(document_id=lease['document_id'], client_id='other-tab', lease_token=lease['lease']['token'],
+                              base_revision=lease['revision'], idempotency_key='independent-edit')
+        if other_action == 'autosave':
+            changed = client.post(f'/api/file/{copy.stem}/autosave', json={
+                '_edit':other_metadata, 'document':{'intervention_report':'Autosave de outra aba'}})
+            assert changed.status_code == 200
+        if other_action == 'commit':
+            changed = client.post(f'/api/file/{copy.stem}/draft', json={
+                '_edit':other_metadata, 'intervention_report':'Gravação de outra aba'}, headers=headers)
+            assert changed.status_code == 200
+    before_state = stored_evidence(service, copy_id)
+    before_files = {p.name:p.read_bytes() for p in copy.parent.iterdir() if p.is_file()}
+    response = client.post(f'/api/file/{path.stem}/draft', json=payload, headers=headers)
+    assert response.status_code == 409 and response.json['code'] == 'draft_copy_unavailable'
+    assert stored_evidence(service, copy_id) == before_state
+    assert {p.name:p.read_bytes() for p in copy.parent.iterdir() if p.is_file()} == before_files
+
+
+def test_new_copy_write_holds_its_own_editing_mutex(quarantine_app, monkeypatch):
+    app, service, path, client, headers, metadata = draft_session(quarantine_app, True)
+    write = DocumentDataService.write
+    refused = []
+    def inspect_write(instance, document):
+        copy = Path(service.operation(metadata['document_id'], 'recover-draft')['context']['draft_path'])
+        response = client.get(f'/api/file/{copy.stem}/bootstrap?client_id=other-tab')
+        refused.append(response.status_code)
+        assert response.status_code == 409 and response.json['code'] == 'operation_in_progress'
+        return write(instance, document)
+    monkeypatch.setattr(DocumentDataService, 'write', inspect_write)
+    response = client.post(f'/api/file/{path.stem}/draft', json={'_edit':metadata,'intervention_report':'Novo texto'}, headers=headers)
+    assert response.status_code == 200, response.json
+    assert refused == [409]

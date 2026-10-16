@@ -20,6 +20,7 @@ from src.services.editing_state_format import (
     decode_editing_state, report_quarantined_state,
 )
 from src.services.file_mutex import FileMutexBusy, file_mutex
+from src.services.local_changes import bundle_guard
 from src.services.admin_access import can_administer
 
 
@@ -69,6 +70,10 @@ class EditingSessionRevokedError(EditingStateError):
 
 class OperationInProgressError(EditingStateError):
     """Raised when the same idempotent operation is already running."""
+
+
+class DraftCopyUnavailableError(EditingStateError):
+    """The partial copy can no longer be overwritten by its creating operation."""
 
 
 @dataclass(frozen=True)
@@ -168,9 +173,36 @@ class EditingStateService:
         with self._state_transaction(document_id) as state:
             return self._public_snapshot(state)
 
-    def document_is_closed(self, document_id: str) -> bool:
-        with self._state_transaction(document_id) as state:
-            return bool(state.get("closed_by_operation"))
+    @contextmanager
+    def draft_copy_guard(self, path: Path, document_id: str, operation_id: str,
+                         *, fresh: bool, expected_fingerprint: str | None = None):
+        """Reuse only an untouched copy, under both its editing and bundle locks.
+
+        The parent workspace lock alone does not protect this separate document.
+        Reading the copy state must not retire another editor's pending operation.
+        """
+        copy_id = self.resolve_document_id(path)
+        lock_id = hashlib.sha256(copy_id.encode('utf-8')).hexdigest()
+        with file_mutex(self.root / 'operation-locks' / lock_id), bundle_guard(path.parent):
+            with self.repository._connect() as connection:
+                row = connection.execute('SELECT state_json FROM editing_states WHERE document_id=?',
+                                         (copy_id,)).fetchone()
+            state = decode_editing_state(row['state_json'], copy_id) if row else self._new_state(copy_id)
+            untouched = (not state.get('owner') and not state.get('sessions') and not state.get('autosave')
+                         and not state.get('operations') and not state.get('closed_by_operation')
+                         and state['revision'] == 1)
+            fingerprint = self._fingerprint(path)
+            if not untouched or not path.is_file() or (not fresh and expected_fingerprint != fingerprint):
+                raise DraftCopyUnavailableError()
+            self.update_operation_context(document_id, operation_id, draft_copy_fingerprint=fingerprint)
+            try:
+                yield
+            finally:
+                # Even SystemExit is a controlled unwind. An abrupt process kill
+                # cannot checkpoint changed bytes: that uncertain copy is kept,
+                # but a later retry must not overwrite it without this proof.
+                self.update_operation_context(document_id, operation_id,
+                    draft_copy_fingerprint=self._fingerprint(path))
 
     def acquire_lease(
         self,
