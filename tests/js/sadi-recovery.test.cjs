@@ -77,7 +77,7 @@ function broadcastBus({dropClosing=false}={}) {
 }
 
 function harness(t, {local, remote, failVerification=false, failBootstrap=false, deferSave=false, BroadcastChannel,
-    records=new Map(), deferVerification=false, sharedServer=null}) {
+    records=new Map(), deferVerification=false, sharedServer=null, commitRecovery}) {
     if(local)records.set('user:doc',{key:'user:doc',userId:'user',fileName:'synthetic-draft',documentId:'doc',
         baseRevision:1,updatedAt:Date.now(),payload:structuredClone(local)});
     const elements=new Map(), listeners=new Map(), timers=new Set(), intervals=new Map(), beacons=[];
@@ -88,10 +88,14 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
             addEventListener(name,fn){this.events.set(name,fn);},querySelectorAll:()=>[]});
         return elements.get(id);
     };
-    let payload={}, pendingSave, pendingVerification, saveCount=0, verifyCount=0, heartbeatRequired=false, revision=1, leaseOwner='';
+    let payload={}, pendingSave, pendingVerification, saveCount=0, verifyCount=0, bootstrapCount=0, heartbeatRequired=false, revision=1, leaseOwner='';
+    let bootstrapBusy=false;
+    const navigator={onLine:true,sendBeacon:(url,body)=>{beacons.push({url,body});return true;}};
     const reply=value=>({ok:true,status:200,json:async()=>value});
     const fetch=async (url, options) => {
         if(url.includes('/bootstrap?')) {
+            bootstrapCount++;
+            if(bootstrapBusy)return {ok:false,status:409,json:async()=>({success:false,code:'operation_in_progress'})};
             if(failBootstrap)throw new Error('synthetic bootstrap network failure');
             if(leaseOwner)return {ok:false,status:423,json:async()=>({success:false,code:'lease_conflict',
                 editing:{revision,owner:{owner_name:leaseOwner}}})};
@@ -143,6 +147,7 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
                 const result=model.reconcileSignatures(payload.maintenance_checklists,submitted.maintenance_checklists,verified.maintenance_checklists);
                 refresh();return result.length;
             },showToast(){},renderAttachments(){},hasPendingPhotoChanges:()=>false},
+        SensorpointCommitRecovery:commitRecovery,
         crypto:{randomUUID:()=>require('node:crypto').randomUUID()},indexedDB,
         setTimeout:(fn,delay)=>{const timer=setTimeout(fn,delay);timers.add(timer);return timer;},clearTimeout,
         setInterval:(fn,delay)=>{intervals.set(delay,fn);return {unref(){}};},clearInterval(){},addEventListener:(name,fn)=>listeners.set(name,fn),location:{}};
@@ -150,10 +155,11 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
     const document={readyState:'complete',hidden:false,body:{classList:classes()},getElementById:element,
         querySelector:()=>null,addEventListener:(name,fn)=>listeners.set(name,fn)};
     vm.runInNewContext(read('editing-coordinator.js'),{window,document,fetch,console,Blob,indexedDB,BroadcastChannel,
-        IDBKeyRange:{only:value=>value},navigator:{onLine:true,sendBeacon:(url,body)=>{beacons.push({url,body});return true;}},
+        IDBKeyRange:{only:value=>value},navigator,
         sessionStorage:{getItem:()=>null,setItem(){}},setTimeout,clearTimeout});
     t.after(()=>{for(const timer of timers)clearTimeout(timer);});
-    return {records,element,beacons,notice:signatureNotice,coordinator:window.__EDITING_COORDINATOR__,
+    return {records,element,beacons,navigator,notice:signatureNotice,coordinator:window.__EDITING_COORDINATOR__,
+        bootstrapCount:()=>bootstrapCount, busyBootstrap:value=>{bootstrapBusy=value;},
         booting:()=>document.body.classList.contains('editor-booting'),
         payload:()=>payload,setPayload:value=>{payload=structuredClone(value);refresh();},
         saveCount:()=>saveCount,verifyCount:()=>verifyCount,finishSave:()=>pendingSave?.(),pendingSave:()=>Boolean(pendingSave),listeners,
@@ -163,6 +169,42 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
         requireLease:(remoteRevision=revision)=>{heartbeatRequired=true;revision=remoteRevision;return intervals.get(15000)();},
         recoverNetwork:()=>{failVerification=false;failBootstrap=false;heartbeatRequired=false;leaseOwner='';}};
 }
+
+for(const obstruction of ['none','busy','offline','verification'])test(`interrupted finalization resumes the same form before editing (${obstruction})`,async t=>{
+    let receipt=null, cleared=0;
+    const commitRecovery={read:()=>null,lookup:async()=>receipt,clear:()=>{cleared++;receipt=null;}};
+    const original=signed('fresh-valid');
+    const app=harness(t,{remote:original,commitRecovery});
+    await waitFor(()=>!app.element('btn-save-send').disabled);
+    const latest=signed('fresh-valid');latest.observations='Texto mais recente ainda nesta página';
+    app.setPayload(latest);app.coordinator.markDirty();
+    const oldKey=app.coordinator.operationMetadata('send').idempotency_key;
+    app.coordinator.setCommitPending(true);
+    receipt={status:'interrupted',kind:'send'};
+    if(obstruction==='busy')app.busyBootstrap(true);
+    if(obstruction==='offline')app.navigator.onLine=false;
+    if(obstruction==='verification')app.failVerification();
+    assert.equal(await app.coordinator.recoverPendingCommit(),false);
+    app.coordinator.setCommitPending(false); // sendFile's finally
+    assert.equal(cleared,1);
+    if(obstruction!=='none') {
+        assert.equal(app.element('btn-save-send').disabled,true);
+        assert.equal(app.element('service-form').classList.contains('is-readonly'),true);
+        assert.equal(app.element('btn-retry-lease').hidden,false);
+        assert.equal(app.saveCount(),0,'unverified recovery must not autosave');
+        assert.equal(app.records.get('user:doc').payload.observations,latest.observations);
+        app.busyBootstrap(false);app.navigator.onLine=true;app.recoverNetwork();
+        await app.element('btn-retry-lease').events.get('click')();
+    }
+    assert.equal(app.element('btn-save-send').disabled,false);
+    assert.equal(app.element('service-form').classList.contains('is-readonly'),false);
+    assert.ok(app.bootstrapCount()>=2,'interruption requires a fresh bootstrap without reloading');
+    assert.equal(app.payload().observations,latest.observations);
+    assert.equal(app.payload().maintenance_checklists[0].signatures.technician.token,'fresh-valid');
+    await waitFor(()=>app.saveCount()===1);
+    assert.notEqual(app.coordinator.operationMetadata('send').idempotency_key,oldKey);
+    assert.equal(app.records.get('user:doc').payload.observations,latest.observations);
+});
 
 test('IndexedDB recovery is verified before hydration; rejected proofs never return to the editor or recovery',async t=>{
     const local=signed('old'), remote=normalize(local);remote.observations='versão anterior';

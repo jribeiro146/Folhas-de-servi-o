@@ -683,6 +683,20 @@ const startEditingCoordinator = () => {
             // next explicit save must capture the current form under a new key.
             operationKeys.delete(operation.kind);
             recovery.clear(activeFileName);
+            if (operation.status === "interrupted" && initialized && !initializing) {
+                // GET only proves that the writer stopped; bootstrap must retire
+                // its pending state before autosave can resume. Preserve this
+                // page's latest form and use the existing verified-resume path,
+                // including its conflict, offline and other-tab protections.
+                resumeSnapshot ||= {payload:editor.collectFormData(), revision:Number(editing.revision || 1)};
+                sessionToken = "";
+                commitPending = false;
+                setFormReadOnly(true);
+                setCommitActionsEnabled(false);
+                await persistLocalRecovery({ force:true });
+                showVerificationRetry("O formulário mais recente continua nesta página. Volte a tentar antes de editar.");
+                await resumeEditingSession();
+            }
             return false;
         }
         if (operation.status !== "complete") return false;
