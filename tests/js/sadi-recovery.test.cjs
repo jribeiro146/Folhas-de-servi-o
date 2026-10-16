@@ -89,7 +89,7 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
         return elements.get(id);
     };
     let payload={}, pendingSave, pendingVerification, saveCount=0, verifyCount=0, bootstrapCount=0, heartbeatRequired=false, revision=1, leaseOwner='';
-    let bootstrapBusy=false;
+    let bootstrapBusy=false, reloads=0;
     const navigator={onLine:true,sendBeacon:(url,body)=>{beacons.push({url,body});return true;}};
     const reply=value=>({ok:true,status:200,json:async()=>value});
     const fetch=async (url, options) => {
@@ -150,7 +150,7 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
         SensorpointCommitRecovery:commitRecovery,
         crypto:{randomUUID:()=>require('node:crypto').randomUUID()},indexedDB,
         setTimeout:(fn,delay)=>{const timer=setTimeout(fn,delay);timers.add(timer);return timer;},clearTimeout,
-        setInterval:(fn,delay)=>{intervals.set(delay,fn);return {unref(){}};},clearInterval(){},addEventListener:(name,fn)=>listeners.set(name,fn),location:{}};
+        setInterval:(fn,delay)=>{intervals.set(delay,fn);return {unref(){}};},clearInterval(){},addEventListener:(name,fn)=>listeners.set(name,fn),location:{reload:()=>{reloads++;}}};
     if(BroadcastChannel)window.BroadcastChannel=BroadcastChannel;
     const document={readyState:'complete',hidden:false,body:{classList:classes()},getElementById:element,
         querySelector:()=>null,addEventListener:(name,fn)=>listeners.set(name,fn)};
@@ -160,6 +160,7 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
     t.after(()=>{for(const timer of timers)clearTimeout(timer);});
     return {records,element,beacons,navigator,notice:signatureNotice,coordinator:window.__EDITING_COORDINATOR__,
         bootstrapCount:()=>bootstrapCount, busyBootstrap:value=>{bootstrapBusy=value;},
+        reloads:()=>reloads,
         booting:()=>document.body.classList.contains('editor-booting'),
         payload:()=>payload,setPayload:value=>{payload=structuredClone(value);refresh();},
         saveCount:()=>saveCount,verifyCount:()=>verifyCount,finishSave:()=>pendingSave?.(),pendingSave:()=>Boolean(pendingSave),listeners,
@@ -204,6 +205,26 @@ for(const obstruction of ['none','busy','offline','verification'])test(`interrup
     await waitFor(()=>app.saveCount()===1);
     assert.notEqual(app.coordinator.operationMetadata('send').idempotency_key,oldKey);
     assert.equal(app.records.get('user:doc').payload.observations,latest.observations);
+});
+
+test('changed session preserves the latest form and the recovery action reloads instead of retrying the old scope',async t=>{
+    let changed=false, lookups=0;
+    const tracker={read:()=>null,lookup:async()=>{lookups++;if(changed)throw Object.assign(new Error('Sessão mudou'),{code:'mail_monitor_session_changed'});return null;}};
+    const app=harness(t,{remote:signed('fresh-valid'),commitRecovery:tracker});
+    await waitFor(()=>!app.element('btn-save-send').disabled);
+    const latest=signed('fresh-valid');latest.observations='Texto atual antes da mudança de sessão';
+    app.setPayload(latest);app.coordinator.markDirty();app.coordinator.setCommitPending(true);changed=true;
+    await assert.rejects(()=>app.coordinator.recoverPendingCommit(),{code:'mail_monitor_session_changed'});
+    app.coordinator.setCommitPending(false);
+    assert.equal(app.element('btn-save-send').disabled,true);
+    assert.equal(app.element('btn-retry-lease').textContent,'Recarregar');
+    assert.equal(app.records.get('user:doc').payload.observations,latest.observations);
+    const before=lookups;
+    await app.listeners.get('online')();
+    await app.element('btn-retry-lease').events.get('click')();
+    assert.equal(app.reloads(),1);assert.equal(lookups,before);assert.equal(app.bootstrapCount(),1);
+    assert.equal(app.records.get('user:doc').payload.observations,latest.observations);
+    assert.equal(app.saveCount(),0);
 });
 
 test('IndexedDB recovery is verified before hydration; rejected proofs never return to the editor or recovery',async t=>{

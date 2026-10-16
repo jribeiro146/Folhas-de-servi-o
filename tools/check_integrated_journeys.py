@@ -462,11 +462,11 @@ def main():
                 page.locator('#confirm-accept').click()
             assert not damaged.exists()
             passed('F01 damaged opaque reference does not block saving or cancelling a live draft')
-            for recovery_mode in ('reload', 'same-page', 'busy'):
+            for recovery_mode in ('reload', 'same-page', 'busy', 'claim'):
                 ctx.close()
                 ctx = context()
                 page = ctx.new_page()
-                interrupted = files.create_draft_copy(sources[1], {'reload':'Processo interrompido','same-page':'Retoma direta','busy':'Retoma ocupada'}[recovery_mode])
+                interrupted = files.create_draft_copy(sources[1], {'reload':'Processo interrompido','same-page':'Retoma direta','busy':'Retoma ocupada','claim':'Gravação inicial'}[recovery_mode])
                 DocumentDataService(interrupted).write(normalize_document_payload({
                     'customer_name':'Cliente fictício processo interrompido', 'customer_email':'customer@example.invalid',
                     'service_types':{'assistencia':True}, 'equipments':{'vss':True}, 'client_not_present':True,
@@ -479,7 +479,7 @@ def main():
                 def restart_crashed_web():
                     nonlocal web
                     until(lambda:web.poll() is not None, 'Web process did not reach crash boundary', 45)
-                    assert web.returncode == 74
+                    assert web.returncode == (75 if recovery_mode == 'claim' else 74)
                     (root / 'web-ready.json').unlink()
                     web = start('web')
                     assert ready('web-ready.json', web)['port'] == web_info['port']
@@ -493,7 +493,7 @@ def main():
                 if recovery_mode == 'busy':
                     page.route('**/bootstrap?client_id=*', lambda route:route.fulfill(status=409,
                         content_type='application/json',body=json.dumps({'success':False,'code':'operation_in_progress'})), times=1)
-                (root / 'fault-crash-after-finalization-publish').touch()
+                (root / ('fault-crash-after-send-claim' if recovery_mode == 'claim' else 'fault-crash-after-finalization-publish')).touch()
                 latest_text = 'Última alteração antes da falha, ainda no formulário'
                 page.locator('#intervention-report').fill(latest_text)
                 page.locator('#btn-save-send').click()
@@ -533,6 +533,39 @@ def main():
                 assert sum(r['kind']=='mail' for r in effect_rows()) == before_mails + 1
                 assert not interrupted.exists()
                 passed(f'F01 killed web process recovers current form ({recovery_mode}); autosave works and explicit retry sends once')
+            ctx.close()
+            ctx = context()
+            page = ctx.new_page()
+            changed_session = files.create_draft_copy(sources[1], 'Sessão alterada')
+            DocumentDataService(changed_session).write(normalize_document_payload({
+                'customer_name':'Cliente fictício sessão alterada', 'customer_email':'customer@example.invalid',
+                'service_types':{'assistencia':True}, 'equipments':{'vss':True}, 'client_not_present':True,
+                'technician_records':[{'technician':'Técnico fictício','date':'2026-10-16',
+                                       'start_time':'09:00','end_time':'10:00'}]}))
+            open_draft(page, changed_session)
+            ctx.add_cookies([cookie()])  # Same identity, new login session without the old monitor scope.
+            latest_text = 'Texto local preservado após mudança de sessão'
+            page.locator('#intervention-report').fill(latest_text)
+            before_mails = sum(r['kind']=='mail' for r in effect_rows())
+            page.locator('#btn-save-send').click()
+            with page.expect_response(lambda r:r.url.endswith('/send') and r.status==403) as rejected:
+                page.locator('#confirm-accept').click()
+            assert rejected.value.json()['code'] == 'mail_monitor_session_changed'
+            expect(page.locator('#btn-retry-lease')).to_have_text('Recarregar', timeout=15000)
+            expect(page.locator('#intervention-report')).not_to_be_editable()
+            assert latest_text in local_value(page)
+            assert sum(r['kind']=='mail' for r in effect_rows()) == before_mails
+            with page.expect_navigation(wait_until='load'):
+                page.locator('#btn-retry-lease').click()
+            expect(page.locator('#btn-save-send')).to_be_enabled(timeout=15000)
+            expect(page.locator('#intervention-report')).to_have_value(latest_text)
+            saved(page)
+            assert sum(r['kind']=='mail' for r in effect_rows()) == before_mails
+            page.locator('#btn-save-send').click()
+            page.locator('#confirm-accept').click()
+            page.wait_for_url(base+'/', timeout=45000)
+            assert sum(r['kind']=='mail' for r in effect_rows()) == before_mails + 1
+            passed('F01 changed login session offers real reload, restores latest form and never resends automatically')
             effects = effect_rows()
             assert errors == [] and blocked == [], (errors,blocked)
             report = {'status':'PASS','source':__import__('src.services.release_identity',fromlist=['get_release_info']).get_release_info(),

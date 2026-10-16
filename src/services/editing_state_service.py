@@ -496,6 +496,7 @@ class EditingStateService:
         client_id: str,
         lease_token: str,
         base_revision: int,
+        recovery_owner: dict | None = None,
     ) -> dict[str, Any]:
         now = time.time()
         with self._state_transaction(document_id) as state:
@@ -518,6 +519,11 @@ class EditingStateService:
                 raise EditingStateError("Esta folha já foi finalizada ou cancelada.")
             self._assert_revision(state, base_revision, now)
             operation = dict(existing or {})
+            context = dict(operation.get("context") or {})
+            if recovery_owner is not None:
+                # The receipt must be attributable from the first durable claim,
+                # including process death before any subsequent context write.
+                context.setdefault("recovery_owner", dict(recovery_owner))
             operation.update({
                 "kind": kind,
                 "status": "pending",
@@ -525,7 +531,7 @@ class EditingStateService:
                 "created_at": operation.get("created_at") or now,
                 "updated_at": now,
                 "base_revision": base_revision,
-                "context": dict(operation.get("context") or {}),
+                "context": context,
             })
             operations[idempotency_key] = operation
             return {"status": "started", "operation": dict(operation)}
@@ -770,7 +776,7 @@ class EditingStateService:
 
     @contextmanager
     def operation_guard(self, document_id: str, identity: EditorIdentity, *,
-                        allow_foreign_owner: bool = False):
+                        allow_foreign_owner: bool = False, path: Path | None = None):
         lock_id = hashlib.sha256(document_id.encode("utf-8")).hexdigest()
         try:
             with file_mutex(self.root / "operation-locks" / lock_id):
@@ -784,6 +790,14 @@ class EditingStateService:
                         raise LeaseConflictError(self._public_snapshot(state))
                     for operation in state.get("operations", {}).values():
                         if operation.get("status") == "pending":
+                            if operation.get("kind") == "draft" and state.get("workspace_kind") == "draft":
+                                if path is None or self.resolve_document_id(path) != document_id:
+                                    raise OperationInProgressError("Reabra o rascunho para recuperar a gravação interrompida.")
+                                # A dead draft writer may have changed Excel but
+                                # not its sidecars. As in fail_operation, account
+                                # for that write before clearing pending; otherwise
+                                # acquire_lease would discard the server autosave.
+                                state["fingerprint"] = self._fingerprint(path)
                             operation.update(status="failed", error="Operação interrompida; pode ser recuperada.")
                 yield
         except FileMutexBusy as exc:

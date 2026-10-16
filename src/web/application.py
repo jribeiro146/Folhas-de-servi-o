@@ -606,8 +606,8 @@ def _create_app(
             try:
                 supplied_scope = request.headers.get("X-Mail-Monitor-Scope")
                 if supplied_scope is not None and supplied_scope != mail_monitor_scope():
-                    return json_error("A sessão de acompanhamento mudou. Atualize a página.", 403,
-                                      code="mail_monitor_session_changed")
+                    return jsonify(success=False, code="mail_monitor_session_changed",
+                                   error="A sessão de acompanhamento mudou. Atualize a página."), 403
                 # Validate before acquiring a mutex or opening a state transaction.
                 # A copy keeps the JSON/multipart body intact for the view, which
                 # applies the same validation and uses the identical opaque ID.
@@ -618,6 +618,7 @@ def _create_app(
                 with editing_state_service.operation_guard(
                     document_id, current_editor_identity(),
                     allow_foreign_owner=can_edit_foreign_sadi_draft(path),
+                    path=path,
                 ):
                     guard = bundle_guard(path.parent) if path and path.parent.name == path.stem else nullcontext()
                     with guard:
@@ -1427,7 +1428,8 @@ def _create_app(
         expected_scope = mail_monitor_scope()
         if (not re.fullmatch(r"[a-f0-9]{64}", supplied_scope) or not expected_scope
                 or not secrets.compare_digest(supplied_scope, expected_scope)):
-            return json_error("A sessão de acompanhamento mudou. Atualize a página.", 403)
+            return jsonify(success=False, code="mail_monitor_session_changed",
+                           error="A sessão de acompanhamento mudou. Atualize a página."), 403
         if not all(re.fullmatch(r"[A-Za-z0-9:_-]{1,240}", value)
                    for value in (document_id, idempotency_key)):
             return json_error("Referência de operação inválida.", 400)
@@ -1460,7 +1462,7 @@ def _create_app(
             # after recovery; a live writer still refuses this acquisition.
             document_id = resolve_editing_document_id(path, client_id)
             with editing_state_service.operation_guard(document_id, identity,
-                    allow_foreign_owner=can_edit_foreign_sadi_draft(path)):
+                    allow_foreign_owner=can_edit_foreign_sadi_draft(path), path=path):
                 if file_service.is_draft_file(path):
                     editing = editing_state_service.acquire_lease(
                         path, identity, client_id,
@@ -2116,6 +2118,7 @@ def _create_app(
                 document_id=document_id,
                 kind="send",
                 idempotency_key=idempotency_key,
+                recovery_owner=current_job_owner(),
                 identity=current_editor_identity(),
                 client_id=str(metadata["client_id"]),
                 lease_token=str(metadata["lease_token"]),
@@ -2124,9 +2127,6 @@ def _create_app(
             if claim["status"] == "replay":
                 return jsonify(claim["operation"]["response"])
             operation_context = dict(claim["operation"].get("context") or {})
-            if "recovery_owner" not in operation_context:
-                editing_state_service.update_operation_context(
-                    document_id, idempotency_key, recovery_owner=current_job_owner())
             editing_state_service.update_operation_context(
                 document_id, idempotency_key, request_digest=request_digest)
             private_bundle_key = str(operation_context.get("private_bundle_key") or "")

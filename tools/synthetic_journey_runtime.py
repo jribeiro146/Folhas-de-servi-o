@@ -130,6 +130,14 @@ def web(root):
             raise OSError(errno.ENOSPC, 'Synthetic full disk')
         return original_write(self, document)
     DocumentDataService.write = write
+    from src.services.editing_state_service import EditingStateService
+    original_claim = EditingStateService.claim_operation
+    def claim(self, **kwargs):
+        result = original_claim(self, **kwargs)
+        if kwargs.get('kind') == 'send' and fault(root, 'crash-after-send-claim'):
+            os._exit(75)
+        return result
+    EditingStateService.claim_operation = claim
     from src.services.finalization_service import FinalizationService
     original_publish = FinalizationService.publish
     def publish(self, *args):

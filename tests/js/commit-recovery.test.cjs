@@ -59,6 +59,16 @@ test('missing operation retains the same reference for explicit retry', async ()
     assert.equal(tracker.read('synthetic').operationId, metadata.idempotency_key);
 });
 
+test('changed session requests reload and preserves the original opaque receipt', async () => {
+    const store = storage();
+    const tracker = create({scope, storage:store, fetchFn:async () => ({status:403,
+        json:async () => ({success:false,code:'mail_monitor_session_changed'})})});
+    tracker.begin('synthetic', metadata);
+    await assert.rejects(() => tracker.lookup('synthetic'), error =>
+        error.code === 'mail_monitor_session_changed' && /Recarregue/.test(error.message));
+    assert.equal(tracker.read('synthetic').operationId, metadata.idempotency_key);
+});
+
 test('unavailable or malformed result never erases the pending reference', async () => {
     for (const response of [{ok:false,status:503}, {ok:true,status:200,json:async () => ({success:true,operation:{status:'complete'}})}]) {
         const store = storage();

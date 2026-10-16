@@ -85,6 +85,7 @@ const startEditingCoordinator = () => {
     let resumePromise = null;
     let initializing = false;
     let initialRecoveryPending = false;
+    let recoveryRequiresReload = false;
     let resumeSnapshot = null;
     let tabClaimPending = false;
     const operationKeys = new Map();
@@ -544,7 +545,7 @@ const startEditingCoordinator = () => {
     };
 
     const resumeEditingSession = async () => {
-        if (revoked) return false;
+        if (revoked || recoveryRequiresReload) return false;
         if (initialRecoveryPending) {
             await initialize();
             return hasActiveSession();
@@ -655,8 +656,10 @@ const startEditingCoordinator = () => {
     const showVerificationRetry = (message) => {
         setAutosaveStatus("Recuperação por confirmar — apenas consulta; volte a tentar", "offline");
         if (lockTitle) lockTitle.textContent = "Não foi possível confirmar a recuperação";
-        if (lockMessage) lockMessage.textContent = message;
-        if (retryButton) { retryButton.hidden = false; retryButton.disabled = false; retryButton.textContent = "Voltar a tentar"; }
+        if (lockMessage) lockMessage.textContent = recoveryRequiresReload
+            ? "A sessão mudou. Recarregue para retomar; as alterações deste dispositivo continuam guardadas."
+            : message;
+        if (retryButton) { retryButton.hidden = false; retryButton.disabled = false; retryButton.textContent = recoveryRequiresReload ? "Recarregar" : "Voltar a tentar"; }
     };
 
     const checkOtherTab = async () => {
@@ -794,6 +797,7 @@ const startEditingCoordinator = () => {
             pruneExpiredRecoveries().catch(() => {});
         } catch (error) {
             if (revoked) return;
+            recoveryRequiresReload = error.code === "mail_monitor_session_changed";
             const result = bootstrapResult || error.result || {};
             editing = { ...editing, ...(result.editing || {}) };
             const localRecovery = await localRecoveryPromise;
@@ -824,6 +828,11 @@ const startEditingCoordinator = () => {
 
     retryButton?.addEventListener("click", async () => {
         if (revoked) return;
+        if (recoveryRequiresReload) {
+            await persistLocalRecovery({ force:true });
+            await leavePage(() => window.location.reload());
+            return;
+        }
         if (initialRecoveryPending) await initialize();
         else await resumeEditingSession();
     });
@@ -1030,8 +1039,11 @@ const startEditingCoordinator = () => {
         async recoverPendingCommit() {
             try { return await resolvePendingCommit(); }
             catch (error) {
+                recoveryRequiresReload = error.code === "mail_monitor_session_changed";
                 initialRecoveryPending = true;
+                if (recoveryRequiresReload) sessionToken = "";
                 setFormReadOnly(true);
+                await persistLocalRecovery({ force:true });
                 showVerificationRetry("Volte a consultar a operação antes de editar; nenhum envio será repetido.");
                 throw error;
             }

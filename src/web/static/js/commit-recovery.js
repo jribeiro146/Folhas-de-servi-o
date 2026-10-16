@@ -43,6 +43,14 @@
                 const response = await fetchFn(`/api/editing/operations/${encodeURIComponent(record.documentId)}/${encodeURIComponent(record.operationId)}`,
                     {headers: {"Accept":"application/json", "X-Mail-Monitor-Scope":scope}, cache:"no-store", signal:controller.signal});
                 if (response.status === 404) return {record, status:"missing"};
+                if (response.status === 403) {
+                    const refusal = await response.json().catch(() => ({}));
+                    if (refusal.code === "mail_monitor_session_changed") {
+                        const error = new Error("A sessão mudou. Recarregue a página para retomar a edição.");
+                        error.code = refusal.code;
+                        throw error;
+                    }
+                }
                 if (!response.ok) throw new Error("Não foi possível consultar a gravação. Volte a tentar; nenhum envio foi repetido.");
                 const data = await response.json();
                 if (!data.success || data.operation?.kind !== record.kind

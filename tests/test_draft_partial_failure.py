@@ -7,7 +7,8 @@ from src.services.document_data_service import DocumentDataService
 from tests.test_editing_quarantine import quarantine_app, replace_stored_state
 
 
-def test_partial_draft_then_reload_keeps_autosave_but_later_external_change_invalidates(quarantine_app, monkeypatch):
+@pytest.mark.parametrize('process_death', [False, True])
+def test_partial_draft_then_reload_keeps_autosave_but_later_external_change_invalidates(quarantine_app, monkeypatch, process_death):
     app, service, document_id, path = quarantine_app
     raw = app.config['SYNTHETIC_INITIAL_STATE']
     replace_stored_state(service, document_id, raw)
@@ -23,16 +24,25 @@ def test_partial_draft_then_reload_keeps_autosave_but_later_external_change_inva
     original_write = DocumentDataService.write
     prior = DocumentDataService(path).read()
     def full_disk(*args):
+        if process_death:
+            raise SystemExit(74)  # Bypass the endpoint's Exception/fail_operation path.
         raise OSError(errno.ENOSPC, 'Synthetic disk full at the sidecar boundary')
     monkeypatch.setattr(DocumentDataService, 'write', full_disk)
-    failed = client.post(f'/api/file/{path.stem}/draft', json={**payload, '_edit':metadata})
-    assert failed.status_code == 500
+    if process_death:
+        with pytest.raises(SystemExit):
+            client.post(f'/api/file/{path.stem}/draft', json={**payload, '_edit':metadata})
+    else:
+        failed = client.post(f'/api/file/{path.stem}/draft', json={**payload, '_edit':metadata})
+        assert failed.status_code == 500
     assert DocumentDataService(path).read() == prior
-    assert service.operation(document_id, metadata['idempotency_key'])['status'] == 'failed'
+    assert service.operation(document_id, metadata['idempotency_key'])['status'] == ('pending' if process_death else 'failed')
     reopened = client.get(f'/api/file/{path.stem}/bootstrap?client_id=tab-1')
     assert reopened.status_code == 200
     assert (reopened.json['editing']['server_document'] or {}).get('intervention_report') == payload['intervention_report']
     assert reopened.json['editing']['revision'] == saved.json['editing']['revision']
+    assert service.operation(document_id, metadata['idempotency_key'])['status'] == 'failed'
+    metadata.update(idempotency_key='synthetic-resumed-autosave', lease_token=reopened.json['editing']['lease']['token'])
+    assert client.post(f'/api/file/{path.stem}/autosave', json={'_edit':metadata,'document':payload}).status_code == 200
 
     # A different write AFTER the failed operation remains an external change.
     monkeypatch.setattr(DocumentDataService, 'write', original_write)
@@ -62,3 +72,26 @@ def test_partial_write_acknowledgment_rejects_other_operation_or_document(tmp_pa
             service.fail_operation(document_id, 'operation', 'Synthetic failure',
                                    partial_draft_path=other if other_path else file)
     assert service.operation(document_id, 'operation') == before
+
+
+@pytest.mark.parametrize('wrong_path', [False, True])
+def test_orphan_draft_guard_requires_its_known_path_before_discarding_pending(tmp_path, wrong_path):
+    from src.services.editing_state_service import EditingStateService, EditorIdentity, OperationInProgressError
+    from tests.test_editing_quarantine import stored_evidence
+    path, other = tmp_path / 'synthetic.xlsx', tmp_path / 'other.xlsx'
+    path.write_bytes(b'synthetic-before')
+    other.write_bytes(b'unrelated-synthetic')
+    service = EditingStateService(tmp_path / 'editing')
+    owner = EditorIdentity('synthetic-owner', 'Synthetic')
+    lease = service.acquire_lease(path, owner, 'tab')
+    document_id = lease['document_id']
+    service.claim_operation(document_id=document_id, kind='draft', idempotency_key='orphan',
+        identity=owner, client_id='tab', lease_token=lease['lease']['token'], base_revision=lease['revision'])
+    path.write_bytes(b'synthetic-partial-write')
+    before = stored_evidence(service, document_id)
+    with pytest.raises(OperationInProgressError):
+        with service.operation_guard(document_id, owner, path=other if wrong_path else None):
+            pytest.fail('A missing or foreign path cannot acknowledge this partial draft')
+    assert stored_evidence(service, document_id) == before
+    with service.operation_guard(document_id, owner, path=path):
+        assert service.operation(document_id, 'orphan')['status'] == 'failed'

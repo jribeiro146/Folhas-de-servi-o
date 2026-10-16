@@ -184,3 +184,29 @@ def test_unknown_operation_lookup_does_not_create_editing_state(completed):
                           headers={'X-Mail-Monitor-Scope':scope})
     assert response.status_code == 404
     assert service.repository.document_ids() == before
+
+
+def test_send_claim_atomically_records_recovery_owner_before_any_followup_write(quarantine_app,monkeypatch):
+    app,service,document_id,path=quarantine_app
+    replace_stored_state(service,document_id,app.config['SYNTHETIC_INITIAL_STATE'])
+    state=json.loads(app.config['SYNTHETIC_INITIAL_STATE'])
+    metadata={'document_id':document_id,'client_id':'tab-1','lease_token':next(iter(state['sessions'])), 'base_revision':state['revision'],'idempotency_key':'synthetic-claim-gap'}
+    original=service.claim_operation
+    def crash(**kwargs):
+        original(**kwargs)
+        raise SystemExit(74)
+    monkeypatch.setattr(service,'claim_operation',crash)
+    payload={'customer_name':'Cliente ficticio','intervention_report':'Texto preservado','client_not_present':True,'service_types':{'assistencia':True},'equipments':{'vss':True},'technician_records':[{'technician':'Tecnico ficticio','date':'2026-10-16','start_time':'09:00','end_time':'10:00'}], '_edit':metadata}
+    client=app.test_client()
+    headers={'X-Mail-Monitor-Scope':client.get('/api/graph/monitor-context').json['scope']}
+    with pytest.raises(SystemExit):client.post(f'/api/file/{path.stem}/send',json=payload,headers=headers)
+    receipt=client.get(f'/api/editing/operations/{document_id}/synthetic-claim-gap',headers=headers)
+    assert receipt.status_code==200
+    assert receipt.json['operation']['status']=='interrupted'
+    assert service.operation(document_id,'synthetic-claim-gap')['status']=='pending'
+    metadata['idempotency_key']='synthetic-after-gap'
+    saved=client.post(f'/api/file/{path.stem}/autosave',json={'document':{'intervention_report':'Texto local mais recente'},'_edit':metadata})
+    assert saved.status_code==409 and saved.json['code']=='operation_in_progress'
+    reopened=client.get(f'/api/file/{path.stem}/bootstrap?client_id=tab-1')
+    assert reopened.status_code==200
+    assert service.operation(document_id,'synthetic-claim-gap')['status']=='failed'
