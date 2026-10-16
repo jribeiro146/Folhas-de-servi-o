@@ -53,8 +53,8 @@
                     }
                 }
                 if (!response.ok) throw new Error("Não foi possível consultar a gravação. Volte a tentar; nenhum envio foi repetido.");
-                const data = await response.json();
-                if (!data.success || data.operation?.kind !== record.kind
+                const data = await response.json().catch(() => null);
+                if (!data?.success || data.operation?.kind !== record.kind
                         || !["complete", "pending", "failed", "interrupted"].includes(data.operation.status)) throw new Error("Resposta de gravação inválida.");
                 return {...data.operation, record};
             } finally { root.clearTimeout(timeout); }

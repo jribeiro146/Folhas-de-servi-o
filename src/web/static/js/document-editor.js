@@ -1462,6 +1462,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
     const commitMessageKey = "sensorpoint-commit-message";
+    const readCommitResult = async (response, kind) => {
+        let result;
+        try { result = await response.json(); } catch (_) { /* A proxy may return HTML or an empty body. */ }
+        if (result && typeof result === "object" && (result.success === false || (result.success === true
+                && (kind === "draft" ? typeof result.file === "string" && result.file.length > 0
+                    : typeof result.email_status === "string")))) return result;
+        // A transport status/body cannot prove that a mutation did not happen.
+        // The caller's recovery path consults the receipt, never retries a POST.
+        const reference = response.headers?.get?.("X-Request-ID") || "";
+        const suffix = /^[A-Za-z0-9._:-]{1,64}$/.test(reference) ? ` Referência: ${reference}.` : "";
+        const error = new Error("Não foi possível confirmar o resultado da gravação." + suffix);
+        error.code = "operation_response_unconfirmed";
+        error.status = response.status;
+        throw error;
+    };
     const navigateAfterCommit = (url, message, variant = "success") => {
         try {
             window.sessionStorage.setItem(commitMessageKey, JSON.stringify({ message, variant }));
@@ -1494,7 +1509,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 ...requestOptions,
                 headers: {...requestOptions.headers, ...recoveryHeaders}
             });
-            const result = await response.json();
+            const result = await readCommitResult(response, "draft");
 
             if (!response.ok || !result.success) {
                 window.__EDITING_COORDINATOR__?.handleConflict(result);
@@ -1561,7 +1576,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 ...requestOptions,
                 headers: {...requestOptions.headers, ...recoveryHeaders}
             });
-            const result = await response.json();
+            const result = await readCommitResult(response, "send");
 
             if (!response.ok || !result.success) {
                 window.__EDITING_COORDINATOR__?.handleConflict(result);

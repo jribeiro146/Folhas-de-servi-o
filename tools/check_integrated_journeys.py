@@ -454,6 +454,76 @@ def main():
             assert DocumentDataService(next(iter(created))).read()['intervention_report'] == 'F02 texto novo após falha e recarga'
             assert sources[3].read_bytes() == original_bytes and effect_rows() == effects_before
             passed('F02 failed partial copy survives reload and explicit retry updates one copy with current form')
+            for html_stage in ('before-commit', 'after-commit', 'receipt'):
+                ctx.close()
+                ctx = context()
+                page = ctx.new_page()
+                open_draft(page, sources[3])
+                text = 'F03 formulário preservado ' + html_stage
+                page.locator('#intervention-report').fill(text)
+                saved(page)
+                before_copies, effects_before = set(sources[3].parent.glob('*/*.xlsx')), effect_rows()
+                requests = []
+                page.on('request', lambda request:requests.append(request.url) if request.url.endswith('/draft') else None)
+                def html_draft_response(route):
+                    if html_stage != 'before-commit':
+                        assert route.fetch().status == 200
+                    route.fulfill(status=500,content_type='text/html',body='<!doctype html><h1>Synthetic proxy failure</h1>')
+                page.route('**/draft', html_draft_response, times=1)
+                if html_stage == 'receipt':
+                    page.route('**/api/editing/operations/**', lambda route:route.fulfill(status=200,
+                        content_type='text/html',body='<!doctype html><h1>Synthetic invalid receipt</h1>'), times=1)
+                if html_stage == 'after-commit':
+                    with page.expect_navigation(wait_until='load'):
+                        page.locator('#btn-save-draft').click()
+                else:
+                    page.locator('#btn-save-draft').click()
+                    if html_stage == 'receipt':
+                        expect(page.locator('#btn-retry-lease')).to_be_visible(timeout=15000)
+                        expect(page.locator('#btn-save-draft')).to_be_disabled()
+                        button = page.locator('#btn-retry-lease')
+                    else:
+                        expect(page.locator('#toast-zone')).to_contain_text('Não foi possível confirmar')
+                        expect(page.locator('#btn-save-draft')).to_be_enabled()
+                        assert set(sources[3].parent.glob('*/*.xlsx')) == before_copies
+                        button = page.locator('#btn-save-draft')
+                    expect(page.locator('#intervention-report')).to_have_value(text)
+                    assert 'Unexpected token' not in page.locator('#toast-zone').inner_text()
+                    with page.expect_navigation(wait_until='load'):
+                        button.click()
+                expect(page.locator('#btn-save-draft')).to_be_enabled(timeout=15000)
+                expect(page.locator('#intervention-report')).to_have_value(text)
+                created = set(sources[3].parent.glob('*/*.xlsx')) - before_copies
+                assert len(created) == 1 and len(requests) == (2 if html_stage == 'before-commit' else 1)
+                assert DocumentDataService(next(iter(created))).read()['intervention_report'] == text
+                assert sources[3].read_bytes() == original_bytes and effect_rows() == effects_before
+                passed('F03 HTML response follows draft receipt/explicit retry workflow: ' + html_stage)
+            ctx.close()
+            ctx = context()
+            page = ctx.new_page()
+            html_send = files.create_draft_copy(sources[1], 'HTML confirmado')
+            DocumentDataService(html_send).write(normalize_document_payload({
+                'customer_name':'Cliente fictício HTML', 'customer_email':'customer@example.invalid',
+                'service_types':{'assistencia':True}, 'equipments':{'vss':True}, 'client_not_present':True,
+                'technician_records':[{'technician':'Técnico fictício','date':'2026-10-14',
+                                       'start_time':'09:00','end_time':'10:00'}]}))
+            open_draft(page, html_send)
+            page.locator('#intervention-report').fill('F03 finalização confirmada apesar da resposta HTML')
+            saved(page)
+            requests = []
+            page.on('request', lambda request:requests.append(request.url) if request.url.endswith('/send') else None)
+            def html_after_send(route):
+                assert route.fetch().status == 200
+                route.fulfill(status=500,content_type='text/html',body='<!doctype html><h1>Synthetic proxy failure</h1>')
+            page.route('**/send', html_after_send, times=1)
+            before_mails = sum(r['kind']=='mail' for r in effect_rows())
+            page.locator('#btn-save-send').click()
+            page.locator('#confirm-accept').click()
+            page.wait_for_url(base+'/',timeout=45000)
+            expect(page.locator('#mail-followup')).to_contain_text('E-mail aceite para envio pela Microsoft',timeout=45000)
+            assert len(requests) == 1 and sum(r['kind']=='mail' for r in effect_rows()) == before_mails+1
+            assert not html_send.exists()
+            passed('F03 HTML after finalization recovers the receipt with one POST and one simulated mail')
             for reload_before_recovery in (False, True):
                 ctx.close()
                 ctx = context()

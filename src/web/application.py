@@ -443,6 +443,15 @@ def _create_app(
     def request_too_large(_error):
         return json_error("O pedido excede o limite máximo permitido.", 413)
 
+    @app.errorhandler(500)
+    def unexpected_api_failure(error):
+        # Failures in guards can occur outside a route's own handler.
+        # Keep the API contract and diagnostic reference; the browser must still
+        # consult the operation receipt before deciding whether a write finished.
+        if request.path.startswith("/api/"):
+            return diagnostic_failure("operation_failed", 500)
+        return error
+
     @app.errorhandler(FileMutexBusy)
     def shared_state_busy(_error):
         response = jsonify({"success": False, "code": "temporarily_busy",

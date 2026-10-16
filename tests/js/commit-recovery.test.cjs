@@ -79,3 +79,16 @@ test('unavailable or malformed result never erases the pending reference', async
         assert.equal(tracker.read('synthetic').operationId, metadata.idempotency_key);
     }
 });
+
+test('HTML or empty receipt bodies keep the reference and never expose a JSON parser error', async () => {
+    for (const value of [null, [], 'html']) {
+        const store=storage();
+        const tracker=create({scope,storage:store,fetchFn:async()=>({ok:true,status:200,json:async()=>{
+            if(value==='html')throw new SyntaxError("Unexpected token '<'");
+            return value;
+        }})});
+        tracker.begin('synthetic',metadata,'draft');
+        await assert.rejects(()=>tracker.lookup('synthetic'),error=>!(error instanceof SyntaxError) && !/Unexpected/.test(error.message));
+        assert.equal(tracker.read('synthetic').operationId,metadata.idempotency_key);
+    }
+});
