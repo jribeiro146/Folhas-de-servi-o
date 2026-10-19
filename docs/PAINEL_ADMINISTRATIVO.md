@@ -1,5 +1,10 @@
 # Painel administrativo — organização de 19/10/2026
 
+Nas páginas normais, o acesso «Administração operacional» ocupa uma linha própria
+na barra lateral, acima da pesquisa e do botão Atualizar. Continua a aparecer
+apenas para a identidade administrativa já autorizada. O acesso não ocupa nem
+sobrepõe a linha da pesquisa, incluindo quando a barra lateral é estreita.
+
 O painel `/admin` organiza as ferramentas operacionais em três separadores:
 
 - **Folhas e acessos:** reservas, proprietário, sessões, última atividade e gravação
@@ -61,5 +66,10 @@ nem repetir a reposição inicial. Este guia não autoriza instalação em produ
 - Apresentação conferida em computador, tablet e telemóvel; erro de pesquisa
   visível junto ao formulário. A revisão independente e aceitação visual da
   proposta são registadas fora deste guia, sobre o commit exato.
+- A sobreposição do acesso administrativo nas páginas normais foi reproduzida
+  antes da correção. Depois, verificaram-se a separação de 12 px entre linhas,
+  pesquisa funcional, abertura do painel, apresentação móvel e ausência do acesso
+  na sessão de técnico. Esta correção adicional altera apenas a classe do link
+  e o seu CSS; não acrescenta nem altera JavaScript.
 
 Não houve alteração no servidor nem teste de comunicações reais neste trabalho.

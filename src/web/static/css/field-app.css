@@ -139,6 +139,19 @@ body {
     align-items: stretch;
 }
 
+/* The optional admin link has its own row; search and refresh share the next. */
+.sidebar-tools .sidebar-admin-link {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    min-height: 44px;
+    text-align: center;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+}
+
 .pwa-install-button {
     grid-column: 1 / -1;
 }
