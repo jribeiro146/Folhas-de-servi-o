@@ -104,20 +104,21 @@
             const states = {pending:"Pedido em curso", failed:"Falha no servidor", complete:"Concluída no servidor"};
             const queueStates = {held:"A aguardar confirmação local", pending:"Em fila", running:"Em processamento",
                 failed:"Falha no processamento", complete:"Processamento concluído", cancelled:"Trabalho cancelado",
-                unavailable:"Resultado externo indisponível"};
+                unavailable:"Resultado externo indisponível", superseded:"Substituída por publicação mais recente"};
             const mailStates = {accepted:"E-mail aceite pelo serviço de envio", rejected:"E-mail recusado pelo serviço de envio",
                 unknown:"Resultado do e-mail por confirmar", pending:"E-mail por enviar", not_requested:"Sem pedido de e-mail",
                 not_recorded:"Sem registo de envio de e-mail"};
             if (!data.entries.length) empty(root, "Não existem pedidos registados deste tipo.");
             for (const entry of data.entries) {
                 const card = node("article", "", root);
-                const warning = entry.status === "failed" || ["failed", "unavailable", "held"].includes(entry.queue_status)
+                const warning = entry.reconciliation_required || entry.status === "failed" || ["failed", "unavailable", "held"].includes(entry.queue_status)
                     || ["unknown", "rejected"].includes(entry.mail_status);
-                heading(card, entry.sheet_name, queueStates[entry.queue_status] || states[entry.status],
+                heading(card, entry.sheet_name, entry.reconciliation_required ? "Resultado por confirmar" : queueStates[entry.queue_status] || states[entry.status],
                     warning ? "warning" : entry.status === "complete" && ["none", "complete"].includes(entry.queue_status) ? "good" : "neutral");
                 node("p", (labels[entry.kind] || "Operação") + " · " + entry.actor_name, card);
                 node("p", "Pedido: " + date(entry.created_at) + " · Estado atualizado: " + date(entry.updated_at), card).classList.add("item-meta");
                 if (entry.kind === "send") node("p", mailStates[entry.mail_status] || mailStates.unknown, card);
+                if (entry.reconciliation_required) node("p", "Requer reconciliação. Consulte «Publicações e envios» antes de repetir a operação.", card);
             }
             status.textContent = data.entries.length + " pedido(s) apresentado(s)." + (data.has_more ? " Existem registos anteriores; são apresentados os 100 mais recentes deste tipo." : "")
                 + (data.unavailable_documents ? " Há fichas com histórico indisponível por requererem recuperação." : "");

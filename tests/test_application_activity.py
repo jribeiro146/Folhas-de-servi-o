@@ -52,6 +52,56 @@ def test_retry_keeps_initial_author_and_legacy_retry_does_not_invent_one(tmp_pat
         assert entry["actor_name"] == ("Autor não registado" if legacy else editor.display_name)
 
 
+def test_account_without_display_name_remains_attributable(tmp_path):
+    service, _, editor, snapshot = document(tmp_path)
+    service.claim_operation(document_id=snapshot["document_id"], kind="draft", idempotency_key="account-only",
+        identity=EditorIdentity(editor.id, "\u202eana@example.invalid\n"), client_id="tab-1",
+        lease_token=snapshot["lease"]["token"], base_revision=snapshot["revision"])
+    assert recent_activity(service.repository)["entries"][0]["actor_name"] == "ana@example.invalid"
+
+
+@pytest.mark.parametrize("result,uncertain", [
+    ({"cancellation_started": True, "phase": "removal_unknown"}, True),
+    ({"cancellation_started": True, "cancellation_confirmed": True}, False),
+    ({"phase": "cancellation_rejected"}, False),
+])
+def test_cancel_history_distinguishes_uncertain_remote_effects(tmp_path, result, uncertain):
+    service = EditingStateService(tmp_path / "edits")
+    job_id = seed(service, kind="cancel", remote=True)
+    queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", auto_start=False)
+    queue.enqueue("remove_active", {}, job_id=job_id)
+    with queue._connect() as connection:
+        connection.execute("UPDATE graph_sync_jobs SET status='failed',result_json=? WHERE id=?", (json.dumps(result), job_id))
+    assert recent_activity(service.repository, queue)["entries"][0]["reconciliation_required"] is uncertain
+
+
+def test_superseded_draft_is_not_presented_as_published_by_this_job(tmp_path):
+    service = EditingStateService(tmp_path / "edits")
+    job_id = seed(service, kind="draft", remote=True)
+    queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", auto_start=False)
+    draft = tmp_path / "synthetic-draft" / "synthetic-draft.xlsx"
+    draft.parent.mkdir()
+    draft.write_bytes(b"synthetic staged bytes; never published")
+    queue.enqueue("upload_active", {"draft_path": str(draft)}, job_id=job_id)
+    with queue._connect() as connection:
+        connection.execute("UPDATE graph_sync_jobs SET status='complete',result_json=? WHERE id=?",
+                           (json.dumps({"superseded_by": "newer-private-id"}), job_id))
+    result = recent_activity(service.repository, queue)
+    assert result["entries"][0]["queue_status"] == "superseded"
+    assert "newer-private-id" not in json.dumps(result)
+
+
+def test_existing_64_receipt_retention_remains_visible_and_unchanged(tmp_path):
+    service = EditingStateService(tmp_path / "edits")
+    seed(service)
+    with service._state_transaction("synthetic") as state:
+        template = state["operations"].pop("request")
+        state["operations"] = {f"request-{i}": {**template, "created_at": i, "updated_at": i} for i in range(65)}
+        service._prune_operations(state)
+    result = recent_activity(service.repository)
+    assert len(result["entries"]) == 64 and result["entries"][-1]["created_at"] == 1
+
+
 def test_http_document_cannot_spoof_activity_author(valid_request):
     client, service, document_id, path, metadata = valid_request
     response = client.post(f"/api/file/{path.stem}/draft", json={"_edit": metadata,

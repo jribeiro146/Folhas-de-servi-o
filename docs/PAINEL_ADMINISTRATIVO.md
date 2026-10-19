@@ -55,6 +55,8 @@ antes da conclusão. Não vem dos nomes de técnicos preenchidos na ficha nem do
 utilizador que a tem reservada hoje. Repetir a mesma operação não cria outra
 entrada nem altera o autor inicial. Recibos antigos sem esse nome mostram
 «Autor não registado». Não é feita consulta ao diretório Microsoft para os completar.
+Se a identidade autenticada só fornecer o email da conta como nome, esse email
+continua visível ao administrador para permitir a atribuição.
 
 «Concluída no servidor» não comprova publicação ou envio. Quando existe trabalho
 na fila, o cartão mostra o estado desse processamento e, nas finalizações, o
@@ -62,6 +64,9 @@ resultado do email: por enviar, recusado, por confirmar ou aceite pelo serviço.
 Um recibo de aceitação não confirma entrega ao destinatário. A hora «Estado
 atualizado» é a última alteração registada, não a hora de entrega do email.
 Horas apresentadas no fuso horário do dispositivo do administrador.
+Um cancelamento remoto de resultado incerto indica «Resultado por confirmar» e
+remete para a reconciliação. Uma publicação de rascunho ultrapassada por outra mais
+recente é identificada como substituída, sem atribuir a publicação ao pedido antigo.
 
 É uma consulta recente dos recibos conservados, não uma auditoria integral:
 mantém o limite existente de 64 operações por agregado de edição e as regras de
@@ -113,11 +118,13 @@ Não houve alteração no servidor nem teste de comunicações reais neste traba
 
 ## Validação da atividade recente (19/10)
 
-- 140 testes Python: histórico, autorização, identidade, edição, pedidos HTTP e
+- 146 testes Python: histórico, autorização, identidade, edição, pedidos HTTP e
   finalização em fila. Incluem autor forjado no formulário, repetição idempotente,
   legado sem autor, aceitação/recusa/incerteza, fila ausente, corrupção preservada,
   ordenação e filtro antes do limite, e ausência de dados privados na resposta.
-- 214 testes JavaScript: bateria completa, incluindo filtro, respostas fora de
+- 215 testes JavaScript: bateria completa, incluindo filtro, respostas fora de
   ordem, falha/repetição da consulta, estado vazio, limites e renderização textual.
+- Casos adicionais da revisão independente: conta sem nome (só email), cancelamento
+  incerto, publicação substituída e conservação do limite de 64 recibos.
 - A verificação manual e o parecer independente ficam registados na nota de
   passagem e no registo de revisão sobre o commit exato.

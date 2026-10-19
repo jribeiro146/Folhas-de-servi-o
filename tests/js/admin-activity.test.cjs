@@ -60,6 +60,19 @@ test("rapid filter changes ignore an older response and its error", async () => 
     assert.equal(ui.get("admin-activity-status").dataset.state, "ready");
 });
 
+test("uncertain cancellation requires reconciliation and a superseded publication is explicit", async () => {
+    const ui = await panel();
+    ui.get("admin-tab-audit").events.click();
+    await ui.deliver(0, [entry({kind:"cancel", queue_status:"failed", reconciliation_required:true}),
+        entry({kind:"draft", queue_status:"superseded"})]);
+    const cards = ui.get("admin-activity").children;
+    assert.match(text(cards[0]), /Resultado por confirmar.*Requer reconciliação/);
+    assert.equal(cards[0].children[0].children[1].dataset.tone, "warning");
+    assert.doesNotMatch(text(cards[0]), /Falha no processamento/);
+    assert.match(text(cards[1]), /Substituída por publicação mais recente/);
+    assert.equal(cards[1].children[0].children[1].dataset.tone, "neutral");
+});
+
 test("failures leave history retryable; empty, limited and unavailable histories are explicit", async () => {
     const ui = await panel();
     ui.get("admin-tab-audit").events.click();

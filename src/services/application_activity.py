@@ -8,9 +8,11 @@ and the editing aggregate's 64-operation limit still apply.
 import heapq
 import json
 import math
+import unicodedata
 
 from src.logging_config import redact_diagnostic_text
 from src.services.editing_state_format import decode_editing_state, EditingStateQuarantinedError
+from src.services.graph_sync_queue import delivery_uncertain
 
 
 KINDS = frozenset({"send", "draft", "cancel"})
@@ -28,6 +30,14 @@ def _time(value):
         return value if type(value) in (int, float) and math.isfinite(value) and 0 <= value < 253402300800 else None
     except OverflowError:
         return None
+
+
+def _actor(value):
+    # Microsoft legitimately falls back to the account email when displayName
+    # is absent. This admin-only attribution is not a diagnostic to redact.
+    if not isinstance(value, str):
+        return "Autor não registado"
+    return "".join(c for c in value if not unicodedata.category(c).startswith("C")).strip()[:200] or "Autor não registado"
 
 
 def _object(raw):
@@ -63,10 +73,14 @@ def _external(row):
             mail_status = "unknown"
         else:
             mail_status = "pending"
+        if row["kind"] == "upload_active" and status == "complete" and result.get("superseded_by"):
+            status = "superseded"
         return {"queue_status": status, "mail_status": mail_status,
+                "reconciliation_required": delivery_uncertain(row["kind"], result) or mail_status == "unknown",
                 "updated_at": _time(row["updated_at"])}
     except (TypeError, ValueError, RecursionError):
-        return {"queue_status": "unavailable", "mail_status": "unknown", "updated_at": None}
+        return {"queue_status": "unavailable", "mail_status": "unknown", "updated_at": None,
+                "reconciliation_required": True}
 
 
 def recent_activity(repository, queue=None, *, kind="all"):
@@ -96,10 +110,11 @@ def recent_activity(repository, queue=None, *, kind="all"):
                     yield {"id": identifier, "kind": op_kind,
                            "sheet_name": _label(metadata.get("sheet_name") or state.get("original_name")
                                                 or next(iter(state["aliases"]), ""), "Ficha sem nome registado"),
-                           "actor_name": _label(metadata.get("actor_name"), "Autor não registado"),
+                           "actor_name": _actor(metadata.get("actor_name")),
                            "created_at": _time(operation["created_at"]),
                            "updated_at": _time(operation["updated_at"]),
                            "status": operation["status"],
+                           "reconciliation_required": False,
                            "queue_status": "unavailable" if response.get("graph_job_id") else "none",
                            "mail_status": "unknown" if response.get("graph_job_id") else "not_recorded"}
 
