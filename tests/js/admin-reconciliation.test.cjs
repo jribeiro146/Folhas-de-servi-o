@@ -9,7 +9,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 async function panel({repair = false, failure = null, decisions = null, jobs = []} = {}) {
     const elements = new Map(), requests = [];
     const element = () => ({textContent:"", value:"", files:[], children:[], events:{}, dataset:{}, disabled:false,
-        classList:{add(){}}, append(child){this.children.push(child);}, replaceChildren(){this.children=[];},
+        setAttribute(name, value){this[name]=value;}, classList:{add(){}}, append(child){this.children.push(child);}, replaceChildren(){this.children=[];},
         addEventListener(name, fn){this.events[name]=fn;}, showModal(){this.open=true;}, close(){this.open=false;}, focus(){}});
     const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
     const document = {body:{dataset:{adminCsrf:"synthetic-csrf"}}, getElementById:get, createElement:element};

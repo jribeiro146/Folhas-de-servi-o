@@ -9,6 +9,15 @@
     const kinds = {upload_active:"Publicar rascunho",archive_and_remove:"Arquivar e publicar folha",
         archive_and_mail_local:"Enviar folha por e-mail",notify_teams:"Enviar aviso Teams",remove_active:"Retirar folha ativa"};
     const statuses = {pending:"Pendente",running:"Em processamento",failed:"Falhou",held:"Aguardar confirmação local",complete:"Concluído"};
+    const phases = {uploading_archive:"Publicação do arquivo em curso", generating_pdf:"PDF em preparação",
+        pdf_ready:"PDF preparado", removal_unknown:"Resultado da remoção incerto", removing_active:"Remoção da folha ativa em curso",
+        active_removed:"Folha ativa removida", cancellation_proof_missing:"Falta confirmação do cancelamento",
+        canceling_remote:"Cancelamento remoto em curso", cancellation_rejected:"Cancelamento recusado",
+        cancellation_confirmed:"Cancelamento confirmado", message_ready:"Mensagem preparada",
+        mail_snapshot_invalid:"Cópia para envio inválida", mail_rejected:"E-mail recusado", sending_mail:"Envio de e-mail iniciado",
+        mail_unknown:"Resultado do e-mail incerto", mail_accepted:"E-mail aceite pelo fornecedor",
+        teams_rejected:"Aviso Teams recusado", sending_teams:"Envio do aviso Teams iniciado",
+        teams_unknown:"Resultado do aviso Teams incerto", teams_accepted:"Aviso Teams aceite pelo fornecedor"};
     const jobErrors = {job_failed:"Falha de processamento; consultar o registo da operação.",
         job_reconciliation_required:"Resultado incerto; é necessária reconciliação antes de repetir.",
         job_invalid_state:"Estado inválido; é necessária recuperação antes de repetir."};
@@ -21,6 +30,38 @@
         parent.append(element);
         return element;
     };
+    const tabs = ["documents", "jobs", "audit"];
+    const selectTab = (selected, focus = false) => {
+        for (const name of tabs) {
+            const button = $("admin-tab-" + name);
+            button.setAttribute("aria-selected", String(name === selected));
+            button.tabIndex = name === selected ? 0 : -1;
+            $("admin-panel-" + name).hidden = name !== selected;
+        }
+        if (focus) $("admin-tab-" + selected).focus();
+    };
+    // Local navigation only. Reloading diagnostics must keep the current area.
+    for (const [index, name] of tabs.entries()) {
+        const button = $("admin-tab-" + name);
+        button.addEventListener("click", () => selectTab(name));
+        button.addEventListener("keydown", (event) => {
+            const destinations = {ArrowRight: (index + 1) % tabs.length,
+                ArrowLeft: (index + tabs.length - 1) % tabs.length, Home: 0, End: tabs.length - 1};
+            if (Object.hasOwn(destinations, event.key)) {
+                event.preventDefault();
+                selectTab(tabs[destinations[event.key]], true);
+            }
+        });
+    }
+    const heading = (parent, title, label, tone = "neutral") => {
+        const row = node("div", "", parent);
+        row.classList.add("item-heading");
+        node("h3", title, row);
+        const badge = node("span", label, row);
+        badge.classList.add("badge");
+        badge.dataset.tone = tone;
+    };
+    const empty = (parent, text) => node("p", text, parent).classList.add("empty-state");
     const request = async (url, data) => {
         const response = await fetch(url, data ? { method: "POST", headers: {
             "Content-Type": "application/json", "X-Admin-CSRF": csrf
@@ -47,20 +88,22 @@
     const renderDocuments = (documents) => {
         const root = $("admin-documents");
         root.replaceChildren();
-        if (!documents.length) node("p", "Não existem reservas para gerir.", root);
+        if (!documents.length) empty(root, "Não existem reservas para gerir.");
         for (const doc of documents) {
             const card = node("article", "", root);
-            node("h3", doc.name, card);
+            heading(card, doc.name, doc.quarantined ? "Requer recuperação" : doc.pending_operation ? "Operação pendente" :
+                doc.owner ? "Reservada" : doc.blocked_users.length ? "Acesso suspenso" : "Sem reserva",
+                doc.quarantined || doc.pending_operation || doc.blocked_users?.length ? "warning" : "neutral");
             if (doc.quarantined) {
                 node("p", "Esta folha requer recuperação. Os dados guardados foram preservados; a edição e o desbloqueio estão suspensos.", card);
                 continue;
             }
             node("p", "Proprietário: " + (doc.owner?.owner_name || "Sem proprietário") + " · Sessões: " + doc.session_count, card);
-            node("p", "Última atividade: " + date(doc.last_seen_at) + " · Gravação automática: " + date(doc.autosaved_at), card);
+            node("p", "Última atividade: " + date(doc.last_seen_at) + " · Gravação automática: " + date(doc.autosaved_at), card).classList.add("item-meta");
             const controls = node("div", "", card);
             controls.classList.add("toolbar");
             const release = action(controls, "Expulsar e libertar", "/api/admin/documents/" + encodeURIComponent(doc.document_id) + "/release",
-                { lock_version: doc.lock_version }, "Terminar as sessões desta folha e libertar a reserva. Os técnicos expulsos ficam sem acesso de edição nesta folha até à reposição.", true);
+                { lock_version: doc.lock_version }, "Terminar as sessões desta folha e libertar a reserva. Os técnicos expulsos ficam sem acesso de edição nesta folha até à reposição. As gravações guardadas são preservadas; alterações apenas no dispositivo não são transferidas. Peça ao técnico para as guardar antes de intervir.", true);
             release.disabled = doc.pending_operation || (!doc.owner && !doc.session_count);
             if (doc.pending_operation) node("p", "Existe uma operação pendente. Resolva-a antes de libertar esta folha.", card);
             for (const user of doc.blocked_users) {
@@ -72,13 +115,14 @@
     const renderJobs = (jobs) => {
         const root = $("admin-jobs");
         root.replaceChildren();
-        if (!jobs.length) node("p", "Não existem trabalhos pendentes ou falhados.", root);
+        if (!jobs.length) empty(root, "Não existem trabalhos pendentes ou falhados.");
         for (const job of jobs) {
             const card = node("article", "", root);
-            node("h3", (kinds[job.kind] || job.kind) + " · " + (statuses[job.status] || job.status), card);
-            node("p", "Operação: " + job.id + " · Tentativas: " + job.attempts, card);
+            heading(card, kinds[job.kind] || job.kind, statuses[job.status] || job.status,
+                job.status === "failed" || job.status === "held" ? "warning" : "neutral");
+            node("p", "Operação: " + job.id + " · Tentativas: " + job.attempts, card).classList.add("operation-reference");
             node("p", jobErrors[job.error_code] || (job.will_retry ? "Nova tentativa automática agendada." :
-                job.last_error || job.phase || "A aguardar processamento."), card);
+                job.last_error || (phases[job.phase] ? "Último estado registado: " + phases[job.phase] + "." : "A aguardar processamento.")), card);
             if (job.retry_not_before > Date.now() / 1000) {
                 const deadline = new Date(job.retry_not_before * 1000);
                 const provider = job.kind === "notify_teams" ? "Teams" : "fornecedor";
@@ -91,16 +135,20 @@
                 node("p", "Requer revisão. A repetição está bloqueada.", card);
             }
             if (job.kind === "remove_active" && job.status === "failed") node("p", "Cancelamento não concluído. Confirme o estado remoto antes de intervir.", card);
-            if (job.can_retry) action(card, "Repetir trabalho", "/api/admin/jobs/" + encodeURIComponent(job.id) + "/retry", {},
+            const controls = node("div", "", card);
+            controls.classList.add("toolbar");
+            controls.hidden = !job.can_retry && !(job.status === "failed" && job.kind !== "upload_active" && (job.reconciliation_required || job.invalid_state));
+            if (job.can_retry) action(controls, "Repetir trabalho", "/api/admin/jobs/" + encodeURIComponent(job.id) + "/retry", {},
                 "Repetir apenas esta operação. Se incluir um envio recusado, pode originar um envio de e-mail.");
             if (job.status === "failed" && job.kind !== "upload_active" && (job.reconciliation_required || job.invalid_state)) {
-                const review = node("button", "Consultar reconciliação", card);
+                const review = node("button", "Consultar reconciliação", controls);
                 review.type = "button";
                 review.addEventListener("click", () => openReconciliation(job.id));
             }
         }
     };
     const openReconciliation = async (id) => {
+        $("admin-lookup-status").textContent = "";
         try {
             const url = "/api/admin/jobs/" + encodeURIComponent(id) + "/reconciliation";
             const data = (await request(url)).reconciliation;
@@ -122,12 +170,21 @@
                 node("p", event.reason, history);
             }
             $("admin-reconciliation").showModal();
-        } catch (error) { $("admin-status").textContent = error.message; }
+        } catch (error) {
+            $("admin-status").textContent = error.message;
+            $("admin-status").dataset.state = "error";
+            $("admin-lookup-status").textContent = error.message;
+        }
     };
     const renderWorker = (data) => {
         const root = $("admin-worker");
         root.replaceChildren();
         const worker = data.worker || {state: "not_configured"};
+        const workerState = $("admin-worker-state");
+        const healthy = ["idle", "cycling", "waiting"].includes(worker.state);
+        workerState.textContent = healthy ? "Ativo" : worker.state === "starting" ? "A iniciar" :
+            worker.state === "not_configured" ? "Sem diagnóstico" : "Verificar estado";
+        workerState.dataset.tone = healthy ? "good" : "warning";
         const labels = {not_configured: "Diagnóstico não configurado.", configuration_invalid: "Configuração do diagnóstico inválida.",
             never_seen: "Sem arranque registado neste canal; o worker pode nunca ter arrancado.",
             unavailable: "Diagnóstico indisponível ou inválido.", wrong_storage: "O diagnóstico pertence a outro armazenamento.",
@@ -159,18 +216,26 @@
     };
     const load = async () => {
         $("admin-reload").disabled = true;
+        $("admin-status").textContent = "A atualizar o diagnóstico…";
+        $("admin-status").dataset.state = "loading";
         try {
             const data = await request("/api/admin/overview");
             renderDocuments(data.documents);
             renderJobs(data.jobs);
             renderWorker(data);
+            $("admin-count-documents").textContent = data.documents.length;
+            // Totals come from the queue summary, never from the capped job list.
+            $("admin-count-pending").textContent = data.queue_summary
+                ? (data.queue_summary.pending || 0) + (data.queue_summary.running || 0) : "—";
+            $("admin-count-failed").textContent = data.queue_summary ? (data.queue_summary.failed || 0) : "—";
             const history = $("admin-audit");
             history.replaceChildren();
-            if (!data.audit.length) node("p", "Ainda não existem intervenções administrativas.", history);
+            if (!data.audit.length) empty(history, "Ainda não existem intervenções administrativas.");
             for (const entry of data.audit) {
                 const card = node("article", "", history);
-                node("h3", (actions[entry.action] || entry.action) + " · " + date(entry.created_at), card);
-                node("p", (entry.actor_label || "Administrador") + " · " + entry.target, card);
+                node("h3", actions[entry.action] || entry.action, card);
+                node("p", date(entry.created_at) + " · " + (entry.actor_label || "Administrador"), card).classList.add("item-meta");
+                node("p", entry.target, card).classList.add("operation-reference");
                 node("p", entry.reason, card);
             }
             $("admin-refresh").hidden = !data.refresh;
@@ -184,8 +249,10 @@
                   (data.queue_summary.running || 0) + " em processamento, " + (data.queue_summary.failed || 0) + " falhados."
                 : "A fila de publicações não está ativa nesta instalação.";
             $("admin-status").textContent = "Diagnóstico atualizado. Reservas: " + data.documents.length + ". Trabalhos apresentados: " + data.jobs.length + ".";
+            $("admin-status").dataset.state = "ready";
         } catch (error) {
-            $("admin-status").textContent = error.message;
+            $("admin-status").textContent = "Não foi possível atualizar. A informação apresentada pode estar desatualizada. " + error.message;
+            $("admin-status").dataset.state = "error";
         } finally {
             $("admin-reload").disabled = false;
         }

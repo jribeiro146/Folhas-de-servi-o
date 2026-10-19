@@ -10,7 +10,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 async function panel(job, { documents = [], section = "admin-jobs", failure = null, extra = {} } = {}) {
     const element = () => ({
         textContent: "", children: [], dataset: {}, disabled: false,
-        classList: { add() {} }, addEventListener() {},
+        setAttribute(name, value){this[name]=value;}, classList: { add() {} }, addEventListener() {},
         append(child) { this.children.push(child); },
         replaceChildren() { this.children = []; },
     });
@@ -34,6 +34,13 @@ async function panel(job, { documents = [], section = "admin-jobs", failure = nu
 }
 
 const job = { id: "synthetic", kind: "notify_teams", status: "failed", attempts: 3 };
+
+test("admin describes a previous phase in plain language without confusing it with a new pending attempt", async () => {
+    const text = await panel({...job, status:"pending", phase:"teams_rejected"});
+    assert.match(text, /Pendente/);
+    assert.match(text, /Último estado registado: Aviso Teams recusado/);
+    assert.doesNotMatch(text, /teams_rejected/);
+});
 
 for (const [state, label] of [
     ["never_seen", /Sem arranque registado/], ["idle", /Ativo, entre ciclos/],
