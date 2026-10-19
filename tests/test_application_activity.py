@@ -151,6 +151,25 @@ def test_missing_queue_does_not_report_email_as_sent(tmp_path):
     assert entry["actor_name"] == "Autor não registado"
 
 
+@pytest.mark.parametrize("mail,expected_status,expected_mail,uncertain", [
+    (None, "complete", "not_requested", False),
+    ([], "unavailable", "unknown", True),
+    ("", "unavailable", "unknown", True),
+    (False, "unavailable", "unknown", True),
+])
+def test_graph_finalization_without_email_accepts_null_but_not_invalid_types(tmp_path, mail, expected_status, expected_mail, uncertain):
+    service = EditingStateService(tmp_path / "edits")
+    job_id = seed(service, remote=True)
+    queue = GraphSyncQueue(None, tmp_path / "queue.sqlite3", auto_start=False)
+    queue.enqueue("archive_and_remove", {}, job_id=job_id)
+    with queue._connect() as connection:
+        connection.execute("UPDATE graph_sync_jobs SET status='complete',result_json=? WHERE id=?",
+                           (json.dumps({"mail": mail, "removed_active": True}), job_id))
+    entry = recent_activity(service.repository, queue)["entries"][0]
+    assert entry["queue_status"] == expected_status and entry["mail_status"] == expected_mail
+    assert entry["reconciliation_required"] is uncertain
+
+
 def test_filters_apply_before_limit_and_order_uses_request_time(tmp_path):
     service = EditingStateService(tmp_path / "edits")
     for index in range(110):

@@ -73,6 +73,16 @@ test("uncertain cancellation requires reconciliation and a superseded publicatio
     assert.equal(cards[1].children[0].children[1].dataset.tone, "neutral");
 });
 
+test("completed finalization without email shows success without requesting reconciliation", async () => {
+    const ui = await panel();
+    ui.get("admin-tab-audit").events.click();
+    await ui.deliver(0, [entry({mail_status:"not_requested", reconciliation_required:false})]);
+    const card = ui.get("admin-activity").children[0];
+    assert.match(text(card), /Processamento concluído.*Sem pedido de e-mail/);
+    assert.equal(card.children[0].children[1].dataset.tone, "good");
+    assert.doesNotMatch(text(card), /Requer reconciliação/);
+});
+
 test("failures leave history retryable; empty, limited and unavailable histories are explicit", async () => {
     const ui = await panel();
     ui.get("admin-tab-audit").events.click();

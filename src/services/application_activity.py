@@ -51,8 +51,13 @@ def _external(row):
     """Do not equate local commit, queue completion or timestamps with delivery."""
     try:
         payload, result = _object(row["payload_json"]), _object(row["result_json"])
-        mail = result.get("mail", {})
-        if not isinstance(mail, dict) or ("accepted" in mail and type(mail["accepted"]) is not bool):
+        raw_mail = result.get("mail")
+        # archive_and_remove explicitly records null when no email was asked
+        # for. Other non-object values remain invalid evidence.
+        if raw_mail is not None and not isinstance(raw_mail, dict):
+            raise ValueError()
+        mail = raw_mail or {}
+        if "accepted" in mail and type(mail["accepted"]) is not bool:
             raise ValueError()
         has_mail = row["kind"] == "archive_and_mail_local" or bool(payload.get("mail"))
         status = row["status"]

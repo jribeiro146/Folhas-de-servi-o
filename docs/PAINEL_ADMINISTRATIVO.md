@@ -118,13 +118,16 @@ Não houve alteração no servidor nem teste de comunicações reais neste traba
 
 ## Validação da atividade recente (19/10)
 
-- 146 testes Python: histórico, autorização, identidade, edição, pedidos HTTP e
+- 150 testes Python: histórico, autorização, identidade, edição, pedidos HTTP e
   finalização em fila. Incluem autor forjado no formulário, repetição idempotente,
   legado sem autor, aceitação/recusa/incerteza, fila ausente, corrupção preservada,
   ordenação e filtro antes do limite, e ausência de dados privados na resposta.
-- 215 testes JavaScript: bateria completa, incluindo filtro, respostas fora de
+- 216 testes JavaScript: bateria completa, incluindo filtro, respostas fora de
   ordem, falha/repetição da consulta, estado vazio, limites e renderização textual.
 - Casos adicionais da revisão independente: conta sem nome (só email), cancelamento
   incerto, publicação substituída e conservação do limite de 64 recibos.
+- Finalização Graph concluída sem email: o recibo `mail: null` é válido e aparece
+  como «Sem pedido de e-mail», sem pedir reconciliação. Listas, texto vazio e
+  booleanos nesse campo continuam a ser recusados como tipos inválidos.
 - A verificação manual e o parecer independente ficam registados na nota de
   passagem e no registo de revisão sobre o commit exato.
