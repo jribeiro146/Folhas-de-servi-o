@@ -555,6 +555,14 @@ class EditingStateService:
                 raise EditingStateError("Esta folha já foi finalizada ou cancelada.")
             self._assert_revision(state, base_revision, now)
             operation = dict(existing or {})
+            if not existing:
+                # Snapshot the authenticated initiator, never form fields or the
+                # current lease owner at display time. Retries keep this author;
+                # old receipts without a name remain explicitly unattributed.
+                operation["activity"] = {
+                    "actor_name": identity.display_name,
+                    "sheet_name": state.get("original_name") or next(iter(state.get("aliases") or []), ""),
+                }
             context = dict(operation.get("context") or {})
             if recovery_owner is not None:
                 # The receipt must be attributable from the first durable claim,

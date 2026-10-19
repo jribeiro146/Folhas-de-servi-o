@@ -12,6 +12,7 @@ from src.services.graph_sync_queue import delivery_uncertain, teams_retry_deadli
 from src.services.graph_job_visibility import PHASES
 from src.services.diagnostic_views import safe_queue_summary, safe_refresh_status
 from src.services.worker_health import configured_status
+from src.services.application_activity import recent_activity
 
 
 def register_admin(app, editing, queue, refresh, authenticated_microsoft):
@@ -151,6 +152,14 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
                        queue_summary=safe_queue_summary(queue.summary()) if queue is not None else None,
                        refresh=safe_refresh_status(refresh.status()) if refresh is not None else None,
                        audit=audit)
+
+    @bp.get("/api/admin/activity")
+    def activity():
+        try:
+            return jsonify(success=True, activity=recent_activity(
+                editing.repository, queue, kind=request.args.get("kind", "all")))
+        except ValueError:
+            return jsonify(success=False, error="Tipo de atividade inválido."), 400
 
     def received():
         data = request.get_json(silent=True)

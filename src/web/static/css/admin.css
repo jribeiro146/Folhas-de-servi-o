@@ -77,6 +77,10 @@ input::placeholder{color:#647a8e}
 textarea{resize:vertical}
 .audit-list article{border-width:0 0 1px;border-radius:0;padding:16px 0}
 .audit-list article:last-child{border-bottom:0}
+.activity-filters{display:flex;align-items:flex-end;gap:12px;max-width:620px}
+.activity-note{color:var(--muted);font-size:13px;margin-top:16px}
+.activity-scope{margin-top:20px}.audit-heading{margin-top:32px;padding-top:24px;border-top:1px solid var(--line)}
+@media(max-width:600px){.activity-filters{flex-direction:column;align-items:stretch}}
 .diagnostics{margin-top:24px;background:#fff;border:1px solid var(--line);border-radius:12px}
 .diagnostics>summary{padding:18px 24px;font-size:14px}
 .diagnostics>summary span{display:block;margin:3px 0 0 18px;font-size:12px;font-weight:400;color:var(--muted)}

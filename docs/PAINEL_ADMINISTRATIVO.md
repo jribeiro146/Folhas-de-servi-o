@@ -15,7 +15,9 @@ O painel `/admin` organiza as ferramentas operacionais em três separadores:
   permitidas. No fim da lista, a pesquisa por identificador permite consultar
   reconciliação, incluindo operações já concluídas. Um erro de consulta aparece
   também junto ao campo. Ver [procedimento de reconciliação](RECONCILIACAO_TRABALHOS.md).
-- **Histórico:** últimas 100 intervenções administrativas, autor, data e motivo.
+- **Histórico:** atividade recente das fichas e últimas 100 intervenções
+  administrativas. A atividade permite ver quem iniciou uma finalização/envio,
+  gravação de rascunho ou cancelamento, em que ficha, quando e com que resultado.
 
 O resumo superior mostra reservas apresentadas, pendentes mais operações em
 processamento, falhas e estado do processo independente. Os números da fila vêm
@@ -40,20 +42,55 @@ visíveis com indicação de que podem estar desatualizados.
 Os cartões e diálogos adaptam-se a ecrãs pequenos. Os estados têm texto além de
 cor, e as ações mantêm os pedidos de confirmação e os motivos obrigatórios.
 
+## Atividade recente das fichas
+
+Ao abrir «Histórico», a aplicação consulta os últimos 100 pedidos, ordenados pela
+hora em que foram iniciados. Pode escolher «Finalizações e envios», «Rascunhos» ou
+«Cancelamentos»; o filtro é aplicado antes do limite de 100. «Atualizar histórico»
+repete apenas a leitura. Atualizar o diagnóstico nesse separador atualiza também
+a atividade. Uma falha da consulta deixa uma mensagem e permite voltar a tentar.
+
+O nome é guardado a partir da identidade autenticada no primeiro pedido durável,
+antes da conclusão. Não vem dos nomes de técnicos preenchidos na ficha nem do
+utilizador que a tem reservada hoje. Repetir a mesma operação não cria outra
+entrada nem altera o autor inicial. Recibos antigos sem esse nome mostram
+«Autor não registado». Não é feita consulta ao diretório Microsoft para os completar.
+
+«Concluída no servidor» não comprova publicação ou envio. Quando existe trabalho
+na fila, o cartão mostra o estado desse processamento e, nas finalizações, o
+resultado do email: por enviar, recusado, por confirmar ou aceite pelo serviço.
+Um recibo de aceitação não confirma entrega ao destinatário. A hora «Estado
+atualizado» é a última alteração registada, não a hora de entrega do email.
+Horas apresentadas no fuso horário do dispositivo do administrador.
+
+É uma consulta recente dos recibos conservados, não uma auditoria integral:
+mantém o limite existente de 64 operações por agregado de edição e as regras de
+retenção. Não inclui aberturas da página, gravações automáticas, nem trabalhos
+antigos da fila que não tenham operação de edição correspondente. As intervenções
+administrativas continuam numa lista própria abaixo. Estados corrompidos são
+preservados e assinalados como indisponíveis, sem tentar repará-los na consulta.
+
+O endpoint `GET /api/admin/activity?kind=all|send|draft|cancel` usa a mesma
+autorização do painel e respostas sem cache. Exporta apenas a projeção necessária;
+não inclui destinatários, corpos de mensagens, assinaturas, caminhos privados,
+tokens, contexto das operações ou diagnósticos brutos. A leitura percorre os
+agregados locais conservando apenas as 101 projeções mais recentes e consulta,
+numa chamada à fila, os resultados dos até 100 pedidos apresentados.
+
 ## Dependências e limites da alteração
 
-A alteração limita-se ao template, CSS e JavaScript do painel, testes e este guia.
-Usa o logótipo já incluído; não adiciona bibliotecas, chamadas externas, permissões
+A apresentação usa o logótipo já incluído; não adiciona bibliotecas, chamadas externas, permissões
 Microsoft, identidade administrativa, configuração obrigatória ou migrações.
-As rotas, os contratos da API, CSRF, verificações de revisão, estados da fila e
-decisões permitidas são os existentes. A autorização administrativa segue
+O histórico acrescenta uma rota de leitura e metadados opcionais aos novos recibos
+de edição. Não altera o esquema SQLite, os envios, CSRF, verificações de revisão,
+estados da fila ou decisões permitidas. A autorização administrativa segue
 [a configuração existente](IDENTIDADE_ADMINISTRATIVA.md).
 
 A instalação de uma futura versão continua a usar o procedimento habitual de
 atualização e admissão do pacote; esta alteração visual não justifica apagar dados
 nem repetir a reposição inicial. Este guia não autoriza instalação em produção.
 
-## Validação local
+## Validação local do layout anterior
 
 - 67 testes Python: administração operacional e identidade.
 - 211 testes JavaScript: bateria completa, incluindo navegação, manutenção do
@@ -73,3 +110,14 @@ nem repetir a reposição inicial. Este guia não autoriza instalação em produ
   e o seu CSS; não acrescenta nem altera JavaScript.
 
 Não houve alteração no servidor nem teste de comunicações reais neste trabalho.
+
+## Validação da atividade recente (19/10)
+
+- 140 testes Python: histórico, autorização, identidade, edição, pedidos HTTP e
+  finalização em fila. Incluem autor forjado no formulário, repetição idempotente,
+  legado sem autor, aceitação/recusa/incerteza, fila ausente, corrupção preservada,
+  ordenação e filtro antes do limite, e ausência de dados privados na resposta.
+- 214 testes JavaScript: bateria completa, incluindo filtro, respostas fora de
+  ordem, falha/repetição da consulta, estado vazio, limites e renderização textual.
+- A verificação manual e o parecer independente ficam registados na nota de
+  passagem e no registo de revisão sobre o commit exato.

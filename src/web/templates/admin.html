@@ -52,7 +52,13 @@
             </div>
         </section>
         <section id="admin-panel-audit" class="tab-panel" role="tabpanel" aria-labelledby="admin-tab-audit" tabindex="0" hidden>
-            <div class="section-heading"><div><h2>Histórico de intervenções</h2><p>Últimas 100 ações administrativas, com autor, hora e motivo.</p></div></div>
+            <div class="section-heading"><div><h2>Atividade recente</h2><p>Quem pediu a operação, em que ficha e qual o resultado registado.</p></div></div>
+            <div class="activity-filters"><div class="field"><label for="admin-activity-kind">Mostrar</label><select id="admin-activity-kind"><option value="all">Toda a atividade das fichas</option><option value="send">Finalizações e envios</option><option value="draft">Rascunhos</option><option value="cancel">Cancelamentos</option></select></div><button id="admin-activity-reload" type="button" class="secondary">Atualizar histórico</button></div>
+            <p class="activity-note">O autor é a pessoa que iniciou o pedido. «E-mail aceite» confirma a aceitação pelo serviço de envio; não confirma a entrega ao destinatário. As horas são apresentadas no fuso horário deste dispositivo.</p>
+            <p id="admin-activity-status" class="status-line" role="status" aria-live="polite"></p>
+            <div id="admin-activity" class="item-list"></div>
+            <details class="guidance activity-scope"><summary>Que atividade fica disponível?</summary><p>Mostra os últimos 100 pedidos do tipo escolhido, ordenados pela hora do pedido: guardar rascunho, finalizar ou cancelar. Cada pedido aparece uma vez, com o seu estado mais recente. As gravações automáticas e os acessos à página não aparecem. Os registos dependem do histórico ainda conservado no servidor; não é um arquivo completo. Os registos antigos sem nome guardado indicam «Autor não registado».</p></details>
+            <div class="section-heading audit-heading"><div><h2>Intervenções administrativas</h2><p>Últimas 100 ações administrativas, com hora e motivo.</p></div></div>
             <div id="admin-audit" class="item-list audit-list"></div>
         </section>
     </div>

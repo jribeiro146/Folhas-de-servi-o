@@ -31,7 +31,9 @@
         return element;
     };
     const tabs = ["documents", "jobs", "audit"];
+    let activeTab = "documents";
     const selectTab = (selected, focus = false) => {
+        activeTab = selected;
         for (const name of tabs) {
             const button = $("admin-tab-" + name);
             button.setAttribute("aria-selected", String(name === selected));
@@ -39,6 +41,7 @@
             $("admin-panel-" + name).hidden = name !== selected;
         }
         if (focus) $("admin-tab-" + selected).focus();
+        if (selected === "audit") loadActivity();
     };
     // Local navigation only. Reloading diagnostics must keep the current area.
     for (const [index, name] of tabs.entries()) {
@@ -85,6 +88,50 @@
         });
         return button;
     };
+    let activityRequest = 0;
+    const loadActivity = async () => {
+        const generation = ++activityRequest;
+        const status = $("admin-activity-status"), root = $("admin-activity");
+        status.textContent = "A carregar a atividade…";
+        status.dataset.state = "loading";
+        root.replaceChildren();
+        $("admin-activity-reload").disabled = true;
+        try {
+            const kind = $("admin-activity-kind").value || "all";
+            const data = (await request("/api/admin/activity?kind=" + encodeURIComponent(kind))).activity;
+            if (generation !== activityRequest) return;
+            const labels = {send:"Finalizar ficha", draft:"Guardar rascunho", cancel:"Cancelar ficha"};
+            const states = {pending:"Pedido em curso", failed:"Falha no servidor", complete:"Concluída no servidor"};
+            const queueStates = {held:"A aguardar confirmação local", pending:"Em fila", running:"Em processamento",
+                failed:"Falha no processamento", complete:"Processamento concluído", cancelled:"Trabalho cancelado",
+                unavailable:"Resultado externo indisponível"};
+            const mailStates = {accepted:"E-mail aceite pelo serviço de envio", rejected:"E-mail recusado pelo serviço de envio",
+                unknown:"Resultado do e-mail por confirmar", pending:"E-mail por enviar", not_requested:"Sem pedido de e-mail",
+                not_recorded:"Sem registo de envio de e-mail"};
+            if (!data.entries.length) empty(root, "Não existem pedidos registados deste tipo.");
+            for (const entry of data.entries) {
+                const card = node("article", "", root);
+                const warning = entry.status === "failed" || ["failed", "unavailable", "held"].includes(entry.queue_status)
+                    || ["unknown", "rejected"].includes(entry.mail_status);
+                heading(card, entry.sheet_name, queueStates[entry.queue_status] || states[entry.status],
+                    warning ? "warning" : entry.status === "complete" && ["none", "complete"].includes(entry.queue_status) ? "good" : "neutral");
+                node("p", (labels[entry.kind] || "Operação") + " · " + entry.actor_name, card);
+                node("p", "Pedido: " + date(entry.created_at) + " · Estado atualizado: " + date(entry.updated_at), card).classList.add("item-meta");
+                if (entry.kind === "send") node("p", mailStates[entry.mail_status] || mailStates.unknown, card);
+            }
+            status.textContent = data.entries.length + " pedido(s) apresentado(s)." + (data.has_more ? " Existem registos anteriores; são apresentados os 100 mais recentes deste tipo." : "")
+                + (data.unavailable_documents ? " Há fichas com histórico indisponível por requererem recuperação." : "");
+            status.dataset.state = data.unavailable_documents ? "error" : "ready";
+        } catch (error) {
+            if (generation !== activityRequest) return;
+            status.textContent = "Não foi possível consultar o histórico. " + error.message;
+            status.dataset.state = "error";
+        } finally {
+            if (generation === activityRequest) $("admin-activity-reload").disabled = false;
+        }
+    };
+    $("admin-activity-kind").addEventListener("change", loadActivity);
+    $("admin-activity-reload").addEventListener("click", loadActivity);
     const renderDocuments = (documents) => {
         const root = $("admin-documents");
         root.replaceChildren();
@@ -250,6 +297,7 @@
                 : "A fila de publicações não está ativa nesta instalação.";
             $("admin-status").textContent = "Diagnóstico atualizado. Reservas: " + data.documents.length + ". Trabalhos apresentados: " + data.jobs.length + ".";
             $("admin-status").dataset.state = "ready";
+            if (activeTab === "audit") await loadActivity();
         } catch (error) {
             $("admin-status").textContent = "Não foi possível atualizar. A informação apresentada pode estar desatualizada. " + error.message;
             $("admin-status").dataset.state = "error";
