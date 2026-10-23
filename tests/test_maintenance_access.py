@@ -179,6 +179,32 @@ def test_new_checklist_access_does_not_grant_another_owners_draft(production_sad
     assert draft.read_bytes() == before and private.read(metadata["document_id"]) == checklists_before
 
 
+def test_authenticated_demo_preserves_foreign_draft_ownership(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "AUTH_ENABLED", True)
+    monkeypatch.setattr(web, "ACTIVE_AUTH_PROVIDER", "microsoft")
+    monkeypatch.setattr(web, "STORAGE_BACKEND", "local")
+    monkeypatch.setattr(web, "MAIL_ENABLED", False)
+    monkeypatch.setattr(web, "TEAMS_NOTIFICATIONS_ENABLED", False)
+    monkeypatch.setattr(web, "GRAPH_QUEUE_IN_WEB", False)
+    source = synthetic_workbook(tmp_path / "active/2026_9900.xlsx")
+    files = FileService(source.parent)
+    draft = files.create_draft_copy(source, "Técnico fictício")
+    DocumentDataService(draft).write(complete_document())
+    auth = SimpleNamespace(user_from_session=lambda payload: SimpleNamespace(**payload) if payload else None)
+    app = web.create_app(file_service=files, editing_state_service=EditingStateService(tmp_path / "editing"),
+                         microsoft_auth_service=auth)
+    assert app.config["MAINTENANCE_DEMO"]
+    client = app.test_client()
+    login(client, "owner@example.invalid")
+    lease(client, draft, "owner")
+    login(client, "outro@sensorpoint.pt")
+    assert "Checklists de manutenção" in client.get("/").get_data(as_text=True)
+    assert client.post(f"/api/file/{draft.stem}/lease", json={"client_id": "other"}).status_code == 423
+    assert client.get(f"/api/file/{draft.stem}/bootstrap?client_id=other").status_code == 423
+    login(client, "acarvalho@sensorpoint.pt")
+    lease(client, draft, "reviewer")
+
+
 @pytest.mark.parametrize("key_form", ["omitted", "null", "empty"])
 @pytest.mark.parametrize("email", ["jribeiro@sensorpoint.pt", "outro@sensorpoint.pt"])
 def test_sadi_sign_accepts_optional_idempotency(production_sadi, key_form, email):

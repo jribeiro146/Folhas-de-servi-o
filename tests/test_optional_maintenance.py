@@ -7,8 +7,77 @@ from src import maintenance_schema as maintenance
 from src.services.document_data_service import DocumentDataService
 from src.services.editing_state_service import EditorIdentity
 from src.services.maintenance_private_service import MaintenancePrivateService
-from tests.test_maintenance import complete_document, sign_document
+from tests.test_maintenance import complete_document, sign_document, checklist_photo
 from tests.test_maintenance_access import production_sadi, login, lease
+
+
+@pytest.mark.parametrize("endpoint", ["draft", "send", "autosave", "editing/close"])
+@pytest.mark.parametrize("signed", [False, True])
+@pytest.mark.parametrize("field_state", ["omitted", "legacy_empty", "clear"])
+def test_old_client_omission_preserves_other_editors_checklists_but_explicit_clear_applies(
+        production_sadi, endpoint, signed, field_state):
+    app, client, draft, edits, root = production_sadi
+    login(client, "outro@sensorpoint.pt")
+    owner = lease(client, draft, "old-client")
+    document = complete_document()
+    saved = client.post(f"/api/file/{draft.stem}/draft",
+                        json={**document, "maintenance_checklists": [], "_edit": owner})
+    assert saved.status_code == 200
+    login(client, "acarvalho@sensorpoint.pt")
+    reviewer = lease(client, draft, "reviewer")
+    document["maintenance_checklists"][0]["photos"] = [checklist_photo()]
+    document["maintenance_checklists"][0]["observations"] = "Preenchimento conservado da revisão SADI"
+    if signed:
+        sign_document(document, app.secret_key)
+    saved = client.post(f"/api/file/{draft.stem}/draft", json={**document, "_edit": reviewer})
+    assert saved.status_code == 200
+    queue = app.extensions["test_graph_queue"]
+    queue.run_until_idle()
+    private = MaintenancePrivateService(root / "private/sadi")
+    explicit_clear = field_state == "clear"
+    expected = [] if explicit_clear else private.read(owner["document_id"])
+    login(client, "outro@sensorpoint.pt")
+    metadata = lease(client, draft, "old-client")
+    document.pop("maintenance_checklists")
+    if field_state != "omitted":
+        document["maintenance_checklists"] = []
+    if explicit_clear:
+        document["_maintenance_clear"] = True
+    payload = ({"document": document, "_edit": metadata} if endpoint in ("autosave", "editing/close")
+               else {**document, "_edit": metadata})
+    response = client.post(f"/api/file/{draft.stem}/{endpoint}", json=payload)
+    assert response.status_code == 200, response.json
+    if endpoint in ("autosave", "editing/close"):
+        assert edits.snapshot(draft)["server_document"]["maintenance_checklists"] == expected
+    else:
+        assert private.read(metadata["document_id"]) == expected
+    if endpoint == "send":
+        assert bool(response.json.get("maintenance_bundle_url")) is (signed and not explicit_clear)
+        repeated = client.post(f"/api/file/{draft.stem}/send", json=payload)
+        assert repeated.status_code == 200 and repeated.json == response.json
+        queue.run_until_idle()
+        assert [kind for kind, _ in queue.graph_service.calls].count("upload_archive") == 1
+
+
+def test_omitted_checklists_prefer_newer_server_autosave_and_clear_stale_signatures(production_sadi):
+    app, client, draft, edits, root = production_sadi
+    login(client, "outro@sensorpoint.pt")
+    metadata = lease(client, draft, "server-copy")
+    document = complete_document()
+    sign_document(document, app.secret_key)
+    private = MaintenancePrivateService(root / "private/sadi")
+    private.write(metadata["document_id"], document["maintenance_checklists"])
+    document["maintenance_checklists"][0]["observations"] = "Mais recente que a cópia privada"
+    saved = client.post(f"/api/file/{draft.stem}/autosave", json={"document": document, "_edit": metadata})
+    assert saved.status_code == 200
+    expected = edits.snapshot(draft)["server_document"]["maintenance_checklists"]
+    assert expected[0]["signatures"] == {}
+    document.pop("maintenance_checklists")
+    metadata = lease(client, draft, "server-copy")
+    response = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
+    assert response.status_code == 200, response.json
+    assert not response.json.get("maintenance_bundle_url")
+    assert private.read(metadata["document_id"]) == expected
 
 
 @pytest.mark.parametrize("email", ["outro@sensorpoint.pt", "jribeiro@sensorpoint.pt", "acarvalho@sensorpoint.pt"])
@@ -131,6 +200,7 @@ def test_authorized_explicit_clear_is_preserved_even_when_sadi_unchecked(product
     private = MaintenancePrivateService(root / "private/sadi")
     private.write(metadata["document_id"], document["maintenance_checklists"])
     document["maintenance_checklists"] = []
+    document["_maintenance_clear"] = True
     document["equipments"]["sadi"] = sadi
     response = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
     assert response.status_code == 200, response.json

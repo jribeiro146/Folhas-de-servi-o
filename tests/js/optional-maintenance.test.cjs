@@ -36,6 +36,27 @@ function finalizationNotice(payload, issues) {
     return context.editor.finalizationNotice(payload);
 }
 const documentSource = fs.readFileSync(path.join(__dirname, '../../src/web/static/js/document-editor.js'), 'utf8');
+const collectStart = documentSource.indexOf('    const collectFormData = () => {');
+const collectSource = documentSource.slice(collectStart, documentSource.indexOf('    const getFinalizationValidation', collectStart));
+function collectChecklistPayload(editor, preserved=[]) {
+    const context = {structuredClone, window:{MaintenanceEditor:editor}, preservedMaintenance:preserved,
+        createEmptyDocument:()=>({}), simpleFields:[], collectOptionGroup:()=>({}),
+        serviceTypeInputs:[],equipmentInputs:[],materialsUsedYes:{checked:false},
+        collectTechnicianRows:()=>[],clientNotPresentInput:{checked:true},signaturePads:[]};
+    vm.runInNewContext(collectSource + '\nthis.payload=collectFormData();',context);
+    return context.payload;
+}
+test('only an available checklist editor marks empty data as an intentional clear', () => {
+    assert.equal(collectChecklistPayload({collect:()=>[]})._maintenance_clear,true);
+    assert.equal(collectChecklistPayload(undefined)._maintenance_clear,undefined);
+    const sites = [{id:'site-a',location:'Local fictício'}];
+    const populated = collectChecklistPayload({collect:()=>sites});
+    assert.equal(populated._maintenance_clear,undefined);
+    assert.deepEqual(populated.maintenance_checklists,sites);
+    const preserved = collectChecklistPayload(undefined,sites);
+    assert.equal(preserved._maintenance_clear,undefined);
+    assert.deepEqual(preserved.maintenance_checklists,sites);
+});
 const handlerStart = documentSource.indexOf('    btnSaveSend?.addEventListener("click",');
 const handlerSource = documentSource.slice(handlerStart, documentSource.indexOf('    btnCancelFile?.addEventListener',handlerStart));
 function clickFinalize({pending=[], issues=[], allowed=true, mail=false}={}) {

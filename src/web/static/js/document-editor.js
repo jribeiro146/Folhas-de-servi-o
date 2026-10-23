@@ -1341,6 +1341,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
         payload.service_types = collectOptionGroup(serviceTypeInputs);
         payload.maintenance_checklists = window.MaintenanceEditor ? window.MaintenanceEditor.collect() : structuredClone(preservedMaintenance);
+        if (window.MaintenanceEditor && payload.maintenance_checklists.length === 0) {
+            payload._maintenance_clear = true;
+        }
         payload.equipments = collectOptionGroup(equipmentInputs);
         payload.materials_used = materialsUsedYes.checked;
         payload.materials = payload.materials_used

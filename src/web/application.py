@@ -702,7 +702,7 @@ def _create_app(
         """Preserve the existing cross-owner exception separately from checklist access."""
         if not path or not maintenance_access_allowed() or not file_service.is_draft_file(path):
             return False
-        if not app.config["MAINTENANCE_DEMO"] and not can_edit_foreign_maintenance_draft(g.get("current_user")):
+        if not (app.config["MAINTENANCE_DEMO"] and not AUTH_ENABLED) and not can_edit_foreign_maintenance_draft(g.get("current_user")):
             return False
         return maintenance.applicable(DocumentDataService(path).read())
 
@@ -720,7 +720,13 @@ def _create_app(
 
     def normalize_document_for_write(payload, path: Path):
         document = normalize_document_for_file(payload, path)
-        if app.config["MAINTENANCE_ENABLED"] and not maintenance_access_allowed():
+        # Older tabs without the SADI editor omit the field or serialize [].
+        # Only an updated editor can explicitly clear it; otherwise preserve
+        # the latest server copy. This marker is intent, not authorization.
+        checklists_supplied = isinstance(payload, dict) and isinstance(payload.get("maintenance_checklists"), list)
+        legacy_empty = (checklists_supplied and payload["maintenance_checklists"] == []
+                        and payload.get("_maintenance_clear") is not True)
+        if app.config["MAINTENANCE_ENABLED"] and (not maintenance_access_allowed() or not checklists_supplied or legacy_empty):
             document["maintenance_checklists"] = maintenance.normalize_sites(trusted_maintenance(path))
             maintenance.clear_invalid_signatures(document, app.secret_key)
         return document
