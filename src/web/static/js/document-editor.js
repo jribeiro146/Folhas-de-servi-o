@@ -1494,18 +1494,24 @@ document.addEventListener("DOMContentLoaded", () => {
         window.location.href = url;
     };
 
+    // Reserve the UI action before awaiting signatures or metadata. A second
+    // click must not enter a finally that could release the first operation.
+    let documentOperationPending = false;
     const saveDraft = async () => {
-        if (!activeFileName) {
+        if (!activeFileName || documentOperationPending) {
             return;
         }
 
-        await window.MaintenanceEditor?.settleSignatures();
+        documentOperationPending = true;
+        let ownsPreparation = false;
         hideConfirm();
         setBusy(true, "A guardar rascunho", "Estamos a guardar a folha.");
 
         try {
+            await window.MaintenanceEditor?.settleSignatures();
             const payload = collectFormData();
             payload._edit = await requireOperationMetadata("draft");
+            ownsPreparation = true;
             const requestOptions = buildCommitRequest(payload);
             if (!window.SensorpointCommitRecovery) {
                 throw new Error("O acompanhamento da gravação não está disponível. Recarregue a folha antes de guardar.");
@@ -1537,7 +1543,8 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             showToast(error.message, "error");
         } finally {
-            window.__EDITING_COORDINATOR__?.setCommitPending?.(false);
+            if (ownsPreparation) window.__EDITING_COORDINATOR__?.setCommitPending?.(false);
+            documentOperationPending = false;
             setBusy(false);
         }
     };
@@ -1557,6 +1564,9 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     const sendFile = async (payload) => {
+        if (documentOperationPending) return;
+        documentOperationPending = true;
+        let ownsPreparation = false;
         hideConfirm();
         const willSendEmail = mailEnabled && Boolean(String(payload?.customer_email || "").trim());
         setBusy(
@@ -1573,6 +1583,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         try {
             payload._edit = await requireOperationMetadata("send");
+            ownsPreparation = true;
             const requestOptions = buildCommitRequest(payload);
             if (!window.SensorpointCommitRecovery) {
                 throw new Error("O acompanhamento da gravação não está disponível. Recarregue a folha antes de enviar.");
@@ -1655,17 +1666,22 @@ document.addEventListener("DOMContentLoaded", () => {
                 });
             }
         } finally {
-            window.__EDITING_COORDINATOR__?.setCommitPending?.(false);
+            if (ownsPreparation) window.__EDITING_COORDINATOR__?.setCommitPending?.(false);
+            documentOperationPending = false;
             setBusy(false);
         }
     };
 
     const cancelFile = async () => {
+        if (documentOperationPending) return;
+        documentOperationPending = true;
+        let ownsPreparation = false;
         hideConfirm();
         setBusy(true, "A cancelar a folha", "Estamos a mover a folha para Canceladas.");
 
         try {
             const metadata = await requireOperationMetadata("cancel");
+            ownsPreparation = true;
             window.__EDITING_COORDINATOR__?.setCommitPending?.(true);
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/cancel`, {
                 method: "POST",
@@ -1690,7 +1706,8 @@ document.addEventListener("DOMContentLoaded", () => {
         } catch (error) {
             showToast(error.message, "error");
         } finally {
-            window.__EDITING_COORDINATOR__?.setCommitPending?.(false);
+            if (ownsPreparation) window.__EDITING_COORDINATOR__?.setCommitPending?.(false);
+            documentOperationPending = false;
             setBusy(false);
         }
     };

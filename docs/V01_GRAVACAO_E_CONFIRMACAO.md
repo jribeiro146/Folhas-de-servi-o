@@ -14,7 +14,10 @@ sessão não tenta escrever o documento com uma revisão antiga.
 
 O coordenador conserva a preparação até o consumidor chamar `setCommitPending`
 ou libertá-la no seu `finally`. Guardar, finalizar e cancelar cumprem esse
-contrato. O servidor continua a verificar revisão, sessão e idempotência; não
+contrato. A ação fica reservada desde o primeiro clique, antes de aguardar uma
+assinatura ou os metadados. Cliques seguintes em guardar, finalizar ou cancelar
+não iniciam outra ação. Uma tentativa que não conseguiu preparar a operação
+não pode libertar a preparação de outra. O servidor continua a verificar revisão, sessão e idempotência; não
 se contornam conflitos reais nem operações de resultado incerto.
 As assinaturas SADI usam os metadados da sessão ativa sem reservar uma gravação:
 o respetivo pedido só devolve a prova digital do conteúdo submetido, sem gravar
@@ -52,13 +55,16 @@ a tentar. O fecho durante uma verificação obriga a consultar novamente os dado
 Verificação de 23/10/2026: os três percursos reproduziam a captura prematura da
 revisão. Os testes JavaScript cobrem sucesso, falha, conflito, revogação, espera
 limitada, suspensão e libertação após falha do cancelamento. A bateria completa
-atual passou: 283 testes JavaScript, incluindo resolução explícita após falha de
+atual passou: 291 testes JavaScript, incluindo resolução explícita após falha de
 rede, regresso à rede/edição/fecho antes da escolha, marcador de conflito após
 reabrir, proteção da cópia original na pré-visualização, escolhas nas duas abas,
 falha de consulta e fecho durante verificação. A função real de assinatura foi
 testada em sucesso, recusa, falha de rede, concorrência entre assinaturas e com
-autosave/preparação de rascunho. Dez regressões da última ronda falharam antes da
-correção. Estes ensaios usam dados fictícios e transportes em memória; não provam
+autosave/preparação de rascunho. Oito regressões adicionais executam os consumidores
+reais de guardar/finalizar/cancelar com o coordenador real: cliques sobrepostos
+durante uma assinatura, rascunho durante outra operação e preparação recusada
+que pertence a outra ação. Os oito casos falharam antes desta correção.
+Estes ensaios usam dados fictícios e transportes em memória; não provam
 envios reais ou a execução Linux. Não acrescenta configuração, permissões ou
 alterações de formato aos dados. A validação Linux e a instalação são etapas
 distintas.

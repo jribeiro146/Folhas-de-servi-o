@@ -241,7 +241,7 @@ test('cancellation releases commit preparation even when its HTTP request fails'
     const start=editorSource.indexOf('    const cancelFile = ');
     const code=editorSource.slice(start,editorSource.indexOf('    const openDocumentPreview',start));
     const pending=[];
-    const context={hideConfirm(){},setBusy(){},requireOperationMetadata:async()=>({base_revision:2}),
+    const context={documentOperationPending:false,hideConfirm(){},setBusy(){},requireOperationMetadata:async()=>({base_revision:2}),
         activeFileName:'synthetic',fetch:async()=>{throw new Error('network failure');},showToast(){},
         window:{__EDITING_COORDINATOR__:{setCommitPending:value=>pending.push(value)}}};
     vm.runInNewContext(code+'\nthis.cancel=cancelFile;',context);
@@ -338,3 +338,70 @@ for(const code of ['revision_conflict','graph_conflict'])for(const action of ['o
         assert.equal(view.api.isDirty(),true);
         if(action==='freeze')assert.equal(JSON.parse(await beacons[0].text()).document,null);
     });
+
+
+// Execute the real document consumers together with the real coordinator.
+const documentConsumers = (view, signatures, pending) => {
+    const source=fs.readFileSync(path.join(__dirname,'../../src/web/static/js/document-editor.js'),'utf8');
+    const extract=name=>{const start=source.indexOf(`    const ${name} = `);
+        assert.notEqual(start,-1);return source.slice(start,source.indexOf('\n    const ',start+10));};
+    const calls=[],busy=[];
+    const context={documentOperationPending:false,activeFileName:'synthetic',mailEnabled:false,
+        hideConfirm(){},setBusy:value=>busy.push(value),collectFormData:()=>({customer_name:'Fictício'}),
+        buildCommitRequest:payload=>({body:JSON.stringify(payload)}),readCommitResult:response=>response.json(),
+        commitPhotoState(){},resumeDraftCommit(){},navigateAfterCommit(){},showToast(){},
+        btnSaveDraft:null,btnSaveSend:null,btnCancelFile:null,
+        window:{__EDITING_COORDINATOR__:view.api,MaintenanceEditor:{settleSignatures:()=>signatures.promise},
+            SensorpointCommitRecovery:{begin:()=>({}),clear(){}},setTimeout(){},location:{}},
+        fetch:async(url,options)=>{calls.push({url,options});return pending.promise;}};
+    vm.runInNewContext(['requireOperationMetadata','saveDraft','sendFile','cancelFile'].map(extract).join('\n')+
+        '\nthis.operations={draft:saveDraft,send:()=>sendFile({customer_name:"Fictício"}),cancel:cancelFile};',context);
+    return {operations:context.operations,calls,busy};
+};
+
+for(const second of ['draft','send','cancel'])test(`document action is reserved before signature wait; overlapping ${second} cannot release it`,async()=>{
+    const network=[];
+    const view=await coordinator((url)=>{network.push(url);return bootstrap();});
+    view.edit({customer_name:'Com assinatura pendente'});
+    const signatures=deferred(),pending=deferred(),consumer=documentConsumers(view,signatures,pending);
+    const first=consumer.operations.draft();const duplicate=consumer.operations[second]();
+    try{
+        assert.deepEqual(consumer.busy,[true],'busy before signature wait, no second consumer');
+        signatures.resolve();await settle();
+        assert.equal(consumer.calls.length,1);
+        assert.ok(consumer.calls[0].url.endsWith('/draft'));
+        const count=network.length;
+        await view.windowEvents.get('online')();await view.heartbeat();
+        assert.equal(network.length,count,'no autosave or heartbeat during the owning POST');
+        assert.equal(view.element('btn-save-draft').disabled,true);
+        await assert.rejects(view.api.prepareOperation('send'),/preparação/);
+    }finally{
+        signatures.resolve();pending.resolve(response({success:true,editing:{revision:2}}));
+        await Promise.allSettled([first,duplicate]);
+    }
+    assert.deepEqual(consumer.busy,[true,false]);
+});
+
+for(const first of ['send','cancel'])test(`an active ${first} excludes a later draft without an unrelated finally`,async()=>{
+    const view=await coordinator(()=>bootstrap());view.edit({customer_name:'Com alterações'});
+    const signatures=deferred(),pending=deferred(),consumer=documentConsumers(view,signatures,pending);
+    const owner=consumer.operations[first]();await settle();
+    const other=consumer.operations.draft();signatures.resolve();
+    try{
+        await settle();assert.equal(consumer.calls.length,1);
+        assert.equal(view.element('btn-save-draft').disabled,true);
+        assert.deepEqual(consumer.busy,[true]);
+    }finally{pending.resolve(response({success:true,editing:{revision:2}}));await Promise.allSettled([owner,other]);}
+    assert.deepEqual(consumer.busy,[true,false]);
+});
+
+for(const kind of ['draft','send','cancel'])test(`a refused ${kind} consumer never releases preparation acquired elsewhere`,async()=>{
+    const view=await coordinator(()=>bootstrap());
+    await view.api.prepareOperation('draft');
+    const signatures=deferred(),pending=deferred(),consumer=documentConsumers(view,signatures,pending);
+    signatures.resolve();await consumer.operations[kind]();
+    assert.equal(consumer.calls.length,0);
+    await assert.rejects(view.api.prepareOperation('send'),/preparação/);
+    view.api.setCommitPending(false);
+    assert.equal(view.element('btn-save-draft').disabled,false);
+});
