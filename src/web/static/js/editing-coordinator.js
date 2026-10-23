@@ -82,6 +82,7 @@ const startEditingCoordinator = () => {
     let sourcePhotos = [];
     let otherTabActive = false;
     let resumeConflictPending = false;
+    let initialConflictPending = false;
     let resumePromise = null;
     let initializing = false;
     let initialRecoveryPending = false;
@@ -127,7 +128,7 @@ const startEditingCoordinator = () => {
     };
 
     const setFormReadOnly = (value, ownerName = "") => {
-        readOnly = revoked || initialRecoveryPending || Boolean(resumeSnapshot) || Boolean(value);
+        readOnly = revoked || initialRecoveryPending || initialConflictPending || Boolean(resumeSnapshot) || Boolean(value);
         form.classList.toggle("is-readonly", readOnly);
         form.querySelectorAll("input, select, textarea, button").forEach((control) => {
             if (!control.dataset.editingInitialDisabled) {
@@ -141,6 +142,9 @@ const startEditingCoordinator = () => {
         if (revoked) {
             if (lockTitle) lockTitle.textContent = "Edição encerrada pelo administrador";
             if (lockMessage) lockMessage.textContent = "Mantenha esta página aberta se tiver alterações por guardar. Peça a reposição do acesso antes de voltar a editar.";
+        } else if (initialConflictPending && !otherTabActive) {
+            if (lockTitle) lockTitle.textContent = "Escolha a versão a manter";
+            if (lockMessage) lockMessage.textContent = "As duas versões estão preservadas. Use «Usar servidor» ou «Usar este dispositivo» para continuar.";
         } else if (readOnly) {
             if (lockTitle) lockTitle.textContent = "Rascunho em modo de consulta";
             if (lockMessage) {
@@ -223,7 +227,9 @@ const startEditingCoordinator = () => {
     const persistLocalRecovery = async ({ announce = false, force = false } = {}) => {
         // All tabs share this record. A read-only observer must never replace
         // the active editor's newer recovery, including on pagehide.
-        if (otherTabActive || (!dirty && !force) || !editing.document_id) return null;
+        // The initial conflict preview shows the server version. Until an
+        // explicit choice, never replace the original local recovery with it.
+        if (initialConflictPending || otherTabActive || (!dirty && !force) || !editing.document_id) return null;
         try {
             const record = {
                 key: recoveryKey(),
@@ -798,6 +804,7 @@ const startEditingCoordinator = () => {
                     && Number(localRecovery.baseRevision || 1) < Number(editing.revision || 1))
                 ) {
                     resumeConflictPending = true;
+                    initialConflictPending = true;
                     showConflictPanel(localRecovery, initialPayload);
                 } else {
                     initialPayload = localRecovery.payload;
@@ -815,6 +822,8 @@ const startEditingCoordinator = () => {
             setBooting(false);
             if (otherTabActive) {
                 setAutosaveStatus("Modo de consulta — rascunho aberto noutra aba", "conflict");
+            } else if (resumeConflictPending) {
+                setAutosaveStatus("Conflito — escolha a versão a manter", "conflict");
             } else if (shouldSave) {
                 setAutosaveStatus("Alterações recuperadas — a guardar no servidor…", "saving");
                 schedulePersistence();
@@ -870,7 +879,7 @@ const startEditingCoordinator = () => {
     });
 
     ignoreRecoveryButton?.addEventListener("click", async () => {
-        if (revoked) return;
+        if (revoked || otherTabActive) return;
         const action = pendingPanelAction;
         if (!action) return hideRecoveryPanel();
         if (action.kind === "conflict") {
@@ -881,15 +890,17 @@ const startEditingCoordinator = () => {
             if (action.remotePayload) applyPayload(action.remotePayload, sourceSignatures);
             dirty = false;
             resumeConflictPending = false;
+            initialConflictPending = false;
             await deleteRecovery(action.localRecord?.key).catch(() => {});
             hideRecoveryPanel();
+            setFormReadOnly(otherTabActive);
             syncCommitActions();
             setAutosaveStatus("Versão do servidor carregada", "saved");
         }
     });
 
     restoreRecoveryButton?.addEventListener("click", async () => {
-        if (revoked) return;
+        if (revoked || otherTabActive) return;
         const action = pendingPanelAction;
         if (!action) return hideRecoveryPanel();
         if (action.kind === "conflict" && action.localRecord?.payload) {
@@ -900,11 +911,14 @@ const startEditingCoordinator = () => {
                 showToast(error.message, "error");
                 return; // Keep the conflict and original recovery for another attempt.
             }
-            if (revoked || pendingPanelAction !== action) return;
+            if (revoked || otherTabActive || pendingPanelAction !== action) return;
             pendingAutosave = null;
             resumeConflictPending = false;
+            initialConflictPending = false;
             applyPayload(payload, payload, { shouldSave: true });
             hideRecoveryPanel();
+            setFormReadOnly(otherTabActive);
+            syncCommitActions();
             await persistLocalRecovery({ force: true });
             await runAutosave();
         }
@@ -1146,6 +1160,7 @@ const startEditingCoordinator = () => {
                 setAutosaveStatus("Alterações consolidadas", "saved");
             }
             resumeConflictPending = false;
+            initialConflictPending = false;
             if (["send", "cancel"].includes(kind) || result.created_copy) sessionToken = "";
             syncCommitActions();
         },

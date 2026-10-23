@@ -789,3 +789,61 @@ test('ordinary local recovery at the same revision still autosaves without a con
     assert.equal(sharedServer.document.observations,local.observations);
     assert.equal(app.element('recovery-panel').classList.contains('is-conflict'),false);
 });
+
+for(const marked of [false,true])for(const choice of ['server','device'])
+    test(`initial conflict protects original local recovery from preview edits (marker=${marked}, ${choice})`,async t=>{
+        const remote={observations:'Versão do servidor',maintenance_checklists:[]};
+        const local={observations:'Trabalho local original a preservar',maintenance_checklists:[]};
+        const record={key:'user:doc',userId:'user',fileName:'synthetic-draft',documentId:'doc',
+            baseRevision:marked?2:1,conflict:marked,updatedAt:Date.now(),payload:local};
+        const records=new Map([['user:doc',structuredClone(record)]]);
+        const sharedServer={document:remote,revision:2,accepted:0,conflicts:0};
+        const first=harness(t,{remote,records,sharedServer});
+        await waitFor(()=>!first.booting());
+        assert.equal(first.element('service-form').classList.contains('is-readonly'),true);
+        assert.match(first.element('autosave-status').textContent,/Conflito/);
+        assert.match(first.element('editing-lock-message').textContent,/duas versões estão preservadas/);
+        await assert.rejects(first.coordinator.prepareOperation('draft'),/não está pronta/);
+        assert.equal(first.saveCount(),0);
+        // Even a delayed/programmatic input event cannot persist the server
+        // preview over the original copy. Human inputs are disabled in this state.
+        first.setPayload({...remote,observations:'Tentativa de alterar a pré-visualização'});
+        first.coordinator.markDirty();
+        await new Promise(resolve=>setTimeout(resolve,200));
+        first.listeners.get('pagehide')();
+        await new Promise(resolve=>setTimeout(resolve,30));
+        assert.deepEqual(records.get('user:doc'),record);
+        assert.equal(sharedServer.accepted,0);
+        const next=harness(t,{remote,records,sharedServer});
+        await waitFor(()=>!next.booting());
+        assert.equal(next.element('recovery-panel').hidden,false);
+        assert.equal(next.element('service-form').classList.contains('is-readonly'),true);
+        await next.element(choice==='device'?'btn-restore-recovery':'btn-ignore-recovery').events.get('click')();
+        assert.equal(next.element('service-form').classList.contains('is-readonly'),false);
+        assert.equal(next.element('btn-save-draft').disabled,false);
+        assert.equal(sharedServer.accepted,choice==='device'?1:0);
+        assert.equal(sharedServer.document.observations,choice==='device'?local.observations:remote.observations);
+    });
+
+test('an observing tab cannot resolve or erase another tab conflict recovery',async t=>{
+    const remote={observations:'Servidor',maintenance_checklists:[]};
+    const local={observations:'Dispositivo protegido',maintenance_checklists:[]};
+    const records=new Map([['user:doc',{key:'user:doc',userId:'user',fileName:'synthetic-draft',documentId:'doc',
+        baseRevision:2,conflict:true,updatedAt:Date.now(),payload:local}]]);
+    const sharedServer={document:remote,revision:2,accepted:0,conflicts:0},BroadcastChannel=broadcastBus();
+    const editor=harness(t,{remote,records,sharedServer,BroadcastChannel});
+    await waitFor(()=>!editor.booting());
+    const observer=harness(t,{remote,records,sharedServer,BroadcastChannel});
+    await waitFor(()=>!observer.booting());
+    assert.match(observer.element('autosave-status').textContent,/outra aba/);
+    const before=structuredClone(records.get('user:doc'));
+    await observer.element('btn-ignore-recovery').events.get('click')();
+    await observer.element('btn-restore-recovery').events.get('click')();
+    assert.deepEqual(records.get('user:doc'),before);
+    assert.equal(sharedServer.accepted,0);
+    editor.listeners.get('pagehide')();
+    await new Promise(resolve=>setTimeout(resolve,200));
+    assert.equal(observer.element('btn-save-draft').disabled,true);
+    assert.equal(observer.element('service-form').classList.contains('is-readonly'),true);
+    assert.deepEqual(records.get('user:doc'),before);
+});

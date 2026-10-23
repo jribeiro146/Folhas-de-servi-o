@@ -33,6 +33,11 @@ da revisão atual. A escolha explícita retira essa indicação; recuperações 
 conflito mantêm o comportamento habitual. O campo é opcional no IndexedDB e não
 muda bases/configuração do servidor. Cópias antigas sem esse campo não permitem
 identificar retroativamente um conflito que uma versão antiga não registou.
+Na abertura com conflito, o formulário mostra a versão do servidor apenas para
+consulta. Os botões de escolha ficam fora do formulário e conservam a cópia
+original do dispositivo até à decisão. Eventos atrasados não podem substituir
+essa cópia. Uma aba que esteja a observar outra aba ativa também não pode decidir
+ou apagar a recuperação partilhada.
 
 Verificação de 23/10/2026: os três percursos reproduziam a captura prematura da
 revisão. Os testes JavaScript cobrem sucesso, falha, conflito, revogação, espera
