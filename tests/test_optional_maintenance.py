@@ -11,6 +11,25 @@ from tests.test_maintenance import complete_document, sign_document, checklist_p
 from tests.test_maintenance_access import production_sadi, login, lease
 
 
+@pytest.mark.parametrize("field_state", ["omitted", "legacy_empty"])
+def test_recovery_validation_restores_server_checklists_without_writing(production_sadi, field_state):
+    app, client, draft, _edits, root = production_sadi
+    login(client, "outro@sensorpoint.pt")
+    metadata = lease(client, draft, "recovered-client")
+    document = complete_document()
+    sign_document(document, app.secret_key)
+    private = MaintenancePrivateService(root / "private/sadi")
+    private.write(metadata["document_id"], document["maintenance_checklists"])
+    before = {path: path.read_bytes() for path in private.root.glob("*.json")}
+    expected = document.pop("maintenance_checklists")
+    if field_state == "legacy_empty":
+        document["maintenance_checklists"] = []
+    response = client.post(f"/api/file/{draft.stem}/maintenance/validate", json={"document": document})
+    assert response.status_code == 200 and response.json["errors"] == []
+    assert response.json["maintenance_checklists"] == expected
+    assert {path: path.read_bytes() for path in private.root.glob("*.json")} == before
+
+
 @pytest.mark.parametrize("endpoint", ["draft", "send", "autosave", "editing/close"])
 @pytest.mark.parametrize("signed", [False, True])
 @pytest.mark.parametrize("field_state", ["omitted", "legacy_empty", "clear"])

@@ -77,7 +77,7 @@ function broadcastBus({dropClosing=false}={}) {
 }
 
 function harness(t, {local, remote, failVerification=false, failBootstrap=false, deferSave=false, BroadcastChannel, realCollector=false,
-    records=new Map(), deferVerification=false, sharedServer=null, commitRecovery}) {
+    records=new Map(), deferVerification=false, sharedServer=null, commitRecovery, validationChecklists}) {
     if(local)records.set('user:doc',{key:'user:doc',userId:'user',fileName:'synthetic-draft',documentId:'doc',
         baseRevision:1,updatedAt:Date.now(),payload:structuredClone(local)});
     const elements=new Map(), listeners=new Map(), timers=new Set(), intervals=new Map(), beacons=[], submittedRequests=[];
@@ -106,7 +106,7 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
         if(url.endsWith('/maintenance/validate')) {
             verifyCount++;
             if(failVerification)throw new Error('synthetic network failure');
-            const value=reply({success:true,maintenance_checklists:normalize(JSON.parse(options.body).document).maintenance_checklists});
+            const value=reply({success:true,maintenance_checklists:validationChecklists ?? normalize(JSON.parse(options.body).document).maintenance_checklists});
             if(deferVerification)return new Promise(resolve=>{pendingVerification=()=>{pendingVerification=null;resolve(value);};});
             return value;
         }
@@ -258,14 +258,17 @@ test('changed session preserves the latest form and the recovery action reloads 
     assert.equal(app.saveCount(),0);
 });
 
-test('legacy empty IndexedDB recovery at the current revision never gains a clear marker from the new editor',async t=>{
+test('legacy empty IndexedDB recovery restores server checklists before hydration and autosave at the current revision',async t=>{
     const local={observations:'Alteração feita na versão sem acesso SADI',maintenance_checklists:[]};
-    const app=harness(t,{local,remote:signed('fresh-valid'),realCollector:true});
+    const remote=signed('fresh-valid');
+    const app=harness(t,{local,remote,realCollector:true,validationChecklists:remote.maintenance_checklists});
     await waitFor(()=>app.saveCount()===1 && app.element('autosave-status').dataset.state==='saved');
     const request=app.submittedRequests[0];
     assert.equal(request._edit.base_revision,1);
     assert.equal(request.document.observations,local.observations);
-    assert.deepEqual(request.document.maintenance_checklists,[]);
+    assert.deepEqual(request.document.maintenance_checklists,remote.maintenance_checklists);
+    assert.deepEqual(app.payload().maintenance_checklists,remote.maintenance_checklists);
+    assert.equal(app.verifyCount(),1);
     assert.equal(request.document._maintenance_clear,undefined);
 });
 

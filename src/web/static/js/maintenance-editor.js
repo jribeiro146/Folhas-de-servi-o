@@ -180,7 +180,9 @@
         }
     }
     async function verifyRecovery(payload) {
-        if (!config.selectedFileIsDraft || !payload.maintenance_checklists?.length) return payload;
+        // A legacy recovery may be empty only because SADI was hidden before
+        // the rollout. Ask the server before displaying or autosaving it.
+        if (!config.selectedFileIsDraft) return payload;
         const response = await fetch(`/api/file/${encodeURIComponent(config.selectedFileName)}/maintenance/validate`, {
             method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({document:payload})
         });
@@ -188,8 +190,8 @@
         if (!response.ok || !result.success || !Array.isArray(result.maintenance_checklists)) {
             throw new Error(result.error || 'Não foi possível verificar as assinaturas recuperadas. Tente novamente com ligação.');
         }
-        // Verify the actual local candidate, not another stored version: a newly
-        // collected, valid signature may exist only in this device's recovery.
+        // Nonempty local work keeps its own signatures; empty legacy copies
+        // receive the preserved server checklists instead of hiding them.
         return {...payload, maintenance_checklists:result.maintenance_checklists};
     }
     function reconcileSignatures(submitted, verified) {

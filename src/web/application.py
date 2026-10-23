@@ -1012,7 +1012,7 @@ def _create_app(
         if not path or not file_service.is_draft_file(path):
             return json_error("Crie primeiro um rascunho.", 409)
         received = request.get_json(silent=True) or {}
-        document = normalize_document_for_file(received.get("document"), path)
+        document = normalize_document_for_write(received.get("document"), path)
         # Recovered browser drafts need the same HMAC normalization as a save,
         # without overwriting either persisted version or accepting old ink.
         return jsonify(success=True, maintenance_checklists=document["maintenance_checklists"],
