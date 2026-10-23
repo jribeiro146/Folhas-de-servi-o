@@ -85,6 +85,7 @@ const startEditingCoordinator = () => {
     let initialConflictPending = false;
     let resumePromise = null;
     let initializing = false;
+    let reinitializeRequested = false;
     let initialRecoveryPending = false;
     let recoveryRequiresReload = false;
     let resumeSnapshot = null;
@@ -763,7 +764,12 @@ const startEditingCoordinator = () => {
         setBooting(true);
         setFormReadOnly(true);
         setAutosaveStatus("A abrir a área de trabalho…", "saving");
-        const localRecoveryPromise = readLatestRecoveryForFile().catch(() => null);
+        let recoveryReadError = null;
+        let localRecoveryPromise;
+        const getLocalRecovery = () => localRecoveryPromise ||= readLatestRecoveryForFile().catch(error => {
+            recoveryReadError = error;
+            return null;
+        });
         try {
             if (await resolvePendingCommit()) return;
             const result = await loadBootstrap();
@@ -774,7 +780,14 @@ const startEditingCoordinator = () => {
             editing = { ...(result.editing || {}) };
             sessionToken = result.editing?.lease?.token || "";
             serverPayload = result.editing?.server_document || result.document || null;
-            let localRecovery = await localRecoveryPromise;
+            // Read the shared copy after probing the editor. A closing tab may
+            // have discarded it while bootstrap was still in progress.
+            await checkOtherTab();
+            if (revoked || reinitializeRequested) return;
+            let localRecovery = await getLocalRecovery();
+            // An observer must distinguish a discarded copy from an unreadable
+            // store before replacing the conflict it originally displayed.
+            if (initialConflictPending && recoveryReadError) throw recoveryReadError;
             if (localRecovery?.payload && editor.verifyRecovery) {
                 localRecovery = {...localRecovery, payload:await editor.verifyRecovery(localRecovery.payload)};
             }
@@ -782,8 +795,11 @@ const startEditingCoordinator = () => {
             sourceSignatures = result.signatures || {};
             sourcePhotos = result.photos || [];
             await checkOtherTab();
-            if (revoked) return;
+            if (revoked || reinitializeRequested) return;
 
+            resumeConflictPending = false;
+            initialConflictPending = false;
+            hideRecoveryPanel();
 
             let initialPayload = result.document || result.source_document || {};
             let initialSignatures = sourceSignatures;
@@ -837,11 +853,11 @@ const startEditingCoordinator = () => {
             }
             pruneExpiredRecoveries().catch(() => {});
         } catch (error) {
-            if (revoked) return;
+            if (revoked || reinitializeRequested) return;
             recoveryRequiresReload = error.code === "mail_monitor_session_changed";
             const result = bootstrapResult || error.result || {};
             editing = { ...editing, ...(result.editing || {}) };
-            const localRecovery = await localRecoveryPromise;
+            const localRecovery = await getLocalRecovery();
             if (result.document) {
                 sourcePhotos = result.photos || sourcePhotos;
                 applyPayload(result.document, result.signatures || {}, { shouldSave: false });
@@ -864,6 +880,10 @@ const startEditingCoordinator = () => {
             }
         } finally {
             initializing = false;
+            if (reinitializeRequested && !revoked) {
+                reinitializeRequested = false;
+                initialize();
+            }
         }
     };
 
@@ -879,7 +899,7 @@ const startEditingCoordinator = () => {
     });
 
     ignoreRecoveryButton?.addEventListener("click", async () => {
-        if (revoked || otherTabActive) return;
+        if (revoked || otherTabActive || initializing || initialRecoveryPending) return;
         const action = pendingPanelAction;
         if (!action) return hideRecoveryPanel();
         if (action.kind === "conflict") {
@@ -900,7 +920,7 @@ const startEditingCoordinator = () => {
     });
 
     restoreRecoveryButton?.addEventListener("click", async () => {
-        if (revoked || otherTabActive) return;
+        if (revoked || otherTabActive || initializing || initialRecoveryPending) return;
         const action = pendingPanelAction;
         if (!action) return hideRecoveryPanel();
         if (action.kind === "conflict" && action.localRecord?.payload) {
@@ -911,7 +931,7 @@ const startEditingCoordinator = () => {
                 showToast(error.message, "error");
                 return; // Keep the conflict and original recovery for another attempt.
             }
-            if (revoked || otherTabActive || pendingPanelAction !== action) return;
+            if (revoked || otherTabActive || initializing || initialRecoveryPending || pendingPanelAction !== action) return;
             pendingAutosave = null;
             resumeConflictPending = false;
             initialConflictPending = false;
@@ -1068,6 +1088,16 @@ const startEditingCoordinator = () => {
             // while keeping the unverified recovery read-only and untouched.
             if (message.type === "closing" && otherTabActive && (initialRecoveryPending || sessionToken)) {
                 otherTabActive = false;
+                if (initializing || initialConflictPending) {
+                    // The editor may have resolved or replaced the shared copy.
+                    // Disable stale choices before any asynchronous refresh.
+                    initialRecoveryPending = true;
+                    hideRecoveryPanel();
+                    setFormReadOnly(true);
+                    if (initializing) reinitializeRequested = true;
+                    else initialize();
+                    return;
+                }
                 if (initialRecoveryPending) {
                     setFormReadOnly(true);
                     showVerificationRetry("A cópia original deste dispositivo continua guardada. Volte a tentar antes de editar.");

@@ -435,7 +435,10 @@
         const job={again:false,done:new Promise(resolve=>{settled=resolve;})}, key=signatureKey(site,role);
         signatureJobs.set(jobKey,job);signatureMessages.delete(jobKey);renderStatus();
         try {
-            const metadata=await window.__EDITING_COORDINATOR__.prepareOperation('maintenance-sign');
+            // This endpoint only returns a proof for the submitted payload; it
+            // does not commit a document or advance its revision. Require an
+            // active session without reserving/clearing a document operation.
+            const metadata=window.__EDITING_COORDINATOR__.operationMetadata('maintenance-sign');
             if(readOnly() || !sites.includes(site) || signatureKey(site,role)!==key)return;
             const response=await fetch(`/api/file/${encodeURIComponent(window.__FILES_EDITOR__.getActiveFileName())}/maintenance/sign`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({_edit:metadata,document:documentData(),site_id:site.id,role,name:input.name,date:input.date,image:input.image})});
             const result=await response.json();

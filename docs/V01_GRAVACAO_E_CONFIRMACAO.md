@@ -16,6 +16,11 @@ O coordenador conserva a preparação até o consumidor chamar `setCommitPending
 ou libertá-la no seu `finally`. Guardar, finalizar e cancelar cumprem esse
 contrato. O servidor continua a verificar revisão, sessão e idempotência; não
 se contornam conflitos reais nem operações de resultado incerto.
+As assinaturas SADI usam os metadados da sessão ativa sem reservar uma gravação:
+o respetivo pedido só devolve a prova digital do conteúdo submetido, sem gravar
+o documento ou avançar a revisão. A prova é conservada pela gravação normal da
+folha. Uma assinatura não pode deixar essa gravação suspensa nem libertar a
+preparação de outra operação.
 
 Depois de uma recusa explícita por conflito, a escolha «Usar servidor» permite
 guardar/finalizar/cancelar sem obrigar a editar outro campo. «Usar este dispositivo»
@@ -38,11 +43,22 @@ consulta. Os botões de escolha ficam fora do formulário e conservam a cópia
 original do dispositivo até à decisão. Eventos atrasados não podem substituir
 essa cópia. Uma aba que esteja a observar outra aba ativa também não pode decidir
 ou apagar a recuperação partilhada.
+Quando a aba editora fecha, a observadora volta a consultar o servidor e a
+recuperação partilhada antes de permitir uma escolha. Uma cópia descartada deixa
+de ser oferecida; um conflito ainda existente mantém a versão local mais recente.
+Se a consulta falhar, continua em modo de consulta com a opção normal de voltar
+a tentar. O fecho durante uma verificação obriga a consultar novamente os dados.
 
 Verificação de 23/10/2026: os três percursos reproduziam a captura prematura da
 revisão. Os testes JavaScript cobrem sucesso, falha, conflito, revogação, espera
 limitada, suspensão e libertação após falha do cancelamento. A bateria completa
-inicial passou: 240 testes; a revisão acrescentou oito casos de resolução de
-conflito, seguidos de quatro casos de retoma após falha de rede. Não acrescenta
-configuração, permissões ou alterações de
-formato aos dados. A validação Linux e a instalação são etapas distintas.
+atual passou: 283 testes JavaScript, incluindo resolução explícita após falha de
+rede, regresso à rede/edição/fecho antes da escolha, marcador de conflito após
+reabrir, proteção da cópia original na pré-visualização, escolhas nas duas abas,
+falha de consulta e fecho durante verificação. A função real de assinatura foi
+testada em sucesso, recusa, falha de rede, concorrência entre assinaturas e com
+autosave/preparação de rascunho. Dez regressões da última ronda falharam antes da
+correção. Estes ensaios usam dados fictícios e transportes em memória; não provam
+envios reais ou a execução Linux. Não acrescenta configuração, permissões ou
+alterações de formato aos dados. A validação Linux e a instalação são etapas
+distintas.

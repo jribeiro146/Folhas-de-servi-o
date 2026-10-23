@@ -140,6 +140,11 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
     const verification={fetch,config:{selectedFileIsDraft:true,selectedFileName:'synthetic-draft'},encodeURIComponent};
     vm.runInNewContext(`${verifySource}\nthis.verify=verifyRecovery;`,verification);
     const indexedDB=database(records);
+    const openDatabase=indexedDB.open; let failDatabaseRead=false;
+    indexedDB.open=()=>{
+        if(!failDatabaseRead)return openDatabase();
+        const request={};setImmediate(()=>{request.error=new Error('synthetic database unavailable');request.onerror?.();});return request;
+    };
     // Execute the actual form collector for the legacy-empty recovery regression.
     // The HTTP matrix separately exercises server retention for this payload.
     const collectCurrent = () => {
@@ -196,6 +201,8 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
         saveCount:()=>saveCount,verifyCount:()=>verifyCount,finishSave:()=>pendingSave?.(),pendingSave:()=>Boolean(pendingSave),listeners,
         finishVerification:()=>pendingVerification?.(),pendingVerification:()=>Boolean(pendingVerification),
         failVerification:()=>{failVerification=true;},
+        failDatabase:value=>{failDatabaseRead=value;},
+        failBootstrap:()=>{failBootstrap=true;},
         denyLease:owner=>{leaseOwner=owner;},
         requireLease:(remoteRevision=revision)=>{heartbeatRequired=true;revision=remoteRevision;return intervals.get(15000)();},
         recoverNetwork:()=>{failVerification=false;failBootstrap=false;heartbeatRequired=false;leaseOwner='';}};
@@ -846,4 +853,133 @@ test('an observing tab cannot resolve or erase another tab conflict recovery',as
     assert.equal(observer.element('btn-save-draft').disabled,true);
     assert.equal(observer.element('service-form').classList.contains('is-readonly'),true);
     assert.deepEqual(records.get('user:doc'),before);
+});
+
+for(const choice of ['server','device'])for(const failure of ['none','bootstrap','database'])
+    test(`observer reloads current conflict decision before editing (${choice}, ${failure})`,async t=>{
+        const remote={observations:'Servidor escolhido',maintenance_checklists:[]};
+        const local={observations:'Cópia do dispositivo',maintenance_checklists:[]};
+        const records=new Map([['user:doc',{key:'user:doc',userId:'user',fileName:'synthetic-draft',documentId:'doc',
+            baseRevision:2,conflict:true,updatedAt:Date.now(),payload:local}]]);
+        const sharedServer={document:remote,revision:2,accepted:0,conflicts:0},BroadcastChannel=broadcastBus();
+        const a=harness(t,{remote,records,sharedServer,BroadcastChannel});await waitFor(()=>!a.booting());
+        const b=harness(t,{remote,records,sharedServer,BroadcastChannel});await waitFor(()=>!b.booting());
+        await a.element(choice==='server'?'btn-ignore-recovery':'btn-restore-recovery').events.get('click')();
+        if(failure==='bootstrap')b.failBootstrap();
+        if(failure==='database')b.failDatabase(true);
+        a.listeners.get('pagehide')();
+        await waitFor(()=>b.bootstrapCount()===2 && !b.booting());
+        if(failure!=='none') {
+            assert.equal(b.element('service-form').classList.contains('is-readonly'),true);
+            assert.equal(b.element('btn-save-draft').disabled,true);
+            assert.equal(b.element('btn-retry-lease').hidden,false);
+            await b.element('btn-restore-recovery').events.get('click')();
+            await b.element('btn-ignore-recovery').events.get('click')();
+            assert.equal(sharedServer.accepted,choice==='device'?1:0);
+            b.recoverNetwork();b.failDatabase(false);
+            await b.element('btn-retry-lease').events.get('click')();
+        }
+        assert.equal(b.element('recovery-panel').hidden,true);
+        assert.equal(b.element('btn-save-draft').disabled,false);
+        assert.equal(b.payload().observations,choice==='device'?local.observations:remote.observations);
+        await b.element('btn-restore-recovery').events.get('click')();
+        assert.equal(sharedServer.accepted,choice==='device'?1:0,'stale choice cannot write');
+        assert.equal(sharedServer.conflicts,0);
+    });
+
+test('closing during observer verification discards the stale read and starts a fresh bootstrap',async t=>{
+    const remote={observations:'Servidor',maintenance_checklists:[]};
+    const records=new Map([['user:doc',{key:'user:doc',userId:'user',fileName:'synthetic-draft',documentId:'doc',
+        baseRevision:2,conflict:true,updatedAt:Date.now(),payload:{...remote,observations:'Já descartada'}}]]);
+    const sharedServer={document:remote,revision:2,accepted:0,conflicts:0},BroadcastChannel=broadcastBus();
+    const a=harness(t,{remote,records,sharedServer,BroadcastChannel});await waitFor(()=>!a.booting());
+    const b=harness(t,{remote,records,sharedServer,BroadcastChannel,deferVerification:true});
+    await waitFor(()=>b.pendingVerification());
+    await a.element('btn-ignore-recovery').events.get('click')();a.listeners.get('pagehide')();
+    await new Promise(resolve=>setImmediate(resolve));b.finishVerification();
+    await waitFor(()=>b.bootstrapCount()===2 && !b.booting());
+    assert.equal(b.element('recovery-panel').hidden,true);
+    assert.equal(b.element('btn-save-draft').disabled,false);
+    assert.equal(b.payload().observations,remote.observations);
+    await b.element('btn-restore-recovery').events.get('click')();
+    assert.equal(sharedServer.accepted,0);
+});
+
+test('observer keeps a real unresolved conflict using the latest shared local copy',async t=>{
+    const remote={observations:'Inicial',maintenance_checklists:[]};
+    const records=new Map(),sharedServer={document:remote,revision:1,accepted:0,conflicts:0},BroadcastChannel=broadcastBus();
+    const a=harness(t,{remote,records,sharedServer,BroadcastChannel});await waitFor(()=>!a.booting());
+    a.setPayload({...remote,observations:'Local antigo'});
+    sharedServer.document={...remote,observations:'Servidor diferente'};sharedServer.revision=2;
+    a.coordinator.markDirty();await waitFor(()=>records.get('user:doc')?.conflict);
+    const b=harness(t,{remote,records,sharedServer,BroadcastChannel});await waitFor(()=>!b.booting());
+    a.setPayload({...remote,observations:'Local mais recente'});a.coordinator.markDirty();
+    await waitFor(()=>records.get('user:doc')?.payload.observations==='Local mais recente');
+    a.listeners.get('pagehide')();await waitFor(()=>b.bootstrapCount()===2 && !b.booting());
+    assert.equal(b.element('service-form').classList.contains('is-readonly'),true);
+    assert.match(b.element('autosave-status').textContent,/Conflito/);
+    assert.equal(sharedServer.accepted,0);
+    await b.element('btn-restore-recovery').events.get('click')();
+    assert.equal(sharedServer.document.observations,'Local mais recente');
+    assert.equal(sharedServer.accepted,1);
+});
+
+const signatureConsumer = (app, {outcome='success', deferred=false}={}) => {
+    const begin=editorSource.indexOf('    async function saveSignature(');
+    const actual=editorSource.slice(begin,editorSource.indexOf('\n    window.MaintenanceEditor',begin));
+    const site={id:'synthetic-site'},pending=[],requests=[],messages=new Map();
+    const env={readOnly:()=>app.element('service-form').classList.contains('is-readonly'),
+        model:{signatureWaived:()=>false},def:{},sites:[site],
+        signatureInput:()=>({name:'Técnico fictício',date:'2026-10-23',image:'synthetic-ink'}),
+        signatureJobs:new Map(),signatureMessages:messages,pendingPhotos:false,
+        signatureKey:()=> 'same',renderStatus(){},current:()=>site,invalidatedSignatures:new Map(),
+        documentData:()=>app.payload(),dirty:()=>app.coordinator.markDirty(),encodeURIComponent,
+        window:{__EDITING_COORDINATOR__:app.coordinator,__FILES_EDITOR__:{getActiveFileName:()=> 'synthetic-draft'}},
+        fetch:async(url,options)=>{
+            requests.push(JSON.parse(options.body));
+            if(deferred)await new Promise(resolve=>pending.push(resolve));
+            if(outcome==='network')throw new Error('Falha de ligação fictícia');
+            return {ok:outcome==='success',json:async()=>outcome==='success'
+                ? {signature:{token:'synthetic'}} : {error:'Falha de assinatura fictícia'}};
+        }};
+    vm.runInNewContext(actual+'\nthis.save=saveSignature;',env);
+    return {save:role=>env.save(site,role),requests,messages,finish:()=>pending.splice(0).forEach(fn=>fn()),site};
+};
+
+for(const outcome of ['success','refusal','network'])test(`actual signature consumer permits subsequent autosave and draft (${outcome})`,async t=>{
+    const remote={observations:'Inicial',maintenance_checklists:[]};
+    const app=harness(t,{remote});await waitFor(()=>!app.element('btn-save-draft').disabled);
+    const signing=signatureConsumer(app,{outcome});await signing.save('technician');
+    assert.equal(signing.requests.length,1);
+    app.setPayload({...remote,observations:'Depois de assinar'});app.coordinator.markDirty();
+    await waitFor(()=>app.saveCount()===1);
+    assert.equal(app.element('btn-save-draft').disabled,false);
+    const metadata=await app.coordinator.prepareOperation('draft');
+    assert.equal(metadata.base_revision,2);app.coordinator.setCommitPending(false);
+});
+
+test('parallel signature proofs do not hold or release the document preparation',async t=>{
+    const app=harness(t,{remote:{observations:'Inicial',maintenance_checklists:[]}});
+    await waitFor(()=>!app.element('btn-save-draft').disabled);
+    const signing=signatureConsumer(app,{deferred:true});
+    const a=signing.save('technician'),b=signing.save('customer');
+    await waitFor(()=>signing.requests.length===2);
+    await app.coordinator.prepareOperation('draft');
+    signing.finish();await Promise.all([a,b]);
+    assert.equal(app.element('btn-save-draft').disabled,true);
+    await assert.rejects(app.coordinator.prepareOperation('send'),/preparação/);
+    app.coordinator.setCommitPending(false);
+    await waitFor(()=>app.saveCount()===1);
+    assert.equal(app.element('btn-save-draft').disabled,false);
+});
+
+test('a signature proof can finish during autosave without using its old revision for a commit',async t=>{
+    const app=harness(t,{remote:{observations:'Inicial',maintenance_checklists:[]},deferSave:true});
+    await waitFor(()=>!app.element('btn-save-draft').disabled);
+    app.coordinator.markDirty();await waitFor(()=>app.pendingSave());
+    const signing=signatureConsumer(app);await signing.save('technician');
+    assert.equal(signing.requests.length,1);
+    app.finishSave();await waitFor(()=>app.element('autosave-status').dataset.state==='saved');
+    const metadata=await app.coordinator.prepareOperation('draft');
+    assert.equal(metadata.base_revision,2);app.coordinator.setCommitPending(false);
 });
