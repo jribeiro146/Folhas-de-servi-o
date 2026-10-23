@@ -232,6 +232,9 @@ const startEditingCoordinator = () => {
                 fileName: activeFileName,
                 clientId,
                 baseRevision: Number(resumeSnapshot?.revision || editing.revision || 1),
+                // A fresh bootstrap revision is not consent to replace it.
+                // Keep the unresolved choice through reload/OS tab eviction.
+                conflict: resumeConflictPending,
                 payload: editor.collectFormData(),
                 updatedAt: Date.now(),
                 expiresAt: Date.now() + recoveryMaxAgeMs,
@@ -791,8 +794,8 @@ const startEditingCoordinator = () => {
                         deleteRecovery(localRecovery.key).catch(() => {});
                     }
                 } else if (
-                    result.editing?.server_document
-                    && Number(localRecovery.baseRevision || 1) < Number(editing.revision || 1)
+                    localRecovery.conflict === true || (result.editing?.server_document
+                    && Number(localRecovery.baseRevision || 1) < Number(editing.revision || 1))
                 ) {
                     resumeConflictPending = true;
                     showConflictPanel(localRecovery, initialPayload);

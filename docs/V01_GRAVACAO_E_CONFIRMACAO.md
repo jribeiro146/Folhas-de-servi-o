@@ -27,6 +27,12 @@ desconhecidas conservam a referência anterior.
 Enquanto o painel de conflito aguarda essa escolha, regressar à rede, editar
 campos ou suspender/sair da página não grava sobre a versão do servidor.
 As alterações ficam na recuperação local; o fecho apenas liberta a sessão.
+A recuperação local também conserva a indicação de conflito. Ao recarregar ou
+reabrir, uma cópia diferente volta a pedir a escolha, mesmo quando tem o número
+da revisão atual. A escolha explícita retira essa indicação; recuperações sem
+conflito mantêm o comportamento habitual. O campo é opcional no IndexedDB e não
+muda bases/configuração do servidor. Cópias antigas sem esse campo não permitem
+identificar retroativamente um conflito que uma versão antiga não registou.
 
 Verificação de 23/10/2026: os três percursos reproduziam a captura prematura da
 revisão. Os testes JavaScript cobrem sucesso, falha, conflito, revogação, espera

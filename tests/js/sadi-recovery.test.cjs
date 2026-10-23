@@ -77,7 +77,7 @@ function broadcastBus({dropClosing=false}={}) {
 }
 
 function harness(t, {local, remote, failVerification=false, failBootstrap=false, deferSave=false, BroadcastChannel, realCollector=false, pendingPhotos=false,
-    records=new Map(), deferVerification=false, sharedServer=null, commitRecovery, validationChecklists}) {
+    records=new Map(), deferVerification=false, sharedServer=null, commitRecovery, validationChecklists, conflictCode='revision_conflict'}) {
     if(local)records.set('user:doc',{key:'user:doc',userId:'user',fileName:'synthetic-draft',documentId:'doc',
         baseRevision:1,updatedAt:Date.now(),payload:structuredClone(local)});
     const elements=new Map(), listeners=new Map(), timers=new Set(), intervals=new Map(), beacons=[], submittedRequests=[];
@@ -121,7 +121,7 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
         submittedRequests.push(request);
         if(sharedServer && request._edit.base_revision!==sharedServer.revision) {
             sharedServer.conflicts++;
-            return {ok:false,status:409,json:async()=>({success:false,code:'revision_conflict',
+            return {ok:false,status:409,json:async()=>({success:false,code:conflictCode,
                 editing:{revision:sharedServer.revision,server_document:structuredClone(sharedServer.document)}})};
         }
         if(sharedServer) {
@@ -732,4 +732,60 @@ test('late rejection never erases a new unsigned capture or an unrelated site',(
     model.reconcileSignatures(current.maintenance_checklists,submitted.maintenance_checklists,verified.maintenance_checklists);
     assert.equal(current.maintenance_checklists[0].signature_drafts.technician.image,'new-drawing');
     assert.equal(current.maintenance_checklists[1].signatures.technician.token,'local-proof');
+});
+
+for(const origin of ['revision_conflict','graph_conflict','resume'])for(const editAgain of [false,true])
+    test(`unresolved ${origin} survives reload, new edits=${editAgain}, until explicit choice`,async t=>{
+        const initial={customer_name:'Fictício',observations:'Inicial',maintenance_checklists:[]};
+        const remote={...initial,observations:'Outra sessão'};
+        const records=new Map(),sharedServer={document:initial,revision:1,accepted:0,conflicts:0};
+        const first=harness(t,{remote:initial,records,sharedServer,conflictCode:origin});
+        await waitFor(()=>!first.element('btn-save-draft').disabled);
+        first.setPayload({...initial,observations:'Local sem escolha'});
+        sharedServer.document=remote;sharedServer.revision=2;
+        first.coordinator.markDirty();
+        if(origin==='resume'){
+            first.listeners.get('freeze')();
+            first.listeners.get('resume')();
+        }
+        await waitFor(()=>first.element('recovery-panel').classList.contains('is-conflict'));
+        await waitFor(()=>records.get('user:doc')?.conflict===true);
+        if(editAgain){
+            first.setPayload({...initial,observations:'Edição adicional sem escolha'});
+            first.coordinator.markDirty();
+            await waitFor(()=>records.get('user:doc')?.payload.observations==='Edição adicional sem escolha');
+        }
+        const local=structuredClone(records.get('user:doc').payload);
+        first.listeners.get('pagehide')();
+        await new Promise(resolve=>setTimeout(resolve,30));
+        assert.equal(JSON.parse(await first.beacons.at(-1).body.text()).document,null);
+        const reopened=harness(t,{remote,records,sharedServer});
+        await waitFor(()=>!reopened.booting());
+        await new Promise(resolve=>setTimeout(resolve,800));
+        assert.equal(reopened.saveCount(),0);
+        assert.equal(sharedServer.accepted,0);
+        assert.equal(sharedServer.document.observations,remote.observations);
+        assert.equal(reopened.element('recovery-panel').hidden,false);
+        assert.equal(reopened.element('btn-save-draft').disabled,true);
+        assert.equal(records.get('user:doc').conflict,true);
+        await reopened.element(editAgain?'btn-restore-recovery':'btn-ignore-recovery').events.get('click')();
+        assert.equal(reopened.element('recovery-panel').hidden,true);
+        assert.equal(sharedServer.accepted,editAgain?1:0);
+        assert.equal(sharedServer.document.observations,editAgain?local.observations:remote.observations);
+        assert.notEqual(records.get('user:doc')?.conflict,true);
+        reopened.listeners.get('pagehide')();
+        const again=harness(t,{remote:sharedServer.document,records,sharedServer});
+        await waitFor(()=>!again.booting());
+        assert.equal(again.element('recovery-panel').classList.contains('is-conflict'),false);
+        assert.equal(again.saveCount(),0);
+    });
+
+test('ordinary local recovery at the same revision still autosaves without a conflict choice',async t=>{
+    const remote={observations:'Original',maintenance_checklists:[]};
+    const local={...remote,observations:'Alteração local sem conflito'};
+    const sharedServer={document:remote,revision:1,accepted:0,conflicts:0};
+    const app=harness(t,{local,remote,sharedServer});
+    await waitFor(()=>app.saveCount()===1);
+    assert.equal(sharedServer.document.observations,local.observations);
+    assert.equal(app.element('recovery-panel').classList.contains('is-conflict'),false);
 });
