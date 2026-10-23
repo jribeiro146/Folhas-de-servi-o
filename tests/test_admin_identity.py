@@ -61,14 +61,15 @@ def test_missing_or_invalid_configuration_refuses_privilege(configured_admin, mo
     assert not can_administer(configured_admin)
 
 
-@pytest.mark.parametrize("email", ["jribeiro@sensorpoint.pt", "acarvalho@sensorpoint.pt"])
+@pytest.mark.parametrize("email", ["jribeiro@sensorpoint.pt", "acarvalho@sensorpoint.pt", "tecnico@sensorpoint.pt"])
 def test_sadi_personal_access_survives_missing_admin_configuration(configured_admin, monkeypatch, email):
     configured_admin.email = email
     monkeypatch.setattr(admin_access, "ADMIN_OBJECT_ID", "")
     assert can_access_maintenance(configured_admin)
     assert not can_administer(configured_admin)
     configured_admin.email = "tecnico@sensorpoint.pt"
-    assert not can_access_maintenance(configured_admin)
+    assert can_access_maintenance(configured_admin)
+    assert not can_administer(configured_admin)
 
 
 @pytest.mark.parametrize("missing", [None, "tenant_id", "id"])

@@ -11,7 +11,7 @@ from src.services.maintenance_private_service import MaintenancePrivateService
 from src.services.document_data_service import DocumentDataService
 
 
-@pytest.mark.parametrize('email', ['jribeiro@sensorpoint.pt', 'acarvalho@sensorpoint.pt'])
+@pytest.mark.parametrize('email', ['jribeiro@sensorpoint.pt', 'acarvalho@sensorpoint.pt', 'outro@sensorpoint.pt'])
 def test_absent_customer_still_needs_technician_and_site_changes_invalidate_only_that_site(production_sadi, email):
     app, client, draft, edits, root = production_sadi
     login(client, email)

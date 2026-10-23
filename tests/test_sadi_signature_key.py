@@ -174,4 +174,10 @@ def test_key_change_expires_login_but_keeps_finalized_private_pdf_bytes(producti
         assert result.data == content and content.startswith(b"%PDF-")
         assert "no-store" in result.headers["Cache-Control"]
     login(client, "outro@sensorpoint.pt")
-    assert all(client.get(url).status_code == 404 for url in pdf_urls)
+    for url, content in before.items():
+        result = client.get(url)
+        assert result.status_code == 200 and result.data == content
+        result.close()
+    with client.session_transaction() as session:
+        session.clear()
+    assert all(client.get(url).status_code == 302 for url in pdf_urls)

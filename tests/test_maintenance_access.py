@@ -133,12 +133,59 @@ def lease(client, draft, client_id):
             "idempotency_key": uuid.uuid4().hex}
 
 
+@pytest.mark.parametrize("email", ["outro@sensorpoint.pt", "outra@example.invalid", "", None])
+def test_checklist_access_uses_authenticated_identity_not_email_allowlist(production_sadi, email):
+    from src.services.maintenance_access import can_access_maintenance
+    _app, client, draft, _edits, _root = production_sadi
+    assert not can_access_maintenance(None)
+    with client.session_transaction() as session:
+        session["microsoft_user"] = {"id": "synthetic-user", "display_name": "Pessoa fictícia", "email": email}
+    assert "Checklists de manutenção" in client.get("/").get_data(as_text=True)
+    assert client.post(f"/api/file/{draft.stem}/maintenance/validate",
+                       json={"document": complete_document()}).status_code == 200
+    assert client.get("/api/admin/overview").status_code == 403
+
+
+def test_anonymous_cannot_read_write_or_sign_checklists(production_sadi):
+    app, client, draft, _edits, root = production_sadi
+    before = draft.read_bytes()
+    for suffix in ("", "/bootstrap?client_id=anonymous"):
+        assert client.get(f"/api/file/{draft.stem}" + suffix).status_code == 401
+    for suffix in ("maintenance/validate", "maintenance/sign", "document-preview", "draft", "autosave", "send", "lease"):
+        response = client.post(f"/api/file/{draft.stem}/{suffix}", json=complete_document())
+        assert response.status_code == 401
+    assert client.get("/").status_code == 302
+    assert draft.read_bytes() == before and not (root / "private/sadi").exists()
+    with app.extensions["test_graph_queue"]._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM graph_sync_jobs").fetchone()[0] == 0
+
+
+def test_new_checklist_access_does_not_grant_another_owners_draft(production_sadi):
+    _app, client, draft, _edits, root = production_sadi
+    login(client, "owner@example.invalid")
+    metadata = lease(client, draft, "owner")
+    document = complete_document()
+    saved = client.post(f"/api/file/{draft.stem}/draft", json={**document, "_edit": metadata})
+    assert saved.status_code == 200
+    before = draft.read_bytes()
+    private = MaintenancePrivateService(root / "private/sadi")
+    checklists_before = private.read(metadata["document_id"])
+    login(client, "outro@sensorpoint.pt")
+    assert "Checklists de manutenção" in client.get("/").get_data(as_text=True)
+    assert client.get(f"/api/file/{draft.stem}/bootstrap?client_id=other").status_code == 423
+    assert client.post(f"/api/file/{draft.stem}/lease", json={"client_id": "other"}).status_code == 423
+    result = client.post(f"/api/file/{draft.stem}/draft", json={**document, "_edit": metadata})
+    assert result.status_code == 423
+    assert draft.read_bytes() == before and private.read(metadata["document_id"]) == checklists_before
+
+
 @pytest.mark.parametrize("key_form", ["omitted", "null", "empty"])
-def test_sadi_sign_accepts_optional_idempotency(production_sadi, key_form):
+@pytest.mark.parametrize("email", ["jribeiro@sensorpoint.pt", "outro@sensorpoint.pt"])
+def test_sadi_sign_accepts_optional_idempotency(production_sadi, key_form, email):
     from tests.test_maintenance import signature_image
     from src import maintenance_schema as maintenance
     app, client, draft, _edits, _root = production_sadi
-    login(client, "jribeiro@sensorpoint.pt")
+    login(client, email)
     metadata = lease(client, draft, "synthetic-sign")
     metadata.pop("idempotency_key")
     if key_form != "omitted":
@@ -168,13 +215,13 @@ def test_sadi_sign_accepts_optional_idempotency(production_sadi, key_form):
 def test_production_sadi_default_preserves_auth_storage_and_explicit_disable(production_sadi, enabled):
     app, client, draft, _edits, _root = production_sadi
     assert app.config["MAINTENANCE_ENABLED"] is enabled
-    login(client, "jribeiro@sensorpoint.pt")
+    login(client, "outro@sensorpoint.pt")
     assert ("Checklists de manutenção" in client.get("/").get_data(as_text=True)) is enabled
     checked = client.post(f"/api/file/{draft.stem}/maintenance/validate", json={"document": complete_document()})
     assert checked.status_code == (200 if enabled else 404)
 
 
-def test_only_named_microsoft_accounts_see_sadi_and_private_data_survives_other_editor(production_sadi):
+def test_all_authenticated_accounts_see_sadi_and_owner_can_edit_private_data(production_sadi):
     app, client, draft, edits, root = production_sadi
     document = complete_document()
     login(client, "outro@sensorpoint.pt")
@@ -201,31 +248,30 @@ def test_only_named_microsoft_accounts_see_sadi_and_private_data_survives_other_
 
     login(client, "outro@sensorpoint.pt")
     html = client.get("/").get_data(as_text=True)
-    assert "Checklists de manutenção" not in html
-    assert "B22" not in html
+    assert "Checklists de manutenção" in html
+    assert "B22" in html
     response = client.get(f"/api/file/{draft.stem}")
     assert response.status_code == 200
-    assert "maintenance_checklists" not in json.dumps(response.get_json())
+    assert "maintenance_checklists" in json.dumps(response.get_json())
     bootstrap = client.get(f"/api/file/{draft.stem}/bootstrap?client_id=other")
     assert bootstrap.status_code == 200
-    assert "maintenance_checklists" not in json.dumps(bootstrap.get_json())
-    assert client.post(f"/api/file/{draft.stem}/maintenance/validate", json={"document": document}).status_code == 404
-    assert client.post(f"/api/file/{draft.stem}/maintenance/sign", json={"document": document}).status_code == 404
+    assert "maintenance_checklists" in json.dumps(bootstrap.get_json())
+    assert client.post(f"/api/file/{draft.stem}/maintenance/validate", json={"document": document}).status_code == 200
     assert client.post(f"/api/file/{draft.stem}/document-preview",
-                       json={**document, "_maintenance_site_id": document["maintenance_checklists"][0]["id"]}).status_code == 404
+                       json={**document, "_maintenance_site_id": document["maintenance_checklists"][0]["id"]}).status_code == 200
 
     other = lease(client, draft, "other")
-    hostile = {**document, "maintenance_checklists": []}
-    hostile["customer_name"] = "Cliente fictício alterado"
-    result = client.post(f"/api/file/{draft.stem}/draft", json={**hostile, "_edit": other})
+    document["maintenance_checklists"][0]["location"] = "Local alterado pelo proprietário"
+    result = client.post(f"/api/file/{draft.stem}/draft", json={**document, "_edit": other})
     assert result.status_code == 200, result.get_json()
     assert len(private.read(document_id)) == 2
+    assert private.read(document_id)[0]["location"] == "Local alterado pelo proprietário"
     assert "maintenance_checklists" not in DocumentDataService(draft).read()
 
 
 def test_production_finalization_keeps_sadi_only_in_private_app_folder(production_sadi):
     app, client, draft, edits, root = production_sadi
-    login(client, "jribeiro@sensorpoint.pt")
+    login(client, "outro@sensorpoint.pt")
     metadata = lease(client, draft, "owner")
     document = complete_document()
     sign_document(document, app.secret_key)
@@ -251,9 +297,20 @@ def test_production_finalization_keeps_sadi_only_in_private_app_folder(productio
         assert all(path.stat().st_mode & 0o777 == 0o600 for path in directory.iterdir())
     for entry in entries:
         assert client.get(bundle_url + "/pdf/" + entry["name"]).status_code == 200
-    login(client, "outro@sensorpoint.pt")
-    assert client.get(bundle_url).status_code == 404
-    assert client.get(bundle_url + "/pdf/" + entries[1]["name"]).status_code == 404
+    for email in ("jribeiro@sensorpoint.pt", "acarvalho@sensorpoint.pt", "tecnico@example.invalid"):
+        login(client, email)
+        assert client.get(bundle_url).status_code == 200
+        for suffix in ("", "?download=1"):
+            response = client.get(bundle_url + "/pdf/" + entries[1]["name"] + suffix)
+            assert response.status_code == 200 and response.cache_control.no_store
+            response.close()
+    with client.session_transaction() as session:
+        session.clear()
+    for url in (bundle_url, bundle_url + "/pdf/" + entries[1]["name"],
+                bundle_url + "/pdf/" + entries[1]["name"] + "?download=1"):
+        response = client.get(url, headers={"Accept": "application/json"})
+        assert response.status_code == 302 and response.location.startswith("/login?")
+        assert response.cache_control.no_store
 
 
 def test_private_pdf_failure_preserves_draft_and_does_not_enqueue_graph(production_sadi):
@@ -390,7 +447,7 @@ def test_public_manifest_with_sadi_active_in_production(production_sadi, email):
     assert client.get("/service-worker.js").status_code == 200
 
 
-@pytest.mark.parametrize("allowed_email", ["jribeiro@sensorpoint.pt", "acarvalho@sensorpoint.pt"])
+@pytest.mark.parametrize("allowed_email", ["jribeiro@sensorpoint.pt", "acarvalho@sensorpoint.pt", "outro@sensorpoint.pt"])
 def test_reads_private_checklist_written_by_1ede4d8_without_migration(production_sadi, allowed_email):
     _app, client, draft, edits, root = production_sadi
     fixture = Path(__file__).parent / "fixtures/sadi-private-1ede4d8.json"
@@ -422,8 +479,11 @@ def test_reads_private_checklist_written_by_1ede4d8_without_migration(production
     assert response.status_code == 200
     assert expected[0]["location"] in json.dumps(response.get_json(), ensure_ascii=False)
     assert "legacy-site-20260928" in json.dumps(response.get_json())
-    login(client, "outro@sensorpoint.pt")
-    assert "legacy-site-20260928" not in json.dumps(client.get(f"/api/file/{draft.stem}").get_json())
+    with client.session_transaction() as session:
+        session.clear()
+    denied = client.get(f"/api/file/{draft.stem}")
+    assert denied.status_code == 401
+    assert "legacy-site-20260928" not in json.dumps(denied.get_json())
     assert saved.read_bytes() == content
     assert saved.stat().st_mtime_ns == before.st_mtime_ns
     assert saved.stat().st_mode == before.st_mode

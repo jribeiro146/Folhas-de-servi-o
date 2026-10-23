@@ -63,7 +63,7 @@ from src.services.archive_service import ArchiveService
 from src.services.finalization_service import FinalizationService
 from src import maintenance_schema as maintenance
 from src.services.maintenance_artifact_service import build_maintenance_bundle, render_maintenance_document
-from src.services.maintenance_access import can_access_maintenance
+from src.services.maintenance_access import can_access_maintenance, can_edit_foreign_maintenance_draft
 from src.services.maintenance_private_service import MaintenancePrivateService
 from src.services.document_style_service import load_document_assets
 from src.services.runtime_safety import runtime_mode
@@ -699,8 +699,10 @@ def _create_app(
         return can_access_maintenance(g.get("current_user"))
 
     def can_edit_foreign_sadi_draft(path: Path | None) -> bool:
-        """The two SADI editors may work on an applicable draft from another technician."""
+        """Preserve the existing cross-owner exception separately from checklist access."""
         if not path or not maintenance_access_allowed() or not file_service.is_draft_file(path):
+            return False
+        if not app.config["MAINTENANCE_DEMO"] and not can_edit_foreign_maintenance_draft(g.get("current_user")):
             return False
         return maintenance.applicable(DocumentDataService(path).read())
 

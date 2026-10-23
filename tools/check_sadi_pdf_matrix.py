@@ -113,22 +113,24 @@ def main():
 
                 for email in identities:
                     login(email)
-                    allowed = email != 'other@example.invalid'
+                    cross_owner = email != 'other@example.invalid'
                     response = client.get(f'/api/file/{draft.stem}')
                     assert response.status_code == 200 and response.cache_control.no_store
-                    assert (markers[0] in response.get_data(as_text=True)) is allowed
+                    assert markers[0] in response.get_data(as_text=True)
                     bootstrap = client.get(f'/api/file/{draft.stem}/bootstrap?client_id=read-{identities[email]}')
-                    assert bootstrap.status_code == (200 if allowed else 423), bootstrap.json
+                    assert bootstrap.status_code == (200 if cross_owner else 423), bootstrap.json
                     assert bootstrap.cache_control.no_store
-                    if not allowed:
+                    if not cross_owner:
                         assert bootstrap.json['code'] == 'lease_conflict'
-                    assert (markers[0] in bootstrap.get_data(as_text=True)) is allowed
+                    # A lease conflict may include the readable server snapshot;
+                    # all authenticated users can now read SADI, but not take ownership.
+                    assert markers[0] in bootstrap.get_data(as_text=True)
                     preview = client.post(f'/api/file/{draft.stem}/document-preview',
                         json={**document, '_maintenance_site_id':document['maintenance_checklists'][0]['id']})
-                    assert preview.status_code == (200 if allowed else 404)
+                    assert preview.status_code == 200
                     assert preview.cache_control.no_store
                 assert 'maintenance_checklists' not in DocumentDataService(draft).read()
-                passed('João/Ana/other account API and preview policy; private content absent from public sidecar')
+                passed('All authenticated accounts see checklists and previews; draft ownership and private storage preserved')
 
                 login('jribeiro@sensorpoint.pt')
                 changed = deepcopy(document)
@@ -181,19 +183,24 @@ def main():
 
                 for email in identities:
                     login(email)
-                    allowed = email != 'other@example.invalid'
                     page = client.get(bundle_url)
-                    assert page.status_code == (200 if allowed else 404) and page.cache_control.no_store
+                    assert page.status_code == 200 and page.cache_control.no_store
                     for entry in entries:
                         for suffix in ('', '?download=1'):
                             response = client.get(bundle_url + '/pdf/' + entry['name'] + suffix)
-                            assert response.status_code == (200 if allowed else 404)
+                            assert response.status_code == 200
                             assert response.cache_control.no_store
-                            if allowed:
-                                assert response.data == (directory / entry['name']).read_bytes()
+                            assert response.data == (directory / entry['name']).read_bytes()
                             response.close()  # Close streamed file handles before leaving the runtime.
+                with client.session_transaction() as session:
+                    session.clear()
+                for url in (bundle_url, bundle_url + '/pdf/' + entries[1]['name'],
+                            bundle_url + '/pdf/' + entries[1]['name'] + '?download=1'):
+                    response = client.get(url, headers={'Accept':'application/json'})
+                    assert response.status_code == 302 and response.location.startswith('/login?')
+                    assert response.cache_control.no_store
                 assert blocked == [], blocked
-                passed('Private bundle/PDF/download access and no-store confirmed for all three roles')
+                passed('Bundle/PDF/download allowed for all authenticated accounts, denied anonymously, with no-store')
                 report = {'status':'PASS', 'source':get_release_info(), 'results':results,
                     'pdfs':pdf_records, 'mail_pdf_sha256':effects[0]['pdf_sha256'],
                     'browser':browser.version, 'playwright':version('playwright'), 'pypdf':version('pypdf'),

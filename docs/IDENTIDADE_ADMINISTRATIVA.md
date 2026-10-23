@@ -18,8 +18,10 @@ email ou privilégio para o primeiro utilizador que entrar.
 Outro object ID/tenant, Ana e outros técnicos não obtêm administração, mesmo
 com role guardado como special_admin. Sessões antigas sem tenant não obtêm o
 privilégio; João precisa de novo login para administrar. A falta de configuração
-não impede o login normal nem o acesso SADI próprio de João/Ana. O allowlist
-SADI continua em `src/services/maintenance_access.py`, sem depender de special_admin.
+não impede o login normal nem o acesso SADI. Desde a decisão de João em
+23/10/2026, todos os utilizadores autenticados têm acesso às checklists opcionais,
+independentemente de special_admin. `src/services/maintenance_access.py` mantém
+separada a exceção histórica de João/Ana para rascunhos SADI de outro técnico.
 
 ## Configuração pelo instalador
 

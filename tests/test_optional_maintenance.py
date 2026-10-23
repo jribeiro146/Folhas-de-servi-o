@@ -33,11 +33,6 @@ def test_optional_checklists_preserved_without_final_pdfs_and_send_replays(produ
     expected["maintenance_checklists"] = maintenance.normalize_sites(document.get("maintenance_checklists", []))
     maintenance.clear_invalid_signatures(expected, app.secret_key)
     private = MaintenancePrivateService(root / "private/sadi")
-    if email == "outro@sensorpoint.pt":
-        # An unauthorised editor cannot submit or erase the private checklist;
-        # the server must retain its trusted copy, including unfinished work.
-        private.write(metadata["document_id"], expected["maintenance_checklists"])
-        document["maintenance_checklists"] = [{"location": "Untrusted replacement"}]
     response = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
     assert response.status_code == 200, response.json
     assert not response.json.get("maintenance_bundle_url")
@@ -72,7 +67,7 @@ def test_optional_checklists_do_not_waive_service_sheet_requirements(production_
     assert app.extensions["test_graph_queue"].graph_service.calls == []
 
 
-def test_send_preserves_private_checklists_from_autosave_for_unprivileged_editor(production_sadi):
+def test_send_preserves_reopened_autosave_checklists_for_newly_allowed_editor(production_sadi):
     app, client, draft, edits, root = production_sadi
     email = "outro@sensorpoint.pt"
     login(client, email)
@@ -84,7 +79,11 @@ def test_send_preserves_private_checklists_from_autosave_for_unprivileged_editor
         lease_token=metadata["lease_token"], base_revision=metadata["base_revision"],
         document=document, idempotency_key="seed-autosave-only")
     metadata["base_revision"] = saved["revision"]
-    response = client.post(f"/api/file/{draft.stem}/send", json={**document, "maintenance_checklists": [], "_edit": metadata})
+    reopened = client.get(f"/api/file/{draft.stem}/bootstrap?client_id=autosave-only")
+    assert reopened.status_code == 200
+    document = reopened.json["document"]
+    assert document["maintenance_checklists"][0]["final_observations"] == "Somente no autosave do servidor"
+    response = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
     assert response.status_code == 200, response.json
     assert MaintenancePrivateService(root / "private/sadi").read(metadata["document_id"]) == document["maintenance_checklists"]
 
@@ -123,9 +122,10 @@ def test_no_checklist_data_needs_no_private_write(production_sadi, monkeypatch, 
 
 
 @pytest.mark.parametrize("sadi", [False, True])
-def test_authorized_explicit_clear_is_preserved_even_when_sadi_unchecked(production_sadi, sadi):
+@pytest.mark.parametrize("email", ["jribeiro@sensorpoint.pt", "outro@sensorpoint.pt"])
+def test_authorized_explicit_clear_is_preserved_even_when_sadi_unchecked(production_sadi, sadi, email):
     _app, client, draft, _edits, root = production_sadi
-    login(client, "jribeiro@sensorpoint.pt")
+    login(client, email)
     metadata = lease(client, draft, "explicit-clear")
     document = complete_document()
     private = MaintenancePrivateService(root / "private/sadi")
@@ -138,7 +138,7 @@ def test_authorized_explicit_clear_is_preserved_even_when_sadi_unchecked(product
     assert not list((root / "private/sadi").rglob("*.pdf"))
 
 
-def test_unprivileged_send_keeps_complete_private_bundle_hidden_and_idempotent(production_sadi):
+def test_newly_allowed_editor_complete_bundle_is_accessible_and_idempotent(production_sadi):
     app, client, draft, _edits, root = production_sadi
     login(client, "outro@sensorpoint.pt")
     metadata = lease(client, draft, "private-complete")
@@ -146,13 +146,12 @@ def test_unprivileged_send_keeps_complete_private_bundle_hidden_and_idempotent(p
     sign_document(document, app.secret_key)
     private = MaintenancePrivateService(root / "private/sadi")
     private.write(metadata["document_id"], document["maintenance_checklists"])
-    document.pop("maintenance_checklists")
     response = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
-    assert response.status_code == 200 and "maintenance_bundle_url" not in response.json
+    assert response.status_code == 200 and response.json["maintenance_bundle_url"]
     pdfs = {path: path.read_bytes() for path in (root / "private/sadi").rglob("*.pdf")}
     assert len(pdfs) == 3
     key = next((root / "private/sadi/pdf").iterdir()).name
-    assert client.get(f"/maintenance/bundles/{key}").status_code == 404
+    assert client.get(f"/maintenance/bundles/{key}").status_code == 200
     repeated = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
     assert repeated.status_code == 200 and repeated.json == response.json
     assert {path: path.read_bytes() for path in (root / "private/sadi").rglob("*.pdf")} == pdfs

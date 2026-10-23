@@ -1,5 +1,7 @@
 # Notas da versão — Checklists de manutenção SADI · 25/09/2026
 
+Nota histórica: por decisão explícita de João em 23/10/2026, as checklists passaram a ser opcionais e acessíveis a todos os utilizadores autenticados. As restrições de acesso e de finalização descritas nesta entrega anterior foram substituídas pelo [comportamento atual](DEMO_CHECKLIST_SADI.md). A autoria dos rascunhos mantém as proteções existentes.
+
 ## Âmbito do pacote
 
 Esta é a versão de produção das checklists de manutenção SADI do modelo Excel. A SADI fica ativa por defeito em `FS_ENVIRONMENT=production`, com autenticação Microsoft e backend Graph. O exemplo de configuração de produção inclui `FS_MAINTENANCE_ENABLED=true`; um valor explícito `false` no servidor mantém a funcionalidade desligada. O lançador de testes é separado e não é usado na instalação de produção.

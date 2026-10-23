@@ -13,11 +13,12 @@ O lançador configura uma pasta temporária nova e bloqueia a rede antes de impo
 | Caso | Evidência e resultado exigido |
 |---|---|
 | João e Ana | Leitura, validação, gravação/reabertura privadas; preview e PDFs permitidos; cabeçalhos `no-store` |
-| Outra conta | Folha pública sem conteúdo SADI; preview, bundle e downloads privados devolvem 404. No cenário com reserva de João, bootstrap devolve 423 sem conteúdo privado |
+| Outra conta autenticada | Desde 23/10/2026, leitura SADI, preview, bundle e downloads permitidos. Preenchimento/assinatura/gravação no seu rascunho; no cenário com reserva de João, bootstrap continua a devolver 423, preservando a autoria |
+| Sem sessão | APIs recusam com 401; páginas e PDFs redirecionam para login. Conteúdo privado nunca devolvido; cabeçalhos `no-store` |
 | Dois locais | Cada checklist PDF contém apenas o marcador do próprio local; fotos, texto e assinaturas legíveis |
 | Cliente ausente | Dispensa apenas a assinatura do cliente; a assinatura do técnico continua obrigatória, mesmo com tentativa de dispensa forjada |
 | Alteração posterior | Mudar um local invalida a assinatura desse local, conserva as do outro e não modifica o JSON privado durante a validação |
-| Dados antigos | Fixture sintética escrita pelo commit `1ede4d8`, lida por João e Ana sem migração nem alteração de bytes, hash, mtime ou permissões; conta restante sem acesso |
+| Dados antigos | Fixture sintética escrita pelo commit `1ede4d8`, lida por qualquer conta autenticada sem migração nem alteração de bytes, hash, mtime ou permissões; anónimos sem acesso |
 | Publicação/email | Três PDFs no bundle privado; arquivo público sem SADI; exatamente um email simulado com um PDF da folha de serviço; hash do anexo igual ao PDF produzido |
 | Falha ao publicar o diretório privado | PermissionError injetado em rename: HTTP 500, rascunho conservado, sem bundle parcial nem trabalho enfileirado; repetição explícita após remover a falha conclui |
 | Cache, recuperação e chaves | Regressões existentes de service worker/JavaScript, acesso e chave SADI; retoma M22 identificada abaixo |
