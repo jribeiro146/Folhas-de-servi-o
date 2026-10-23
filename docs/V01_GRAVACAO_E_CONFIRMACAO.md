@@ -24,6 +24,10 @@ detetado ao retomar uma página também substitui a referência do autosave ante
 depois de consultar a revisão do servidor. Sem essa resolução explícita, falhas
 desconhecidas conservam a referência anterior.
 
+Enquanto o painel de conflito aguarda essa escolha, regressar à rede, editar
+campos ou suspender/sair da página não grava sobre a versão do servidor.
+As alterações ficam na recuperação local; o fecho apenas liberta a sessão.
+
 Verificação de 23/10/2026: os três percursos reproduziam a captura prematura da
 revisão. Os testes JavaScript cobrem sucesso, falha, conflito, revogação, espera
 limitada, suspensão e libertação após falha do cancelamento. A bateria completa

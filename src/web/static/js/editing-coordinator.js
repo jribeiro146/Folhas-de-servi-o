@@ -391,7 +391,9 @@ const startEditingCoordinator = () => {
     };
 
     const runAutosave = async ({ keepalive = false } = {}) => {
-        if (commitPending || operationPreparation) return false;
+        // No timer, network return or lifecycle callback may choose a version
+        // for the user while the conflict panel is awaiting their decision.
+        if (commitPending || operationPreparation || resumeConflictPending) return false;
         if (autosaveInFlight) {
             autosaveQueued = true;
             return false;
@@ -923,7 +925,7 @@ const startEditingCoordinator = () => {
         sessionToken = "";
         setCommitActionsEnabled(false);
         const payload = JSON.stringify({
-            document: dirty && !otherTabActive && !initialRecoveryPending && !resumeSnapshot && !operationPreparation && !commitPending ? {
+            document: dirty && !otherTabActive && !initialRecoveryPending && !resumeSnapshot && !operationPreparation && !commitPending && !resumeConflictPending ? {
                 ...editor.collectFormData(),
                 "Assinatura Cliente": "",
                 "Assinatura Técnico": "",

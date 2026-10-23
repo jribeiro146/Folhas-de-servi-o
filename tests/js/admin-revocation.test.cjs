@@ -318,3 +318,23 @@ for(const choice of ['server','device'])for(const kind of(choice==='server'?['dr
         }
         view.api.setCommitPending(false);
     });
+
+for(const code of ['revision_conflict','graph_conflict'])for(const action of ['online','edit','freeze'])
+    test(`${code} awaits an explicit choice despite ${action}`,async()=>{
+        const saves=[],beacons=[];
+        const view=await coordinator((url,options)=>{
+            if(!url.includes('/autosave'))return bootstrap();
+            saves.push(JSON.parse(options.body));
+            return response({success:false,code,editing:{revision:2,server_document:{customer_name:'Outra sessão'}}},409);
+        },{sendBeacon:(_url,body)=>{beacons.push(body);return true;}});
+        view.edit({customer_name:'Dispositivo sem escolha'});
+        await view.autosave();
+        if(action==='online')view.windowEvents.get('online')();
+        if(action==='edit'){view.edit({customer_name:'Edição com conflito'});await view.timer(750);}
+        if(action==='freeze')view.documentEvents.get('freeze')();
+        await settle();
+        assert.equal(saves.length,1,'no write may choose the device version implicitly');
+        assert.equal(view.element('recovery-panel').hidden,false);
+        assert.equal(view.api.isDirty(),true);
+        if(action==='freeze')assert.equal(JSON.parse(await beacons[0].text()).document,null);
+    });
