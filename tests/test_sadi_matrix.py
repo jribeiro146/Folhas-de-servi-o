@@ -46,10 +46,10 @@ def test_absent_customer_still_needs_technician_and_site_changes_invalidate_only
     app.extensions['test_graph_queue'].run_until_idle()
     metadata = lease(client, draft, 'sadi-matrix')
     failed = client.post(f'/api/file/{draft.stem}/send', json={**missing, '_edit':metadata})
-    assert failed.status_code == 400 and draft.is_file()
-    assert any('assinatura' in error.casefold() for error in failed.json['missing_fields'])
+    assert failed.status_code == 200 and not failed.json.get('maintenance_bundle_url')
+    assert not list((root / 'private/sadi').rglob('*.pdf'))
     with app.extensions['test_graph_queue']._connect() as db:
-        assert db.execute("SELECT COUNT(*) FROM graph_sync_jobs WHERE kind='archive_and_remove'").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM graph_sync_jobs WHERE kind='archive_and_remove'").fetchone()[0] == 1
 
 
 def test_private_bundle_rename_denied_preserves_draft_and_explicit_retry(production_sadi, monkeypatch):

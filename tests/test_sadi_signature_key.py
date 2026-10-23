@@ -132,12 +132,6 @@ def test_http_rotation_warns_on_reopen_and_validation_then_requires_recollection
     reopened = client.get(f"/api/file/{draft.stem}").json["document"]
     assert all(not site["signatures"] and site["signature_warnings"] for site in reopened["maintenance_checklists"])
     metadata = metadata_from(client, draft, metadata)
-    blocked = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
-    assert blocked.status_code == 400, blocked.json
-    assert len(blocked.json["missing_fields"]) == 4
-    assert all("chave de segurança" in error for error in blocked.json["missing_fields"])
-    assert draft.exists() and not list((root / "private" / "sadi").rglob("*.pdf"))
-    metadata = metadata_from(client, draft, metadata)
     saved = client.post(f"/api/file/{draft.stem}/draft", json={**loaded, "_edit": metadata})
     assert saved.status_code == 200, saved.json
     loaded = client.get(f"/api/file/{draft.stem}").json["document"]

@@ -214,7 +214,8 @@ def test_unsigned_capture_survives_drafts_but_does_not_waive_client_signature(de
     assert "Cliente fictício</strong>" not in html and html.count('class="signature-image has-signature"') == 1
     # The service-sheet exception never dispenses with the checklist's customer signature.
     assert loaded["client_not_present"] is True
-    assert client.post(f"/api/file/{draft.stem}/send", json={**loaded,"_edit":{**metadata,"idempotency_key":uuid.uuid4().hex}}).status_code == 400
+    metadata["base_revision"] = client.get(f"/api/file/{draft.stem}").json["editing"]["revision"]
+    assert client.post(f"/api/file/{draft.stem}/send", json={**loaded,"_edit":{**metadata,"idempotency_key":uuid.uuid4().hex}}).status_code == 200
     assert not renders
 
 
@@ -296,9 +297,11 @@ def test_signature_exceptions_do_not_waive_checklist_fields(demo, pending):
     else:
         site["general"]["B22"] = {"answer": "NC", "justification": ""}
     sign_document(document, app.secret_key)
+    checked = client.post(f"/api/file/{draft.stem}/maintenance/validate", json={"document": document})
+    errors = checked.get_json()["errors"]
     result = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
-    assert result.status_code == 400 and draft.exists() and not renders
-    errors = result.get_json()["missing_fields"]
+    assert result.status_code == 200 and not renders
+    assert not result.json.get("maintenance_bundle_url")
     assert errors and all("assinatura" not in message for message in errors)
 
 
@@ -314,13 +317,12 @@ def test_technician_signature_is_always_required_in_checklist(demo):
     checked = client.post(f"/api/file/{draft.stem}/maintenance/validate", json={"document": document}).get_json()
     assert checked["sites"][0]["waived"] == {"customer": True, "technician": False}
     assert any("assinatura do técnico" in message for message in checked["errors"])
-    result = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
-    assert result.status_code == 400 and draft.exists() and not renders
-    assert any("assinatura do técnico" in message for message in result.get_json()["missing_fields"])
     html = client.post(f"/api/file/{draft.stem}/document-preview", json={**document,
         "_maintenance_site_id": site["id"], "_auto_print": True}).get_json()["html"]
     assert html.count("Assinatura por recolher") == 1
     assert "Técnico presente, sem assinatura" not in html
+    result = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
+    assert result.status_code == 200 and not renders and not result.json.get("maintenance_bundle_url")
 
 
 @pytest.mark.parametrize("bad", ["https://example.invalid/photo.jpg", "data:image/svg+xml;base64,PHN2Zz4=", "data:image/jpeg;base64,eA=="])
@@ -444,7 +446,7 @@ def test_api_sign_draft_reopen_and_invalidate(demo):
     assert result["sites"][1]["signed"] == {"technician": True, "customer": True}
 
 
-def test_api_autosave_photos_and_reject_invalid_at_finalization(demo):
+def test_api_autosave_photos_and_exclude_invalid_from_final_pdfs(demo):
     app, client, draft, metadata, renders, root = demo
     document = complete_document(); site = document["maintenance_checklists"][0]
     site["photos"] = [checklist_photo()]; site["final_observations"] = "Nota final de teste"
@@ -456,10 +458,12 @@ def test_api_autosave_photos_and_reject_invalid_at_finalization(demo):
     result = client.post(f"/api/file/{draft.stem}/maintenance/sign", json={"_edit": metadata, "document": document,
         "site_id": site["id"], "role": "technician", "name": "Pessoa fictícia", "date": "2026-09-17", "image": signature_image()})
     assert result.status_code == 200
-    result = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
-    assert result.status_code == 400 and not renders and draft.exists()
     result = client.post(f"/api/file/{draft.stem}/document-preview", json={**document, "_maintenance_site_id": site["id"], "_auto_print": True})
     assert result.status_code == 200 and "must-not-fetch" not in result.get_json()["html"]
+    metadata["base_revision"] = reopened["editing"]["revision"]
+    metadata["idempotency_key"] = uuid.uuid4().hex
+    result = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
+    assert result.status_code == 200 and not renders and not result.json.get("maintenance_bundle_url")
 
 
 def test_finalization_all_pdfs_and_replay(demo):
@@ -573,11 +577,11 @@ def test_migrated_draft_save_reopen_preserves_answers_and_history(demo):
     assert not renders
 
 
-def test_api_rejects_incomplete_before_any_render_and_blocks_outside_demo(demo):
+def test_api_checks_incomplete_without_rendering_and_blocks_access_outside_demo(demo):
     app, client, draft, metadata, renders, root = demo
     document = complete_document()
-    result = client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata})
-    assert result.status_code == 400 and not renders and draft.exists()
+    checked = client.post(f"/api/file/{draft.stem}/maintenance/validate", json={"document": document})
+    assert checked.json["errors"] and not renders and draft.exists()
     site = document["maintenance_checklists"][0]
     site["general"]["B22"]["answer"] = ""
     result = client.post(f"/api/file/{draft.stem}/maintenance/sign", json={"_edit": metadata, "document": document, "site_id": site["id"], "role": "customer", "name": "Pessoa fictícia", "date": "2026-09-17", "image": signature_image()})
@@ -587,7 +591,7 @@ def test_api_rejects_incomplete_before_any_render_and_blocks_outside_demo(demo):
 
 
 @pytest.mark.parametrize("pending", ["empty", "nc", "equipment", "coverage", "invalid_range"])
-def test_incomplete_checklist_signs_reopens_but_cannot_finalize(demo, pending):
+def test_incomplete_checklist_signs_reopens_and_allows_sheet_finalization(demo, pending):
     app, client, draft, metadata, renders, root = demo
     document = complete_document()
     sign_document(document, app.secret_key)
@@ -621,13 +625,15 @@ def test_incomplete_checklist_signs_reopens_but_cannot_finalize(demo, pending):
     assert all(m.signature_valid(app.secret_key, loaded, restored_site, role) for role in ("technician", "customer"))
     editing = client.post(f"/api/file/{draft.stem}/lease", json={"client_id": "qa"}).get_json()["editing"]
     metadata = {**metadata, "base_revision": editing["revision"], "lease_token": editing["lease"]["token"], "idempotency_key": uuid.uuid4().hex}
-    finalized = client.post(f"/api/file/{draft.stem}/send", json={**loaded, "_edit": metadata})
-    assert finalized.status_code == 400 and finalized.get_json()["missing_fields"]
-    assert not renders and draft.exists()
     restored_site["final_observations"] = "Alteração posterior à assinatura"
     checked = client.post(f"/api/file/{draft.stem}/maintenance/validate", json={"document": loaded}).get_json()
     assert checked["sites"][0]["signed"] == {"technician": False, "customer": False}
     assert checked["sites"][1]["signed"] == {"technician": True, "customer": True}
+    finalized = client.post(f"/api/file/{draft.stem}/send", json={**loaded, "_edit": metadata})
+    assert finalized.status_code == 200 and not finalized.json.get("maintenance_bundle_url")
+    assert not renders
+    archived = next((root / "archive").rglob("*.xlsx"))
+    assert DocumentDataService(archived).read()["maintenance_checklists"][0]["final_observations"] == restored_site["final_observations"]
 
 
 @pytest.mark.parametrize("field,value", [("name", ""), ("date", "2026-02-30"), ("image", "data:image/png;base64,eA=="), ("role", "other")])
@@ -667,8 +673,8 @@ def test_preview_selected_local_without_signing_or_saving(demo):
     assert draft.read_bytes() == original
     assert DocumentDataService(draft).read() == before
     assert not renders and not list((root / "archive").glob("*/*.pdf"))
-    # Previewing does not waive the finalization requirements.
-    assert client.post(f"/api/file/{draft.stem}/send", json={**document, "_edit": metadata}).status_code == 400
+    # Previewing does not certify an incomplete checklist for final PDF output.
+    assert m.document_errors(document, app.secret_key)
     sheet = selected_preview(client.post(f"/api/file/{draft.stem}/document-preview", json=document).get_json()["html"])
     assert "Manutenção preventiva — SADI" not in sheet
 

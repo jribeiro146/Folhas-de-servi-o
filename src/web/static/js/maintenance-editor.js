@@ -136,7 +136,7 @@
         const site = current();
         if (!site) { host.innerHTML = '<p class="mc-empty">Indique o número de locais para começar.</p>'; renderStatus(); return; }
         host.innerHTML = `<h3>${esc(site.location || `Local ${active + 1}`)}</h3><p class="mc-context"></p><div class="mc-grid">${binding("location", site.location, "Identificação do local")}${binding("date", site.date, "Data da manutenção", "date")}${binding("technician", site.technician, "Técnico de serviço")}${binding("scie", site.scie, "Técnico responsável SCIE (opcional)")}<label class="mc-field">Periodicidade<select data-mc-path="period"><option value="">Selecionar</option>${Object.entries(def.periods).map(([key,label]) => `<option value="${key}" ${site.period === key ? 'selected' : ''}>${label}</option>`).join("")}</select></label>${site.period === "other" ? binding("period_other", site.period_other, "Descrição da periodicidade") : ''}</div><p class="mc-warning">${esc(def.start_warning)}</p><p>OK — Cumpre função · NC — Não Conforme · NA — Não Aplicável</p>${questions("1. Sistema — Verificações gerais", def.general, site.general, "general")}${textarea("observations", site.observations, "Observações gerais")}
-        <section data-mc-section="centrals"><h3>2. Centrais</h3>${equipmentGroup("conventional",site)}${equipmentGroup("addressable",site)}</section><section data-mc-section="repeaters"><h3>3. Repetidores</h3>${equipmentGroup("repeater",site)}</section>${peripheralsSection(site)}<p class="mc-warning">${esc(def.end_warning)}</p>${photosSection(site)}<section data-mc-section="final-observations"><h3>Observações finais</h3>${textarea("final_observations",site.final_observations,"Observações finais deste local (opcional)")}</section><h3>Assinaturas deste local</h3><p>Pode assinar com campos por preencher. A verificação dos campos obrigatórios é feita ao finalizar. Uma alteração posterior exige novas assinaturas.</p><div class="mc-signatures signature-grid"></div><button class="btn btn-secondary" type="button" data-mc-validate>Verificar checklist</button><div class="mc-errors" role="status"></div>`;
+        <section data-mc-section="centrals"><h3>2. Centrais</h3>${equipmentGroup("conventional",site)}${equipmentGroup("addressable",site)}</section><section data-mc-section="repeaters"><h3>3. Repetidores</h3>${equipmentGroup("repeater",site)}</section>${peripheralsSection(site)}<p class="mc-warning">${esc(def.end_warning)}</p>${photosSection(site)}<section data-mc-section="final-observations"><h3>Observações finais</h3>${textarea("final_observations",site.final_observations,"Observações finais deste local (opcional)")}</section><h3>Assinaturas deste local</h3><p>Pode assinar com campos por preencher. Nesta fase, as pendências da checklist não impedem a finalização da folha. Uma alteração posterior exige novas assinaturas para gerar o PDF final da checklist.</p><div class="mc-signatures signature-grid"></div><button class="btn btn-secondary" type="button" data-mc-validate>Verificar checklist</button><div class="mc-errors" role="status"></div>`;
         host.querySelectorAll("details").forEach(el => { el.open = open.has(el.dataset.mcDetail); });
         const doc = documentData();
         host.querySelector(".mc-context").textContent = `Cliente: ${doc.customer_name || '—'} · Folha de serviço: ${doc.service_number || '—'}`;
@@ -211,7 +211,7 @@
         if (!validationVisible) return;
         const issues = allIssues();
         const open = new Set(Array.from(validationSummary.querySelectorAll('details[open]')).map(el => el.dataset.mcIssueSite));
-        validationSummary.innerHTML = `<h3 id="mc-validation-title" role="status">${issues.length ? `${issues.length} pendências para finalizar` : 'Checklists completas e assinadas'}</h3><p>Pode continuar a guardar o rascunho incompleto. Selecione uma pendência para ir ao campo.</p>${!sites.length ? '<button type="button" class="mc-issue-link" data-mc-issue="0">Indicar número de locais</button>' : sites.map((site, index) => {
+        validationSummary.innerHTML = `<h3 id="mc-validation-title" role="status">${issues.length ? `${issues.length} pendências na checklist` : 'Checklists completas e assinadas'}</h3><p>As checklists são opcionais nesta fase de testes. Pode finalizar a folha com pendências; os PDFs finais das checklists só são gerados quando todas estão completas. Selecione uma pendência para ir ao campo.</p>${!sites.length ? '<button type="button" class="mc-issue-link" data-mc-issue="0">Indicar número de locais</button>' : sites.map((site, index) => {
             const entries = issues.map((issue, issueIndex) => ({...issue, issueIndex})).filter(issue => issue.siteId === site.id);
             return `<details data-mc-issue-site="${esc(site.id)}" ${open.has(site.id) || index === active ? 'open' : ''}><summary>${esc(site.location || `Local ${index + 1}`)} — ${entries.length} pendências</summary><ul>${entries.map(issue => `<li><button type="button" class="mc-issue-link" data-mc-issue="${issue.issueIndex}">${esc(issue.message)}</button></li>`).join('')}</ul></details>`;
         }).join('')}`;
@@ -514,8 +514,9 @@
             if(verificationPending)return [def.signature_pending_warning];
             if(signatureJobs.size)return ["Aguarde a gravação das assinaturas antes de finalizar."];
             if(pendingPhotos)return ['Aguarde a preparação das fotografias antes de finalizar.'];
-            if(!sites.length)return ["SADI: indique o número de locais e preencha as checklists."];
-            return sites.flatMap((site,index)=>[...model.validateSite(site,def),...model.signatureErrors(site,def)].map(error=>`${site.location||`Local ${index+1}`}: ${error}`));
+            // Trial policy: incomplete checklists do not block the service sheet.
+            // Keep in-flight writes/recovery guards so finalization cannot lose data.
+            return [];
         },
         showValidation,
         sync

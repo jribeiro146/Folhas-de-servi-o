@@ -2063,13 +2063,15 @@ def _create_app(
             service_number = str(document_data.get("service_number") or name)
             missing_fields = document_missing_required_fields(document_data)
             invalid_fields = document_invalid_fields(document_data)
-            if app.config["MAINTENANCE_ENABLED"]:
-                checklist_errors = maintenance.document_errors(document_data, app.secret_key)
-                if maintenance_access_allowed():
-                    missing_fields.extend(checklist_errors)
-                elif checklist_errors:
-                    missing_fields.append("Checklist de manutenção SADI pendente")
-            elif document_data.get("maintenance_checklists"):
+            # During the trial (João, 23/10/2026), checklist completeness is
+            # independent of permission to send the service sheet. Validation
+            # still controls whether a final SADI PDF bundle can be produced.
+            checklist_complete = (
+                app.config["MAINTENANCE_ENABLED"]
+                and maintenance.applicable(document_data)
+                and not maintenance.document_errors(document_data, app.secret_key)
+            )
+            if not app.config["MAINTENANCE_ENABLED"] and document_data.get("maintenance_checklists"):
                 return json_error("A finalização de checklists está disponível apenas na demo isolada.", 409)
             mail_payload = None
             teams_payload = None
@@ -2193,7 +2195,7 @@ def _create_app(
                     DocumentArtifactService(staged_path).write_html(build_document_html(
                         file_name=staged_path.stem, path=staged_path, payload=document_payload, auto_print=False,
                     ))
-                    if app.config["MAINTENANCE_ENABLED"] and maintenance.applicable(document_data):
+                    if checklist_complete:
                         renderer = local_pdf_service or LocalPdfService()
                         if app.config["MAINTENANCE_DEMO"]:
                             build_maintenance_bundle(staged_path, document_data, renderer)
@@ -2202,6 +2204,11 @@ def _create_app(
                                 staged_path, document_data, renderer, document_id,
                                 f"{document_id}:{idempotency_key}", target_path.name,
                             )
+                    if app.config["MAINTENANCE_ENABLED"] and not app.config["MAINTENANCE_DEMO"]:
+                        # Finalization can happen without a preceding draft save.
+                        # Retain unfinished/private data before retiring the source;
+                        # unprivileged input was replaced by trusted server data above.
+                        private_maintenance.write(document_id, document_data["maintenance_checklists"])
                     editing_state_service.update_operation_context(
                         document_id, idempotency_key, source_path=str(source_path),
                         archived_path=str(target_path), prepared_document=document_payload,
@@ -2297,7 +2304,7 @@ def _create_app(
                             if app.config["MAINTENANCE_DEMO"] else
                             url_for("private_maintenance_bundle_page", key=private_bundle_key)
                         )
-                        if maintenance_access_allowed() and maintenance.applicable(document_data)
+                        if maintenance_access_allowed() and checklist_complete
                         and (app.config["MAINTENANCE_DEMO"] or private_bundle_key) else None
                     ),
                     "internal_observations": (
