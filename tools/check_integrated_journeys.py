@@ -217,12 +217,16 @@ def main():
             open_draft(second, first)
             page.locator('#intervention-report').fill('Versão mais recente do primeiro navegador')
             saved(page)
-            with second.expect_response(lambda r:r.url.endswith('/autosave') and r.status==409):
+            with second.expect_response(lambda r:r.url.endswith('/autosave') and r.status==409) as conflict_response:
                 second.locator('#intervention-report').fill('Versão concorrente preservada')
+            conflict = conflict_response.value.json()
+            assert conflict['code'] == 'revision_conflict', conflict
+            assert conflict['editing']['server_document']['intervention_report'] == 'Versão mais recente do primeiro navegador', conflict
             expect(second.locator('#recovery-panel')).to_be_visible()
             assert 'Versão concorrente preservada' in local_value(second)
             second.screenshot(path=str(output / 'conflict.png'), full_page=True)
             second.locator('#btn-ignore-recovery').click()
+            expect(second.locator('#recovery-panel')).not_to_be_visible()
             expect(second.locator('#intervention-report')).to_have_value('Versão mais recente do primeiro navegador')
             second_ctx.close()
             passed('Two independent browser contexts trigger a real revision conflict and explicit choice')
@@ -347,10 +351,19 @@ def main():
             admin_page.locator('#admin-submit').click()
             expect(admin_page.locator('#admin-confirm')).not_to_be_visible()
             page.reload()
+            # Restoring access does not decide between the old server version
+            # and edits made before this client learned of the revocation.
+            expect(page.locator('#recovery-panel')).to_be_visible()
+            expect(page.locator('#intervention-report')).not_to_be_editable()
+            expect(page.locator('#intervention-report')).to_have_value('Preservar após intervenção administrativa')
+            assert 'Texto local depois da revogação' in local_value(page)
+            page.locator('#btn-restore-recovery').click()
             expect(page.locator('#intervention-report')).to_be_editable()
+            saved(page)
+            expect(page.locator('#intervention-report')).to_have_value('Texto local depois da revogação')
             denied = ctx.new_page().goto(base+'/admin')
             assert denied.status == 403
-            passed('Real admin release/restore and non-admin refusal preserve editing state')
+            passed('Real admin release/restore requires an explicit recovery choice; non-admin access remains denied')
             page.screenshot(path=str(output / 'restored-editor.png'), full_page=True)
 
             open_draft(page, sources[3])
