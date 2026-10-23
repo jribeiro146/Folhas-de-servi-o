@@ -27,3 +27,49 @@ test('optional checklist signatures and photos cannot be lost while still being 
     assert.match(validate({signatureJobs:new Map([['local:technician',{}]])})[0], /Aguarde.*assinaturas/);
     assert.match(validate({pendingPhotos:1})[0], /Aguarde.*fotografias/);
 });
+
+const noticeStart = source.indexOf('        finalizationNotice(document) {');
+const noticeMethod = source.slice(noticeStart, start);
+function finalizationNotice(payload, issues) {
+    const context = {model, allIssues:()=>issues};
+    vm.runInNewContext(`this.editor = {${noticeMethod}}`, context);
+    return context.editor.finalizationNotice(payload);
+}
+const documentSource = fs.readFileSync(path.join(__dirname, '../../src/web/static/js/document-editor.js'), 'utf8');
+const handlerStart = documentSource.indexOf('    btnSaveSend?.addEventListener("click",');
+const handlerSource = documentSource.slice(handlerStart, documentSource.indexOf('    btnCancelFile?.addEventListener',handlerStart));
+function clickFinalize({pending=[], issues=[], allowed=true, mail=false}={}) {
+    let handler, confirmation, toast, summaries=0;
+    const context = {activeFileName:'synthetic-sheet', collectFormData:()=>({...document,customer_email:'nobody@example.invalid'}),
+        getInvalidDurationInputs:()=>[], getFinalizationValidation:()=>({missing:pending,invalid:[]}),
+        showToast:message=>{toast=message;},showConfirm:value=>{confirmation=value;},
+        btnSaveSend:{addEventListener:(_name,fn)=>{handler=fn;}},mailEnabled:mail,mailTestRecipient:'',teamsEnabled:false,
+        window:{MaintenanceEditor:allowed ? {validate:()=>pending,finalizationNotice:payload=>finalizationNotice(payload,issues),
+            showValidation:()=>{summaries++;}} : undefined}};
+    vm.runInNewContext(handlerSource,context);
+    handler();
+    return {confirmation,toast,summaries};
+}
+test('finalize consumer explains pending writes without opening unrelated checklist issues', () => {
+    const pending = validate({signatureJobs:new Map([['local:technician',{}]])});
+    const result = clickFinalize({pending,issues:[{message:'Missing signature'}]});
+    assert.match(result.toast,/Aguarde.*assinaturas/);
+    assert.equal(result.summaries,0);
+    assert.equal(result.confirmation,undefined);
+});
+test('normal archive and email confirmations explain incomplete SADI without blocking', () => {
+    for (const mail of [false,true]) {
+        const result = clickFinalize({issues:[{message:'Missing signature'}],mail});
+        assert.match(result.confirmation.message,/não serão gerados PDFs SADI/);
+        assert.match(result.confirmation.message,/não poderá continuar.*depois de arquivar/);
+        assert.match(result.confirmation.message,/guarde o rascunho/);
+        assert.equal(result.confirmation.confirmLabel,mail?'Guardar e enviar':'Guardar e arquivar');
+        assert.equal(typeof result.confirmation.onAccept,'function');
+    }
+});
+test('complete, unrelated and unavailable checklists add no incomplete notice', () => {
+    assert.equal(finalizationNotice(document,[]),'');
+    assert.equal(finalizationNotice({service_types:{},equipments:{}},[{message:'ignored'}]),'');
+    assert.doesNotMatch(clickFinalize().confirmation.message,/checklists/);
+    assert.doesNotMatch(clickFinalize({allowed:false,issues:[{}]}).confirmation.message,/checklists/);
+});

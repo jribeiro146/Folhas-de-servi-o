@@ -2204,10 +2204,13 @@ def _create_app(
                                 staged_path, document_data, renderer, document_id,
                                 f"{document_id}:{idempotency_key}", target_path.name,
                             )
-                    if app.config["MAINTENANCE_ENABLED"] and not app.config["MAINTENANCE_DEMO"]:
+                    if (app.config["MAINTENANCE_ENABLED"] and not app.config["MAINTENANCE_DEMO"]
+                            and (document_data["maintenance_checklists"] or private_maintenance.read(document_id))):
                         # Finalization can happen without a preceding draft save.
                         # Retain unfinished/private data before retiring the source;
                         # unprivileged input was replaced by trusted server data above.
+                        # An explicit clear replaces existing data, but a sheet that
+                        # never used SADI must not depend on writing its private folder.
                         private_maintenance.write(document_id, document_data["maintenance_checklists"])
                     editing_state_service.update_operation_context(
                         document_id, idempotency_key, source_path=str(source_path),

@@ -2019,9 +2019,8 @@ document.addEventListener("DOMContentLoaded", () => {
             const checklistMissing = window.MaintenanceEditor?.validate(payload) || [];
             const serviceMissing = validation.missing.length - checklistMissing.length;
             showToast(checklistMissing.length
-                ? `${checklistMissing.length} pendências nas checklists. Consulte o resumo por local.${serviceMissing ? ` A folha de serviço também tem ${serviceMissing} campos por concluir.` : ''}`
+                ? `${checklistMissing.join(' ')}${serviceMissing ? ` A folha de serviço também tem ${serviceMissing} campos por concluir.` : ''}`
                 : `Campos obrigatórios em falta: ${validation.missing.join(", ")}`, "error");
-            if (checklistMissing.length) window.MaintenanceEditor.showValidation({focusFirst: true});
             return;
         }
         if (validation.invalid.length > 0) {
@@ -2050,7 +2049,7 @@ document.addEventListener("DOMContentLoaded", () => {
         showConfirm({
             eyebrow: "Finalizar folha",
             title: finalizeTitle,
-            message: finalizeMessage,
+            message: [finalizeMessage, window.MaintenanceEditor?.finalizationNotice(payload)].filter(Boolean).join(' '),
             confirmLabel: finalizeTitle,
             confirmVariant: "success",
             showInternalNotes: true,

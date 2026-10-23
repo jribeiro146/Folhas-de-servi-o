@@ -509,6 +509,10 @@
             while(signatureJobs.size)await Promise.all(Array.from(signatureJobs.values(),job=>job.done));
         },
         previewTarget() {return panel && !panel.hidden && !tabs.hidden ? {siteId: current()?.id} : null;},
+        finalizationNotice(document) {
+            if (!model.applicable(document) || !allIssues().length) return '';
+            return 'As checklists estão incompletas: não serão gerados PDFs SADI e não poderá continuar o preenchimento depois de arquivar. Para continuar a preenchê-las, volte atrás e guarde o rascunho.';
+        },
         validate(document) {
             if(!model.applicable(document))return [];
             if(verificationPending)return [def.signature_pending_warning];

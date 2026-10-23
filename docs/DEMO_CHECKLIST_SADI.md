@@ -16,6 +16,8 @@ O preenchimento SADI é preservado: em produção fica na pasta privada `FS_APP_
 
 A conservação dos dados incompletos não cria uma nova página de edição após o arquivo. Para continuar o preenchimento na interface, manter a folha como rascunho. Falhas reais ao guardar dados ou gerar o conjunto completo continuam a preservar a origem e impedir uma conclusão enganadora. Não há nova configuração, permissão ou alteração de contas; a futura obrigatoriedade exige uma nova decisão e alteração revista, sem data de ativação automática.
 
+A confirmação normal de arquivo/envio informa as contas com acesso quando as checklists estão incompletas: não haverá PDFs SADI nem edição posterior na interface, podendo voltar atrás e guardar rascunho. Uma assinatura/fotografia ainda a guardar pede apenas que se aguarde. Folhas que nunca usaram checklists não criam um registo SADI vazio; uma limpeza explícita de dados existentes por conta autorizada é conservada, mesmo que desmarque SADI.
+
 ## Fluxo
 
 - Indicar o número de locais e identificar cada edifício. O cliente e o número de serviço são comuns e vêm da folha de serviço.
