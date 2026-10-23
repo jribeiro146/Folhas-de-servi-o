@@ -869,6 +869,10 @@ const startEditingCoordinator = () => {
         const action = pendingPanelAction;
         if (!action) return hideRecoveryPanel();
         if (action.kind === "conflict") {
+            // An explicit choice against the freshly loaded server revision
+            // supersedes the old autosave, including an unknown pre-resume one.
+            // Server revision/lease checks still reject any late stale writer.
+            pendingAutosave = null;
             if (action.remotePayload) applyPayload(action.remotePayload, sourceSignatures);
             dirty = false;
             resumeConflictPending = false;
@@ -892,6 +896,7 @@ const startEditingCoordinator = () => {
                 return; // Keep the conflict and original recovery for another attempt.
             }
             if (revoked || pendingPanelAction !== action) return;
+            pendingAutosave = null;
             resumeConflictPending = false;
             applyPayload(payload, payload, { shouldSave: true });
             hideRecoveryPanel();

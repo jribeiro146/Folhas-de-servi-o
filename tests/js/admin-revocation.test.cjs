@@ -286,3 +286,35 @@ for (const code of ['revision_conflict','graph_conflict']) {
         view.api.setCommitPending(false);
     });
 }
+
+for(const choice of ['server','device'])for(const kind of(choice==='server'?['draft','send','cancel']:['draft']))
+    test(`unknown autosave, suspended-page conflict, use ${choice} then ${kind}`,async()=>{
+        let bootstraps=0;const saves=[];
+        const view=await coordinator((url,options)=>{
+            if(url.includes('/autosave')){
+                saves.push(JSON.parse(options.body));
+                if(saves.length===1)throw new Error('network failure');
+                return response({success:true,editing:{revision:3}});
+            }
+            if(++bootstraps===1)return bootstrap();
+            return response({success:true,document:{customer_name:'Servidor atualizado'},
+                editing:{document_id:'synthetic-document',revision:2,lease:{token:'resumed-session'}}});
+        });
+        view.edit({customer_name:'Texto local preservado'});
+        await view.autosave();
+        await assert.rejects(view.api.prepareOperation(kind),/por confirmar/);
+        view.documentEvents.get('freeze')();
+        view.documentEvents.get('resume')();
+        await settle();
+        assert.match(view.element('recovery-title').textContent,/suspensa/);
+        await view.click(choice==='server'?'btn-ignore-recovery':'btn-restore-recovery');
+        const metadata=await view.api.prepareOperation(kind);
+        assert.equal(metadata.base_revision,choice==='server'?2:3);
+        assert.equal(saves.length,choice==='server'?1:2);
+        if(choice==='device'){
+            assert.equal(saves[1]._edit.base_revision,2);
+            assert.notEqual(saves[1]._edit.idempotency_key,saves[0]._edit.idempotency_key);
+            assert.equal(saves[1].document.customer_name,'Texto local preservado');
+        }
+        view.api.setCommitPending(false);
+    });

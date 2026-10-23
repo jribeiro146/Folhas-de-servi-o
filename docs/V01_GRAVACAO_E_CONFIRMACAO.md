@@ -19,12 +19,15 @@ se contornam conflitos reais nem operações de resultado incerto.
 
 Depois de uma recusa explícita por conflito, a escolha «Usar servidor» permite
 guardar/finalizar/cancelar sem obrigar a editar outro campo. «Usar este dispositivo»
-grava com a revisão atual e uma chave nova. Só essas recusas explícitas libertam
-a referência do autosave; falhas desconhecidas conservam a referência anterior.
+grava com a revisão atual e uma chave nova. A escolha explícita num conflito
+detetado ao retomar uma página também substitui a referência do autosave anterior,
+depois de consultar a revisão do servidor. Sem essa resolução explícita, falhas
+desconhecidas conservam a referência anterior.
 
 Verificação de 23/10/2026: os três percursos reproduziam a captura prematura da
 revisão. Os testes JavaScript cobrem sucesso, falha, conflito, revogação, espera
 limitada, suspensão e libertação após falha do cancelamento. A bateria completa
 inicial passou: 240 testes; a revisão acrescentou oito casos de resolução de
-conflito. Não acrescenta configuração, permissões ou alterações de
+conflito, seguidos de quatro casos de retoma após falha de rede. Não acrescenta
+configuração, permissões ou alterações de
 formato aos dados. A validação Linux e a instalação são etapas distintas.
