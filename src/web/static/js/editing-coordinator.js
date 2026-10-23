@@ -73,7 +73,7 @@ const startEditingCoordinator = () => {
     let serverSaveTimer = null;
     let retryTimer = null;
     let retryAttempt = 0;
-    let autosaveInFlight = false;
+    let autosaveInFlight = null;
     let autosaveQueued = false;
     let pendingAutosave = null;
     let pendingPanelAction = null;
@@ -90,6 +90,7 @@ const startEditingCoordinator = () => {
     let tabClaimPending = false;
     const operationKeys = new Map();
     let commitPending = false;
+    let operationPreparation = null;
 
     const showToast = (message, variant = "info") => editor.showToast?.(message, variant);
 
@@ -116,7 +117,7 @@ const startEditingCoordinator = () => {
     };
 
     const setCommitActionsEnabled = (enabled) => {
-        enabled = enabled && !revoked && !initialRecoveryPending && !resumeSnapshot;
+        enabled = enabled && !revoked && !initialRecoveryPending && !resumeSnapshot && !operationPreparation;
         const draftButton = document.getElementById("btn-save-draft");
         const sendButton = document.getElementById("btn-save-send");
         const cancelButton = document.getElementById("btn-cancel-file");
@@ -390,7 +391,7 @@ const startEditingCoordinator = () => {
     };
 
     const runAutosave = async ({ keepalive = false } = {}) => {
-        if (commitPending) return false;
+        if (commitPending || operationPreparation) return false;
         if (autosaveInFlight) {
             autosaveQueued = true;
             return false;
@@ -403,7 +404,9 @@ const startEditingCoordinator = () => {
             return false;
         }
 
-        autosaveInFlight = true;
+        let finishAutosave;
+        let confirmed = false;
+        autosaveInFlight = new Promise(resolve => { finishAutosave = resolve; });
         autosaveQueued = false;
         const payload = editor.collectFormData();
         const serialized = JSON.stringify(payload);
@@ -475,6 +478,7 @@ const startEditingCoordinator = () => {
                 await persistLocalRecovery();
                 autosaveQueued = true;
             }
+            confirmed = true;
             return true;
         } catch (error) {
             if (revoked) return false;
@@ -489,8 +493,9 @@ const startEditingCoordinator = () => {
             scheduleRetry();
             return false;
         } finally {
-            autosaveInFlight = false;
-            if (autosaveQueued && dirty && !readOnly) {
+            autosaveInFlight = null;
+            finishAutosave(confirmed);
+            if (!operationPreparation && autosaveQueued && dirty && !readOnly) {
                 autosaveQueued = false;
                 window.clearTimeout(serverSaveTimer);
                 serverSaveTimer = window.setTimeout(() => runAutosave(), 100);
@@ -902,12 +907,13 @@ const startEditingCoordinator = () => {
     }, true);
 
     const releaseSession = async ({ background = false } = {}) => {
+        if (operationPreparation) operationPreparation.cancelled = true;
         if (!sessionToken || !editing.document_id) return;
         const token = sessionToken;
         sessionToken = "";
         setCommitActionsEnabled(false);
         const payload = JSON.stringify({
-            document: dirty && !otherTabActive && !initialRecoveryPending && !resumeSnapshot ? {
+            document: dirty && !otherTabActive && !initialRecoveryPending && !resumeSnapshot && !operationPreparation && !commitPending ? {
                 ...editor.collectFormData(),
                 "Assinatura Cliente": "",
                 "Assinatura Técnico": "",
@@ -1051,7 +1057,9 @@ const startEditingCoordinator = () => {
         operationMetadata,
         setCommitPending(value) {
             commitPending = value;
+            operationPreparation = null;
             syncCommitActions();
+            if (!value && dirty && hasActiveSession()) schedulePersistence();
         },
         async recoverPendingCommit() {
             try { return await resolvePendingCommit(); }
@@ -1066,15 +1074,43 @@ const startEditingCoordinator = () => {
             }
         },
         async prepareOperation(kind) {
-            if (!hasActiveSession()) {
-                const resumed = await resumeEditingSession();
-                if (!resumed) {
-                    throw new Error(
-                        "A sessão de edição ainda não está pronta. Aguarde alguns segundos e tente novamente."
-                    );
-                }
+            if (operationPreparation || commitPending) {
+                throw new Error("A sessão de edição ainda não está pronta. Já existe uma gravação em preparação.");
             }
-            return operationMetadata(kind);
+            const preparation = { cancelled:false };
+            operationPreparation = preparation;
+            window.clearTimeout(serverSaveTimer);
+            window.clearTimeout(retryTimer);
+            syncCommitActions();
+            try {
+                // A mutation must capture the revision AFTER its own autosave
+                // has settled. Keep further autosaves paused until the caller
+                // begins the commit or releases preparation in its finally.
+                if (autosaveInFlight) {
+                    let timer;
+                    try {
+                        const confirmed = await Promise.race([autosaveInFlight, new Promise((_, reject) => {
+                            timer = window.setTimeout(() => reject(new Error("A gravação automática ainda está por confirmar. Aguarde e volte a tentar.")), 30000);
+                        })]);
+                        if (!confirmed) throw new Error("Não foi possível confirmar a gravação automática. Volte a tentar depois de guardar no servidor.");
+                    } finally { window.clearTimeout(timer); }
+                }
+                if (preparation.cancelled || operationPreparation !== preparation || pendingAutosave) {
+                    throw new Error("A gravação automática ou a sessão de edição ainda está por confirmar. Volte a tentar.");
+                }
+                if (!hasActiveSession()) {
+                    const resumed = await resumeEditingSession();
+                    if (!resumed || preparation.cancelled) {
+                        throw new Error("A sessão de edição ainda não está pronta. Aguarde alguns segundos e tente novamente.");
+                    }
+                }
+                return operationMetadata(kind);
+            } catch (error) {
+                if (operationPreparation === preparation) operationPreparation = null;
+                syncCommitActions();
+                if (dirty && hasActiveSession()) schedulePersistence();
+                throw error;
+            }
         },
         syncActionState: syncCommitActions,
         async markCommitted(result, kind) {
@@ -1083,6 +1119,7 @@ const startEditingCoordinator = () => {
             editing = { ...editing, ...result };
             operationKeys.delete(kind);
             commitPending = false;
+            operationPreparation = null;
             dirty = false;
             pendingAutosave = null;
             window.clearTimeout(localSaveTimer);

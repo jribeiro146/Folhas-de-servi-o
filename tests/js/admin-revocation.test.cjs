@@ -62,6 +62,7 @@ async function coordinator(fetch, { sendBeacon = () => true } = {}) {
         api: window.__EDITING_COORDINATOR__, element, input, documentEvents, windowEvents,
         edit: value => { payload = value; window.__EDITING_COORDINATOR__.markDirty(); },
         autosave: () => [...timers.values()].find(timer => timer.delay === 750).fn(),
+        timer: delay => [...timers.values()].find(timer => timer.delay === delay)?.fn(),
         heartbeat: () => intervals.get(15000)(),
     };
 }
@@ -153,4 +154,94 @@ test("a slow heartbeat does not start overlapping session checks", async () => {
     pending.resolve(response({ success: true }));
     await Promise.all([first, second]);
     assert.equal(checks, 1);
+});
+
+for (const kind of ["send", "draft", "cancel"]) test(`${kind} waits for its own autosave before capturing the revision`, async () => {
+    const pending = deferred();
+    let saves = 0;
+    const view = await coordinator(url => {
+        if (!url.includes('/autosave')) return bootstrap();
+        saves++;
+        return pending.promise;
+    });
+    view.edit({customer_name:'Alteração fictícia'});
+    const saving = view.autosave();
+    let prepared = false;
+    const preparing = view.api.prepareOperation(kind).then(value => { prepared = true; return value; });
+    await settle();
+    const returnedEarly = prepared;
+    pending.resolve(response({success:true,editing:{document_id:'synthetic-document',revision:2,lease:{token:'old-session'}}}));
+    const metadata = await preparing;
+    await saving;
+    assert.equal(returnedEarly,false,'metadata must wait for the autosave response');
+    assert.equal(metadata.base_revision,2);
+    // A delayed/queued autosave cannot race the prepared commit.
+    view.edit({customer_name:'Última alteração antes da confirmação'});
+    await view.timer(750);
+    assert.equal(saves,1);
+    view.api.setCommitPending(true);
+    assert.equal(view.element('btn-save-draft').disabled,true);
+    view.api.setCommitPending(false);
+    assert.equal(view.element('btn-save-draft').disabled,false);
+    assert.equal(view.api.isDirty(),true);
+});
+
+for (const code of ['server_error','revision_conflict','lease_revoked']) test(`preparation refuses an unconfirmed autosave (${code})`, async () => {
+    const pending=deferred();
+    const view=await coordinator(url=>url.includes('/autosave')?pending.promise:bootstrap());
+    view.edit({customer_name:'Texto a preservar'});
+    const saving=view.autosave();
+    const rejection=assert.rejects(view.api.prepareOperation('send'),/gravação automática/);
+    pending.resolve(response({success:false,code,error:'Falha sintética',editing:{revision:2,server_document:{customer_name:'Outra versão'}}},code==='lease_revoked'?423:409));
+    await Promise.all([saving,rejection]);
+    assert.equal(view.api.isDirty(),true);
+    if(code==='server_error')await assert.rejects(view.api.prepareOperation('send'),/por confirmar/);
+    else assert.equal(view.element('btn-save-draft').disabled,true);
+});
+
+test('a bounded wait never cancels or repeats the in-flight autosave and permits retry after confirmation',async()=>{
+    const pending=deferred();let calls=0;
+    const view=await coordinator(url=>{
+        if(!url.includes('/autosave'))return bootstrap();
+        calls++;return pending.promise;
+    });
+    view.edit({customer_name:'Servidor lento'});
+    const saving=view.autosave();
+    const rejection=assert.rejects(view.api.prepareOperation('draft'),/ainda está por confirmar/);
+    view.timer(30000);
+    await rejection;
+    assert.equal(calls,1);
+    assert.equal(view.api.isDirty(),true);
+    pending.resolve(response({success:true,editing:{revision:2,lease:{token:'old-session'}}}));
+    await saving;
+    const metadata=await view.api.prepareOperation('draft');
+    assert.equal(metadata.base_revision,2);
+    assert.equal(calls,1);
+    view.api.setCommitPending(false);
+});
+
+test('closing during preparation releases without a stale write and cannot resume that commit',async()=>{
+    const pending=deferred(),beacons=[];
+    const view=await coordinator(url=>url.includes('/autosave')?pending.promise:bootstrap(),
+        {sendBeacon:(url,body)=>{beacons.push({url,body});return true;}});
+    view.edit({customer_name:'Texto na página suspensa'});
+    const saving=view.autosave();
+    const rejection=assert.rejects(view.api.prepareOperation('send'),/por confirmar/);
+    view.documentEvents.get('freeze')();
+    assert.equal(JSON.parse(await beacons[0].body.text()).document,null);
+    pending.resolve(response({success:true,editing:{revision:2,lease:{token:'old-session'}}}));
+    await Promise.all([saving,rejection]);
+});
+
+test('cancellation releases commit preparation even when its HTTP request fails',async()=>{
+    const editorSource=fs.readFileSync(path.join(__dirname,'../../src/web/static/js/document-editor.js'),'utf8');
+    const start=editorSource.indexOf('    const cancelFile = ');
+    const code=editorSource.slice(start,editorSource.indexOf('    const openDocumentPreview',start));
+    const pending=[];
+    const context={hideConfirm(){},setBusy(){},requireOperationMetadata:async()=>({base_revision:2}),
+        activeFileName:'synthetic',fetch:async()=>{throw new Error('network failure');},showToast(){},
+        window:{__EDITING_COORDINATOR__:{setCommitPending:value=>pending.push(value)}}};
+    vm.runInNewContext(code+'\nthis.cancel=cancelFile;',context);
+    await context.cancel();
+    assert.deepEqual(pending,[true,false]);
 });

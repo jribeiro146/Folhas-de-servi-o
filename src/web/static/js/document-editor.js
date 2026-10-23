@@ -1666,6 +1666,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         try {
             const metadata = await requireOperationMetadata("cancel");
+            window.__EDITING_COORDINATOR__?.setCommitPending?.(true);
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/cancel`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -1689,6 +1690,7 @@ document.addEventListener("DOMContentLoaded", () => {
         } catch (error) {
             showToast(error.message, "error");
         } finally {
+            window.__EDITING_COORDINATOR__?.setCommitPending?.(false);
             setBusy(false);
         }
     };
