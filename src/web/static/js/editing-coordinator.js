@@ -279,6 +279,16 @@ const startEditingCoordinator = () => {
         const value = { ...(payload || {}) };
         delete value["Assinatura Cliente"];
         delete value["Assinatura Técnico"];
+        // Bootstrap may omit empty private checklists and normalize an empty
+        // material list to a blank row. Compare their meaning without changing
+        // the original recovery or hiding real/unknown material fields.
+        if (value.maintenance_checklists === undefined) value.maintenance_checklists = [];
+        if (Array.isArray(value.materials)) {
+            value.materials = value.materials.filter(row => !(
+                row && Object.keys(row).length === 3
+                && row.qty === "" && row.ref === "" && row.description === ""
+            ));
+        }
         const sort = (item) => {
             if (Array.isArray(item)) return item.map(sort);
             if (item && typeof item === "object") {

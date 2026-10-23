@@ -983,3 +983,52 @@ test('a signature proof can finish during autosave without using its old revisio
     const metadata=await app.coordinator.prepareOperation('draft');
     assert.equal(metadata.base_revision,2);app.coordinator.setCommitPending(false);
 });
+
+
+// The server normalizes an empty material list to a placeholder row and may
+// omit an empty private checklist list. Neither change is a user's edit.
+for(const phase of ['reopen','resume'])for(const representation of ['materials','checklists','both'])
+    test(`equivalent empty sections do not create a conflict on ${phase} (${representation})`,async t=>{
+        const local={observations:'Texto preservado',materials:[],maintenance_checklists:[]};
+        const remote=structuredClone(local);
+        if(representation!=='checklists')remote.materials=[{qty:'',ref:'',description:''}];
+        if(representation!=='materials')delete remote.maintenance_checklists;
+        const records=new Map(),sharedServer={document:phase==='reopen'?remote:local,revision:phase==='reopen'?5:4,accepted:0,conflicts:0};
+        if(phase==='reopen')records.set('user:doc',{key:'user:doc',userId:'user',fileName:'synthetic-draft',documentId:'doc',
+            baseRevision:4,conflict:false,updatedAt:Date.now(),payload:structuredClone(local)});
+        const app=harness(t,{remote,records,sharedServer});await waitFor(()=>!app.booting());
+        if(phase==='resume'){
+            app.listeners.get('freeze')();sharedServer.document=remote;sharedServer.revision=5;
+            app.listeners.get('resume')();
+            await waitFor(()=>app.bootstrapCount()===2 && ['saved','conflict'].includes(app.element('autosave-status').dataset.state));
+        }
+        assert.equal(app.element('recovery-panel').hidden,true);
+        assert.equal(app.element('btn-save-draft').disabled,false);
+        assert.equal(app.element('service-form').classList.contains('is-readonly'),false);
+        assert.equal(app.payload().observations,local.observations);
+        assert.equal(sharedServer.accepted,0,'equivalent data does not need a write');
+        assert.equal((await app.coordinator.prepareOperation('draft')).base_revision,5);
+        app.coordinator.setCommitPending(false);
+    });
+
+for(const [name,change] of [
+    ['material reference',p=>p.materials=[{qty:'',ref:'R1',description:''}]],
+    ['material description',p=>p.materials=[{qty:'',ref:'',description:'Detetor'}]],
+    ['zero numeric quantity',p=>p.materials=[{qty:0,ref:'',description:''}]],
+    ['zero text quantity',p=>p.materials=[{qty:'0',ref:'',description:''}]],
+    ['unknown row field',p=>p.materials=[{qty:'',ref:'',description:'',extra:''}]],
+    ['actual checklist',p=>p.maintenance_checklists=[{id:'local-real',location:'Local fictício'}]],
+    ['other form field',p=>p.observations='Texto diferente']
+])test(`empty-section comparison keeps a real difference protected: ${name}`,async t=>{
+    const remote={observations:'Texto preservado',materials:[],maintenance_checklists:[]};
+    const local=structuredClone(remote);change(local);
+    const records=new Map([['user:doc',{key:'user:doc',userId:'user',fileName:'synthetic-draft',documentId:'doc',
+        baseRevision:4,conflict:false,updatedAt:Date.now(),payload:structuredClone(local)}]]);
+    const sharedServer={document:remote,revision:5,accepted:0,conflicts:0};
+    const app=harness(t,{remote,records,sharedServer});await waitFor(()=>!app.booting());
+    assert.equal(app.element('recovery-panel').hidden,false);
+    assert.equal(app.element('btn-save-draft').disabled,true);
+    assert.equal(app.element('service-form').classList.contains('is-readonly'),true);
+    assert.deepEqual(records.get('user:doc').payload,local,'comparison must not rewrite recovery');
+    assert.equal(sharedServer.accepted,0);
+});

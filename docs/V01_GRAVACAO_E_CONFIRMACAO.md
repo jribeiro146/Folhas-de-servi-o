@@ -51,11 +51,17 @@ recuperação partilhada antes de permitir uma escolha. Uma cópia descartada de
 de ser oferecida; um conflito ainda existente mantém a versão local mais recente.
 Se a consulta falhar, continua em modo de consulta com a opção normal de voltar
 a tentar. O fecho durante uma verificação obriga a consultar novamente os dados.
+Na comparação, uma lista de materiais vazia equivale à linha de preenchimento
+com quantidade, referência e descrição vazias; uma checklist ausente equivale
+à lista vazia, depois da verificação da recuperação no servidor. Isto evita
+pedir uma escolha apenas porque o servidor normalizou campos vazios ao fechar.
+Não altera a cópia original. Quantidades (incluindo zero), textos, campos
+inesperados e locais de manutenção com conteúdo continuam a distinguir versões.
 
 Verificação de 23/10/2026: os três percursos reproduziam a captura prematura da
 revisão. Os testes JavaScript cobrem sucesso, falha, conflito, revogação, espera
 limitada, suspensão e libertação após falha do cancelamento. A bateria completa
-atual passou: 291 testes JavaScript, incluindo resolução explícita após falha de
+atual passou: 304 testes JavaScript, incluindo resolução explícita após falha de
 rede, regresso à rede/edição/fecho antes da escolha, marcador de conflito após
 reabrir, proteção da cópia original na pré-visualização, escolhas nas duas abas,
 falha de consulta e fecho durante verificação. A função real de assinatura foi
@@ -64,6 +70,10 @@ autosave/preparação de rascunho. Oito regressões adicionais executam os consu
 reais de guardar/finalizar/cancelar com o coordenador real: cliques sobrepostos
 durante uma assinatura, rascunho durante outra operação e preparação recusada
 que pertence a outra ação. Os oito casos falharam antes desta correção.
+Treze casos adicionais cobrem as representações vazias na reabertura/retoma e
+a proteção das diferenças reais; seis reproduziram o conflito desnecessário
+antes da correção. O caso foi observado no ensaio integrado depois de uma
+sessão expirar e voltar a entrar, com o mesmo texto preservado nas duas versões.
 Estes ensaios usam dados fictícios e transportes em memória; não provam
 envios reais ou a execução Linux. Não acrescenta configuração, permissões ou
 alterações de formato aos dados. A validação Linux e a instalação são etapas
