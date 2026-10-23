@@ -76,11 +76,11 @@ function broadcastBus({dropClosing=false}={}) {
     };
 }
 
-function harness(t, {local, remote, failVerification=false, failBootstrap=false, deferSave=false, BroadcastChannel,
+function harness(t, {local, remote, failVerification=false, failBootstrap=false, deferSave=false, BroadcastChannel, realCollector=false,
     records=new Map(), deferVerification=false, sharedServer=null, commitRecovery}) {
     if(local)records.set('user:doc',{key:'user:doc',userId:'user',fileName:'synthetic-draft',documentId:'doc',
         baseRevision:1,updatedAt:Date.now(),payload:structuredClone(local)});
-    const elements=new Map(), listeners=new Map(), timers=new Set(), intervals=new Map(), beacons=[];
+    const elements=new Map(), listeners=new Map(), timers=new Set(), intervals=new Map(), beacons=[], submittedRequests=[];
     const classes=()=>{const values=new Set();return {add:name=>values.add(name),remove:name=>values.delete(name),
         toggle:(name,value)=>value ? values.add(name) : values.delete(name),contains:name=>values.has(name)};};
     const element=id=>{
@@ -116,6 +116,7 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
         assert.ok(url.endsWith('/autosave'),url);
         saveCount++;
         const request=JSON.parse(options.body), submitted=request.document;
+        submittedRequests.push(request);
         if(sharedServer && request._edit.base_revision!==sharedServer.revision) {
             sharedServer.conflicts++;
             return {ok:false,status:409,json:async()=>({success:false,code:'revision_conflict',
@@ -137,8 +138,22 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
     const verification={fetch,config:{selectedFileIsDraft:true,selectedFileName:'synthetic-draft'},encodeURIComponent};
     vm.runInNewContext(`${verifySource}\nthis.verify=verifyRecovery;`,verification);
     const indexedDB=database(records);
+    // Execute the actual form collector for the legacy-empty recovery regression.
+    // The HTTP matrix separately exercises server retention for this payload.
+    const collectCurrent = () => {
+        if (!realCollector) return structuredClone(payload);
+        const source=read('document-editor.js');
+        const begin=source.indexOf('    const collectFormData = () => {');
+        const context={structuredClone,window:{MaintenanceEditor:{collect:()=>structuredClone(payload.maintenance_checklists || [])}},
+            preservedMaintenance:[],createEmptyDocument:()=>({}),
+            simpleFields:[{value:payload.observations || '',dataset:{field:'observations'}}],
+            collectOptionGroup:()=>({}),serviceTypeInputs:[],equipmentInputs:[],materialsUsedYes:{checked:false},
+            collectTechnicianRows:()=>[],clientNotPresentInput:{checked:true},signaturePads:[]};
+        vm.runInNewContext(source.slice(begin,source.indexOf('    const getFinalizationValidation',begin))+'\nthis.result=collectFormData();',context);
+        return context.result;
+    };
     const window={__FILES_APP__:{selectedFileName:'synthetic-draft',selectedFileIsDraft:true,editorUser:{id:'user'}},
-        __FILES_EDITOR__:{collectFormData:()=>structuredClone(payload),
+        __FILES_EDITOR__:{collectFormData:collectCurrent,
             populateForm:(_name,value)=>{payload=structuredClone(value);view.verificationPending=false;refresh();},
             setVerificationPending:value=>{view.verificationPending=value;refresh();},
             verifyRecovery:verification.verify,
@@ -158,7 +173,7 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
         IDBKeyRange:{only:value=>value},navigator,
         sessionStorage:{getItem:()=>null,setItem(){}},setTimeout,clearTimeout});
     t.after(()=>{for(const timer of timers)clearTimeout(timer);});
-    return {records,element,beacons,navigator,notice:signatureNotice,coordinator:window.__EDITING_COORDINATOR__,
+    return {records,element,beacons,navigator,submittedRequests,notice:signatureNotice,coordinator:window.__EDITING_COORDINATOR__,
         bootstrapCount:()=>bootstrapCount, busyBootstrap:value=>{bootstrapBusy=value;},
         reloads:()=>reloads,
         booting:()=>document.body.classList.contains('editor-booting'),
@@ -241,6 +256,17 @@ test('changed session preserves the latest form and the recovery action reloads 
     assert.equal(app.reloads(),1);assert.equal(lookups,before);assert.equal(app.bootstrapCount(),1);
     assert.equal(app.records.get('user:doc').payload.observations,latest.observations);
     assert.equal(app.saveCount(),0);
+});
+
+test('legacy empty IndexedDB recovery at the current revision never gains a clear marker from the new editor',async t=>{
+    const local={observations:'Alteração feita na versão sem acesso SADI',maintenance_checklists:[]};
+    const app=harness(t,{local,remote:signed('fresh-valid'),realCollector:true});
+    await waitFor(()=>app.saveCount()===1 && app.element('autosave-status').dataset.state==='saved');
+    const request=app.submittedRequests[0];
+    assert.equal(request._edit.base_revision,1);
+    assert.equal(request.document.observations,local.observations);
+    assert.deepEqual(request.document.maintenance_checklists,[]);
+    assert.equal(request.document._maintenance_clear,undefined);
 });
 
 test('IndexedDB recovery is verified before hydration; rejected proofs never return to the editor or recovery',async t=>{

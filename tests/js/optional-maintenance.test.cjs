@@ -46,8 +46,8 @@ function collectChecklistPayload(editor, preserved=[]) {
     vm.runInNewContext(collectSource + '\nthis.payload=collectFormData();',context);
     return context.payload;
 }
-test('only an available checklist editor marks empty data as an intentional clear', () => {
-    assert.equal(collectChecklistPayload({collect:()=>[]})._maintenance_clear,true);
+test('empty editor or legacy recovery data never invents an intention to clear private checklists', () => {
+    assert.equal(collectChecklistPayload({collect:()=>[]})._maintenance_clear,undefined);
     assert.equal(collectChecklistPayload(undefined)._maintenance_clear,undefined);
     const sites = [{id:'site-a',location:'Local fictício'}];
     const populated = collectChecklistPayload({collect:()=>sites});

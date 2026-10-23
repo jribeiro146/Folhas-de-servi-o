@@ -49,6 +49,11 @@ def test_old_client_omission_preserves_other_editors_checklists_but_explicit_cle
     assert response.status_code == 200, response.json
     if endpoint in ("autosave", "editing/close"):
         assert edits.snapshot(draft)["server_document"]["maintenance_checklists"] == expected
+        assert "_maintenance_clear" not in edits.snapshot(draft)["server_document"]
+        reopened = client.get(f"/api/file/{draft.stem}/bootstrap?client_id=old-client")
+        assert reopened.status_code == 200
+        assert reopened.json["document"]["maintenance_checklists"] == expected
+        assert "_maintenance_clear" not in reopened.json["document"]
     else:
         assert private.read(metadata["document_id"]) == expected
     if endpoint == "send":

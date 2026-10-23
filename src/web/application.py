@@ -721,8 +721,8 @@ def _create_app(
     def normalize_document_for_write(payload, path: Path):
         document = normalize_document_for_file(payload, path)
         # Older tabs without the SADI editor omit the field or serialize [].
-        # Only an updated editor can explicitly clear it; otherwise preserve
-        # the latest server copy. This marker is intent, not authorization.
+        # An explicit API clear requires its marker; an empty UI/recovery
+        # state is not intent to delete. The marker is not authorization.
         checklists_supplied = isinstance(payload, dict) and isinstance(payload.get("maintenance_checklists"), list)
         legacy_empty = (checklists_supplied and payload["maintenance_checklists"] == []
                         and payload.get("_maintenance_clear") is not True)
