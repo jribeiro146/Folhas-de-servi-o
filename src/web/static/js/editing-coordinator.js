@@ -566,7 +566,10 @@ const startEditingCoordinator = () => {
         // record. Keep its original revision until the conflict check succeeds.
         resumeSnapshot ||= {payload:editor.collectFormData(), revision:Number(editing.revision || 1)};
         const previousRevision = resumeSnapshot.revision;
-        const localPayload = resumeSnapshot.payload;
+        // Verification can restore missing checklists. Keep the suspended
+        // snapshot unchanged until resume succeeds, so a blocked retry checks
+        // the latest server data again instead of reusing an earlier response.
+        const localPayload = { ...resumeSnapshot.payload };
         setFormReadOnly(true);
         editor.setVerificationPending?.(true);
         setCommitActionsEnabled(false);
@@ -601,7 +604,16 @@ const startEditingCoordinator = () => {
                 // Another tab may have started editing while this one could
                 // not verify its recovery. Never enable two editors on retry.
                 if (otherTabActive) return false;
-                if (rejectedSignatures) await persistLocalRecovery({ force:true });
+                const restoredMaintenance = !resumeSnapshot.payload.maintenance_checklists?.length
+                    && Boolean(verifiedLocal.maintenance_checklists?.length);
+                if (restoredMaintenance) {
+                    // The comparison above includes the recovered sites. Make
+                    // the visible form match it before granting editing rights
+                    // or saving; otherwise the next new site could replace them.
+                    editor.applyMaintenanceRecovery(verifiedLocal);
+                }
+                if (rejectedSignatures || restoredMaintenance) await persistLocalRecovery({ force:true });
+                if (revoked || otherTabActive) return false;
                 editor.setVerificationPending?.(false);
                 if (revisionChanged && contentChanged) {
                     resumeConflictPending = true;

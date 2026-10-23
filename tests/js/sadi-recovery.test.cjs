@@ -76,7 +76,7 @@ function broadcastBus({dropClosing=false}={}) {
     };
 }
 
-function harness(t, {local, remote, failVerification=false, failBootstrap=false, deferSave=false, BroadcastChannel, realCollector=false,
+function harness(t, {local, remote, failVerification=false, failBootstrap=false, deferSave=false, BroadcastChannel, realCollector=false, pendingPhotos=false,
     records=new Map(), deferVerification=false, sharedServer=null, commitRecovery, validationChecklists}) {
     if(local)records.set('user:doc',{key:'user:doc',userId:'user',fileName:'synthetic-draft',documentId:'doc',
         baseRevision:1,updatedAt:Date.now(),payload:structuredClone(local)});
@@ -89,7 +89,7 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
         return elements.get(id);
     };
     let payload={}, pendingSave, pendingVerification, saveCount=0, verifyCount=0, bootstrapCount=0, heartbeatRequired=false, revision=1, leaseOwner='';
-    let bootstrapBusy=false, reloads=0;
+    let bootstrapBusy=false, reloads=0, populationCount=0;
     const navigator={onLine:true,sendBeacon:(url,body)=>{beacons.push({url,body});return true;}};
     const reply=value=>({ok:true,status:200,json:async()=>value});
     const fetch=async (url, options) => {
@@ -106,7 +106,9 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
         if(url.endsWith('/maintenance/validate')) {
             verifyCount++;
             if(failVerification)throw new Error('synthetic network failure');
-            const value=reply({success:true,maintenance_checklists:validationChecklists ?? normalize(JSON.parse(options.body).document).maintenance_checklists});
+            const submitted=JSON.parse(options.body).document;
+            const value=reply({success:true,maintenance_checklists:validationChecklists && !submitted.maintenance_checklists?.length
+                ? structuredClone(validationChecklists) : normalize(submitted).maintenance_checklists});
             if(deferVerification)return new Promise(resolve=>{pendingVerification=()=>{pendingVerification=null;resolve(value);};});
             return value;
         }
@@ -154,14 +156,27 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
     };
     const window={__FILES_APP__:{selectedFileName:'synthetic-draft',selectedFileIsDraft:true,editorUser:{id:'user'}},
         __FILES_EDITOR__:{collectFormData:collectCurrent,
-            populateForm:(_name,value)=>{payload=structuredClone(value);view.verificationPending=false;refresh();},
+            populateForm:(_name,value)=>{populationCount++;payload=structuredClone(value);view.verificationPending=false;refresh();},
+            applyMaintenanceRecovery:value=>{
+                // Run the production adapter: recovery must not repopulate the
+                // service form, which would reset unsaved photographs/signatures.
+                const source=read('document-editor.js');
+                const begin=source.indexOf('    const applyMaintenanceRecovery = ');
+                assert.notEqual(begin,-1);
+                const context={structuredClone,preservedMaintenance:[],window:{MaintenanceEditor:{hydrate:document=>{
+                    payload.maintenance_checklists=structuredClone(document.maintenance_checklists);
+                    view.verificationPending=false;refresh();
+                }}}};
+                vm.runInNewContext(source.slice(begin,source.indexOf('\n    const ',begin+10))+'\nthis.apply=applyMaintenanceRecovery;',context);
+                context.apply(value);
+            },
             setVerificationPending:value=>{view.verificationPending=value;refresh();},
             verifyRecovery:verification.verify,
             pendingRecovery:model.pendingRecovery,
             reconcileSignatures:(submitted,verified)=>{
                 const result=model.reconcileSignatures(payload.maintenance_checklists,submitted.maintenance_checklists,verified.maintenance_checklists);
                 refresh();return result.length;
-            },showToast(){},renderAttachments(){},hasPendingPhotoChanges:()=>false},
+            },showToast(){},renderAttachments(){},hasPendingPhotoChanges:()=>pendingPhotos},
         SensorpointCommitRecovery:commitRecovery,
         crypto:{randomUUID:()=>require('node:crypto').randomUUID()},indexedDB,
         setTimeout:(fn,delay)=>{const timer=setTimeout(fn,delay);timers.add(timer);return timer;},clearTimeout,
@@ -175,7 +190,7 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
     t.after(()=>{for(const timer of timers)clearTimeout(timer);});
     return {records,element,beacons,navigator,submittedRequests,notice:signatureNotice,coordinator:window.__EDITING_COORDINATOR__,
         bootstrapCount:()=>bootstrapCount, busyBootstrap:value=>{bootstrapBusy=value;},
-        reloads:()=>reloads,
+        reloads:()=>reloads,populationCount:()=>populationCount,
         booting:()=>document.body.classList.contains('editor-booting'),
         payload:()=>payload,setPayload:value=>{payload=structuredClone(value);refresh();},
         saveCount:()=>saveCount,verifyCount:()=>verifyCount,finishSave:()=>pendingSave?.(),pendingSave:()=>Boolean(pendingSave),listeners,
@@ -358,6 +373,126 @@ test('unchanged autosave replaces rejected proofs before marking saved and stori
     assert.equal(app.notice.hidden,false);
     assert.equal(Object.keys(app.records.get('user:doc').payload.maintenance_checklists[0].signatures).length,0);
     assert.equal(app.saveCount(),1);
+});
+
+for(const revision of [1,2])for(const localEdits of [false,true])test(`empty suspended checklist recovery is visible before editing (revision ${revision}, local edits ${localEdits})`,async t=>{
+    const empty=signed('fresh-valid');empty.maintenance_checklists=[];
+    const sharedServer={document:structuredClone(empty),revision:1,accepted:0,conflicts:0};
+    const validationChecklists=[];
+    const app=harness(t,{remote:empty,sharedServer,validationChecklists,pendingPhotos:true});
+    await waitFor(()=>!app.element('btn-save-draft').disabled);
+    if(localEdits) {
+        const local=structuredClone(app.payload());local.observations='Texto local antes da suspensão';
+        app.setPayload(local);app.coordinator.markDirty();
+    }
+    app.listeners.get('freeze')();
+    sharedServer.document=signed('fresh-valid');sharedServer.revision=revision;
+    validationChecklists.push(...sharedServer.document.maintenance_checklists);
+    app.listeners.get('resume')();
+    const conflict=revision===2 && localEdits;
+    await waitFor(()=>app.verifyCount()===1 && (conflict
+        ? app.element('autosave-status').dataset.state==='conflict'
+        : !app.element('btn-save-draft').disabled));
+    assert.deepEqual(app.payload().maintenance_checklists,validationChecklists);
+    assert.equal(app.populationCount(),1,'resume must not reset unsaved service photographs or signature pads');
+    assert.equal(app.payload()['Assinatura Cliente'],'synthetic-service-ink');
+    assert.equal(app.payload().observations,localEdits?'Texto local antes da suspensão':empty.observations);
+    assert.deepEqual(app.records.get('user:doc').payload.maintenance_checklists,validationChecklists);
+    if(conflict) {
+        assert.equal(sharedServer.accepted,0);
+        assert.equal(app.element('btn-save-draft').disabled,true);
+        await app.element('btn-restore-recovery').events.get('click')();
+        await waitFor(()=>sharedServer.accepted===1);
+        assert.deepEqual(sharedServer.document.maintenance_checklists,normalize({maintenance_checklists:validationChecklists}).maintenance_checklists);
+        assert.equal(sharedServer.document.observations,'Texto local antes da suspensão');
+    }
+    // The next human edit appends a site to the visible list; it must retain
+    // every restored site instead of silently replacing the server list.
+    await waitFor(()=>!app.element('btn-save-draft').disabled);
+    const accepted=sharedServer.accepted;
+    const next=structuredClone(app.payload());
+    next.maintenance_checklists.push({id:'new-site',location:'Novo local fictício',signatures:{}});
+    app.setPayload(next);app.coordinator.markDirty();
+    await waitFor(()=>sharedServer.accepted>accepted && sharedServer.document.maintenance_checklists.length===2
+        && app.element('autosave-status').textContent.includes('Fotografias por guardar'));
+    assert.deepEqual(sharedServer.document.maintenance_checklists.map(site=>site.id),['site-a','new-site']);
+    assert.equal(sharedServer.conflicts,0);
+    assert.equal(app.submittedRequests.at(-1).document._maintenance_clear,undefined);
+    assert.match(app.element('autosave-status').textContent,/Fotografias por guardar/);
+});
+
+test('empty resume waits for the other tab, then verifies the original snapshot against the latest server sites',async t=>{
+    const BroadcastChannel=broadcastBus(),records=new Map();
+    const empty=signed('fresh-valid');empty.maintenance_checklists=[];
+    const sharedServer={document:structuredClone(empty),revision:1,accepted:0,conflicts:0};
+    const validationChecklists=[];
+    const first=harness(t,{remote:empty,sharedServer,records,BroadcastChannel,validationChecklists});
+    await waitFor(()=>!first.element('btn-save-draft').disabled);
+    first.listeners.get('freeze')();
+    sharedServer.document=signed('fresh-valid');sharedServer.revision=2;
+    validationChecklists.push(...sharedServer.document.maintenance_checklists);
+    const second=harness(t,{remote:sharedServer.document,sharedServer,records,BroadcastChannel});
+    await waitFor(()=>!second.element('btn-save-draft').disabled);
+    first.listeners.get('resume')();
+    await waitFor(()=>first.verifyCount()===1 && first.element('autosave-status').dataset.state==='conflict');
+    assert.equal(first.payload().maintenance_checklists.length,0);
+    assert.equal(first.element('btn-save-draft').disabled,true);
+    const latest=structuredClone(second.payload());
+    latest.maintenance_checklists.push({id:'second-site',location:'Outro local fictício',signatures:{}});
+    second.setPayload(latest);second.coordinator.markDirty();
+    await waitFor(()=>sharedServer.accepted===1);
+    validationChecklists.splice(0,validationChecklists.length,...sharedServer.document.maintenance_checklists);
+    second.listeners.get('pagehide')();
+    await waitFor(()=>first.verifyCount()===2 && !first.element('btn-save-draft').disabled);
+    assert.deepEqual(first.payload().maintenance_checklists.map(site=>site.id),['site-a','second-site']);
+    assert.equal(first.saveCount(),0);
+    assert.equal(first.populationCount(),1);
+    assert.deepEqual(records.get('user:doc').payload.maintenance_checklists,sharedServer.document.maintenance_checklists);
+});
+
+test('an empty optional checklist resumes normally when the server is also empty',async t=>{
+    const empty=signed('fresh-valid');empty.maintenance_checklists=[];
+    const sharedServer={document:structuredClone(empty),revision:1,accepted:0,conflicts:0};
+    const app=harness(t,{remote:empty,sharedServer,validationChecklists:[]});
+    await waitFor(()=>!app.element('btn-save-draft').disabled);
+    app.listeners.get('freeze')();app.listeners.get('resume')();
+    await waitFor(()=>app.verifyCount()===1 && !app.element('btn-save-draft').disabled);
+    assert.equal(app.element('btn-save-send').disabled,false);
+    assert.equal(app.payload().maintenance_checklists.length,0);
+    assert.equal(app.populationCount(),1);
+    app.coordinator.markDirty();
+    await waitFor(()=>sharedServer.accepted===1 && app.element('autosave-status').dataset.state==='saved');
+    assert.deepEqual(sharedServer.document.maintenance_checklists,[]);
+    assert.equal(app.submittedRequests[0].document._maintenance_clear,undefined);
+});
+
+test('a tab claimed during recovered-site persistence keeps the resumed form read-only',async t=>{
+    let channel,claim=false;
+    class Channel { constructor(){channel=this;} postMessage(){} close(){} }
+    class Records extends Map {
+        set(key,value) {
+            const result=super.set(key,value);
+            if(claim && value.payload.maintenance_checklists.length) {
+                claim=false;
+                queueMicrotask(()=>channel.onmessage({data:{type:'active',fileName:'synthetic-draft',userId:'user',instanceId:'other-tab'}}));
+            }
+            return result;
+        }
+    }
+    const empty=signed('fresh-valid');empty.maintenance_checklists=[];
+    const validationChecklists=[],records=new Records();
+    const app=harness(t,{remote:empty,records,BroadcastChannel:Channel,validationChecklists});
+    await waitFor(()=>!app.element('btn-save-draft').disabled);
+    app.listeners.get('freeze')();claim=true;
+    validationChecklists.push(...signed('fresh-valid').maintenance_checklists);
+    app.listeners.get('resume')();
+    await waitFor(()=>app.element('autosave-status').dataset.state==='conflict' && !claim);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(app.element('service-form').classList.contains('is-readonly'),true);
+    assert.equal(app.element('btn-save-draft').disabled,true);
+    assert.equal(app.saveCount(),0);
+    app.listeners.get('pagehide')();
+    assert.equal(JSON.parse(await app.beacons.at(-1).body.text()).document,null);
 });
 
 test('resume checks the suspended page and refreshes its recovery without replacing other edits',async t=>{

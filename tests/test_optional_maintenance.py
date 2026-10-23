@@ -41,7 +41,7 @@ def test_old_client_omission_preserves_other_editors_checklists_but_explicit_cle
     document = complete_document()
     saved = client.post(f"/api/file/{draft.stem}/draft",
                         json={**document, "maintenance_checklists": [], "_edit": owner})
-    assert saved.status_code == 200
+    assert saved.status_code == 200, saved.get_json()
     login(client, "acarvalho@sensorpoint.pt")
     reviewer = lease(client, draft, "reviewer")
     document["maintenance_checklists"][0]["photos"] = [checklist_photo()]
@@ -49,7 +49,7 @@ def test_old_client_omission_preserves_other_editors_checklists_but_explicit_cle
     if signed:
         sign_document(document, app.secret_key)
     saved = client.post(f"/api/file/{draft.stem}/draft", json={**document, "_edit": reviewer})
-    assert saved.status_code == 200
+    assert saved.status_code == 200, saved.get_json()
     queue = app.extensions["test_graph_queue"]
     queue.run_until_idle()
     private = MaintenancePrivateService(root / "private/sadi")

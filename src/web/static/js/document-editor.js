@@ -1243,6 +1243,14 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     };
 
+    const applyMaintenanceRecovery = (payload) => {
+        // Resume may restore server checklists hidden by an older client. Only
+        // update that section; a full populate would reset unsaved service
+        // photographs and signature pads retained by the suspended page.
+        preservedMaintenance = structuredClone(payload.maintenance_checklists || []);
+        window.MaintenanceEditor?.hydrate(payload);
+    };
+
     const populateForm = (fileName, documentData, signatures = {}, photos = []) => {
         const safeDocument = { ...createEmptyDocument(), ...(documentData || {}) };
         preservedMaintenance = structuredClone(safeDocument.maintenance_checklists || []);
@@ -2100,6 +2108,7 @@ document.addEventListener("DOMContentLoaded", () => {
         },
         collectFormData,
         populateForm,
+        applyMaintenanceRecovery,
         verifyRecovery: payload => window.MaintenanceEditor?.verifyRecovery(payload) || payload,
         pendingRecovery: payload => window.MaintenanceEditor?.pendingRecovery(payload) || payload,
         setVerificationPending: value => window.MaintenanceEditor?.setVerificationPending(value),
