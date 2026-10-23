@@ -404,10 +404,14 @@ def main():
                 requests, replies = [], []
                 page.on('request', lambda request: requests.append(request.url) if request.url.endswith('/draft') else None)
                 def lose_draft_response(route):
-                    response = route.fetch()
-                    assert response.status == 200
-                    replies.append(response.json())
-                    route.abort()
+                    try:
+                        response = route.fetch()
+                        assert response.status == 200, (response.status, response.text())
+                        replies.append(response.json())
+                    finally:
+                        # A failed assertion must not let the original request
+                        # continue after the deliberately proxied attempt.
+                        route.abort()
                 page.route('**/draft', lose_draft_response, times=1)
                 if scenario.endswith('reload'):
                     page.route('**/api/editing/operations/**', lambda route:route.abort())
