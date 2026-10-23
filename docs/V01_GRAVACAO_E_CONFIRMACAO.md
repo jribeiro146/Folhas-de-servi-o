@@ -17,8 +17,14 @@ ou libertá-la no seu `finally`. Guardar, finalizar e cancelar cumprem esse
 contrato. O servidor continua a verificar revisão, sessão e idempotência; não
 se contornam conflitos reais nem operações de resultado incerto.
 
+Depois de uma recusa explícita por conflito, a escolha «Usar servidor» permite
+guardar/finalizar/cancelar sem obrigar a editar outro campo. «Usar este dispositivo»
+grava com a revisão atual e uma chave nova. Só essas recusas explícitas libertam
+a referência do autosave; falhas desconhecidas conservam a referência anterior.
+
 Verificação de 23/10/2026: os três percursos reproduziam a captura prematura da
 revisão. Os testes JavaScript cobrem sucesso, falha, conflito, revogação, espera
 limitada, suspensão e libertação após falha do cancelamento. A bateria completa
-passou: 240 testes. Não acrescenta configuração, permissões ou alterações de
+inicial passou: 240 testes; a revisão acrescentou oito casos de resolução de
+conflito. Não acrescenta configuração, permissões ou alterações de
 formato aos dados. A validação Linux e a instalação são etapas distintas.

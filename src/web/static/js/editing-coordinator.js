@@ -436,6 +436,11 @@ const startEditingCoordinator = () => {
             // A successful reply may predate the revocation received by heartbeat.
             if (revoked) return false;
             if (!response.ok || !result.success) {
+                // These explicit refusals confirm that this autosave did not
+                // write. Resolving the conflict must use the current revision
+                // and a new key; unknown/network failures retain the old key.
+                if (["revision_conflict", "graph_conflict"].includes(result.code)
+                        && pendingAutosave?.key === requestState.key) pendingAutosave = null;
                 if (handleConflict(result)) return false;
                 if ([401, 423].includes(response.status)) {
                     setFormReadOnly(true, result.editing?.owner?.owner_name);

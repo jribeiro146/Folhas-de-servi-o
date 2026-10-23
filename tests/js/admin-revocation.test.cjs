@@ -28,7 +28,9 @@ async function coordinator(fetch, { sendBeacon = () => true } = {}) {
     const element = id => {
         if (!elements.has(id)) elements.set(id, {
             hidden: false, disabled: false, textContent: "", dataset: {}, classList: classes(),
-            addEventListener() {}, querySelectorAll: () => id === "service-form" ? [input] : [],
+            handlers: new Map(),
+            addEventListener(name, handler) { this.handlers.set(name, handler); },
+            querySelectorAll: () => id === "service-form" ? [input] : [],
         });
         return elements.get(id);
     };
@@ -63,6 +65,7 @@ async function coordinator(fetch, { sendBeacon = () => true } = {}) {
         edit: value => { payload = value; window.__EDITING_COORDINATOR__.markDirty(); },
         autosave: () => [...timers.values()].find(timer => timer.delay === 750).fn(),
         timer: delay => [...timers.values()].find(timer => timer.delay === delay)?.fn(),
+        click: id => element(id).handlers.get('click')(),
         heartbeat: () => intervals.get(15000)(),
     };
 }
@@ -245,3 +248,41 @@ test('cancellation releases commit preparation even when its HTTP request fails'
     await context.cancel();
     assert.deepEqual(pending,[true,false]);
 });
+
+for (const code of ['revision_conflict','graph_conflict']) {
+    for (const kind of ['draft','send','cancel']) test(`${code}: use server then ${kind} without another edit`,async()=>{
+        let saves=0;
+        const view=await coordinator(url=>{
+            if(!url.includes('/autosave'))return bootstrap();
+            saves++;
+            return response({success:false,code,editing:{revision:2,server_document:{customer_name:'Servidor'}}},409);
+        });
+        view.edit({customer_name:'Dispositivo'});
+        await view.autosave();
+        await view.click('btn-ignore-recovery');
+        assert.equal(view.api.isDirty(),false);
+        const metadata=await view.api.prepareOperation(kind);
+        assert.equal(metadata.base_revision,2);
+        assert.equal(saves,1);
+        view.api.setCommitPending(false);
+    });
+    test(`${code}: use device retries with the confirmed revision and a fresh key`,async()=>{
+        const saves=[];
+        const view=await coordinator((url,options)=>{
+            if(!url.includes('/autosave'))return bootstrap();
+            saves.push(JSON.parse(options.body));
+            return saves.length===1
+                ?response({success:false,code,editing:{revision:2,server_document:{customer_name:'Servidor'}}},409)
+                :response({success:true,editing:{revision:3}});
+        });
+        view.edit({customer_name:'Dispositivo'});
+        await view.autosave();
+        await view.click('btn-restore-recovery');
+        assert.equal(saves.length,2);
+        assert.equal(saves[1]._edit.base_revision,2);
+        assert.notEqual(saves[1]._edit.idempotency_key,saves[0]._edit.idempotency_key);
+        assert.equal(saves[1].document.customer_name,'Dispositivo');
+        assert.equal((await view.api.prepareOperation('draft')).base_revision,3);
+        view.api.setCommitPending(false);
+    });
+}
