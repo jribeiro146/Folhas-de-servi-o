@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import sys
 import time
 from urllib.parse import unquote, urlsplit
@@ -38,13 +39,21 @@ def main() -> int:
             response = client.get("/")
             assert response.status_code == 200
             html = response.get_data(as_text=True)
+            # The HTML and context must come from the same signed synthetic
+            # session. Do not bypass the real monitor's initial verification.
+            response = client.get("/api/graph/monitor-context")
+            assert response.status_code == 200
+            monitor_context = response.get_json()
+            assert monitor_context.get("success") is True
+            scope = monitor_context.get("scope")
+            assert isinstance(scope, str) and re.fullmatch(r"[a-f0-9]{64}", scope)
         browser = playwright.chromium.launch(headless=True)
         try:
             for scenario in ("failed", "scheduled", "distant", "missing"):
                 context = browser.new_context(viewport={"width": 1280, "height": 920}, service_workers="block")
                 page = context.new_page()
                 page.set_default_timeout(10000)
-                page_errors, calls, blocked = [], [], []
+                page_errors, calls, context_calls, blocked = [], [], [], []
                 page.on("pageerror", lambda error: page_errors.append(str(error)))
 
                 def intercept(route):
@@ -65,10 +74,19 @@ def main() -> int:
                             route.fulfill(status=200, content_type="text/javascript", body="")
                         else:
                             route.fulfill(path=asset)
+                    elif path == "/api/graph/monitor-context":
+                        assert request.method == "GET"
+                        context_calls.append(request.method)
+                        route.fulfill(json=monitor_context)
                     elif path == "/api/file/synthetic/send":
+                        assert request.method == "POST"
+                        assert request.header_value("X-Mail-Monitor-Scope") == scope
                         calls.append((request.method, path))
-                        route.fulfill(json={"success": True, "email_status": "pending", "graph_job_id": "synthetic-job"})
+                        route.fulfill(headers={"X-Mail-Monitor-Scope": scope},
+                                      json={"success": True, "email_status": "pending", "graph_job_id": "synthetic-job"})
                     elif path == "/api/graph/jobs/synthetic-job":
+                        assert request.method == "GET"
+                        assert request.header_value("X-Mail-Monitor-Scope") == scope
                         calls.append((request.method, path))
                         if scenario == "missing":
                             route.fulfill(status=404, body="Missing")
@@ -86,6 +104,15 @@ def main() -> int:
                 context.route("**/*", intercept)
                 page.goto("https://synthetic.invalid/", wait_until="load")
                 page.wait_for_function("window.__FILES_EDITOR_READY__ === true")
+                # Await the real resume/hydration before starting the send.
+                # An unhandled context request must fail this checker, not be
+                # hidden by a foreground status response that arrives later.
+                page.wait_for_function("""expected => {
+                    const raw = sessionStorage.getItem('sensorpoint-mail-followup-v1');
+                    const saved = raw ? JSON.parse(raw) : null;
+                    return saved?.scope === expected && Array.isArray(saved.entries)
+                        && saved.entries.length === 0;
+                }""", arg=scope)
                 page.evaluate("""() => {
                     const app = window.__FILES_APP__;
                     app.requiredFields = [];
@@ -127,9 +154,11 @@ def main() -> int:
                 page.locator("#confirm-accept").click()
                 expect(page.locator("#confirm-panel")).to_be_hidden()
                 assert calls == [("POST", "/api/file/synthetic/send"), ("GET", "/api/graph/jobs/synthetic-job")], calls
+                assert context_calls == ["GET"], context_calls
                 assert not page_errors, page_errors
                 assert not blocked, blocked
-                results.append({"scenario": scenario, "result": "pass", "requests": len(calls)})
+                results.append({"scenario": scenario, "result": "pass", "requests": len(calls),
+                                "context_requests": len(context_calls), "scope_verified": True})
                 context.close()
         finally:
             browser.close()
