@@ -353,7 +353,9 @@ const startEditingCoordinator = () => {
 
     const showConflictPanel = (localRecord, remotePayload, title = "Existem duas versões da folha") => {
         pendingPanelAction = { kind: "conflict", localRecord, remotePayload,
-            sourceToken: editing.source_conflict?.token || null };
+            sourceToken: editing.source_conflict?.token || null, sourceReady: Boolean(remotePayload) };
+        if (ignoreRecoveryButton) ignoreRecoveryButton.disabled = false;
+        if (restoreRecoveryButton) restoreRecoveryButton.disabled = false;
         recoveryPanel?.classList.add("is-conflict");
         if (recoveryPanel) recoveryPanel.hidden = false;
         if (recoveryEyebrow) recoveryEyebrow.textContent = "Conflito protegido";
@@ -366,6 +368,38 @@ const startEditingCoordinator = () => {
             if (ignoreRecoveryButton) ignoreRecoveryButton.textContent = "Usar versão atual da folha";
             if (restoreRecoveryButton) restoreRecoveryButton.textContent = "Continuar este rascunho";
             if (recoveryTimestamp) recoveryTimestamp.textContent = "O rascunho recuperável foi preservado.";
+        }
+    };
+
+    const loadSourceConflict = async (action) => {
+        if (action.loadingSource || revoked || pendingPanelAction !== action) return;
+        action.loadingSource = true;
+        if (ignoreRecoveryButton) ignoreRecoveryButton.disabled = true;
+        if (restoreRecoveryButton) restoreRecoveryButton.disabled = true;
+        try {
+            // This read deliberately bypasses resumeEditingSession's conflict
+            // guard. It never chooses a version or submits an autosave.
+            const result = await loadBootstrap();
+            if (revoked || otherTabActive || pendingPanelAction !== action) return;
+            editing = { ...editing, ...result.editing };
+            sessionToken = result.editing?.lease?.token || sessionToken;
+            sourceSignatures = result.signatures || {};
+            sourcePhotos = result.photos || [];
+            serverPayload = result.editing?.server_document || result.document || null;
+            showConflictPanel({ ...action.localRecord, payload: editor.collectFormData(),
+                baseRevision: Number(editing.revision || 1), updatedAt: Date.now() },
+                editing.source_conflict ? result.source_document : result.document,
+                "Confirme a versão a continuar");
+            await persistLocalRecovery({ force: true });
+        } catch (error) {
+            if (revoked || pendingPanelAction !== action) return;
+            if (recoveryMessage) recoveryMessage.textContent = "Não foi possível obter a versão atual. O rascunho continua preservado.";
+            if (ignoreRecoveryButton) {
+                ignoreRecoveryButton.textContent = "Voltar a obter versões";
+                ignoreRecoveryButton.disabled = false;
+            }
+        } finally {
+            action.loadingSource = false;
         }
     };
 
@@ -405,8 +439,9 @@ const startEditingCoordinator = () => {
         syncCommitActions();
         persistLocalRecovery({ force: true });
         setAutosaveStatus("Conflito — escolha a versão a manter", "conflict");
-        showConflictPanel(localRecord, serverPayload, "A folha foi alterada noutra sessão");
-        if (editing.source_conflict) resumeEditingSession();
+        showConflictPanel(localRecord, editing.source_conflict ? null : serverPayload,
+            "A folha foi alterada noutra sessão");
+        if (editing.source_conflict) loadSourceConflict(pendingPanelAction);
         return true;
     };
 
@@ -940,6 +975,10 @@ const startEditingCoordinator = () => {
     const resolveSourceChoice = async (action, payload, signatures) => {
         // This is invoked only by the two explicit choice buttons. Timers,
         // reconnect and pagehide never carry the source-resolution token.
+        if (!action.sourceReady) {
+            await loadSourceConflict(action);
+            return false;
+        }
         const serialized = JSON.stringify(payload);
         if (!action.resolution || action.resolution.serialized !== serialized) {
             action.resolution = { key: makeId(), serialized, baseRevision: Number(editing.revision || 1) };
@@ -978,7 +1017,7 @@ const startEditingCoordinator = () => {
         } finally {
             if (ignoreRecoveryButton) ignoreRecoveryButton.disabled = false;
             if (restoreRecoveryButton) restoreRecoveryButton.disabled = false;
-            setFormReadOnly(otherTabActive || revoked || !hasActiveSession());
+            setFormReadOnly(otherTabActive || revoked || !sessionToken);
             syncCommitActions();
         }
     };

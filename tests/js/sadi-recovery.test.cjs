@@ -101,7 +101,9 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
                 editing:{revision,owner:{owner_name:leaseOwner}}})};
             const document=structuredClone(sharedServer?.document || remote);
             return reply({success:true,is_draft:true,document,
-                editing:{document_id:'doc',revision:sharedServer?.revision || revision,server_document:document,lease:{token:'synthetic-lease'}}});
+                source_document:structuredClone(sharedServer?.sourceDocument || document),
+                editing:{document_id:'doc',revision:sharedServer?.revision || revision,server_document:document,
+                    source_conflict:sharedServer?.sourceConflict || null,lease:{token:'synthetic-lease'}}});
         }
         if(url.endsWith('/maintenance/validate')) {
             verifyCount++;
@@ -119,15 +121,18 @@ function harness(t, {local, remote, failVerification=false, failBootstrap=false,
         saveCount++;
         const request=JSON.parse(options.body), submitted=request.document;
         submittedRequests.push(request);
-        if(sharedServer && request._edit.base_revision!==sharedServer.revision) {
+        if(sharedServer && (request._edit.base_revision!==sharedServer.revision ||
+            (sharedServer.sourceConflict && request.source_resolution!==sharedServer.sourceConflict.token))) {
             sharedServer.conflicts++;
             return {ok:false,status:409,json:async()=>({success:false,code:conflictCode,
-                editing:{revision:sharedServer.revision,server_document:structuredClone(sharedServer.document)}})};
+                editing:{revision:sharedServer.revision,server_document:structuredClone(sharedServer.document),
+                    source_conflict:sharedServer.sourceConflict || null}})};
         }
         if(sharedServer) {
             sharedServer.document=normalize(submitted);sharedServer.revision++;sharedServer.accepted++;
+            sharedServer.sourceConflict=null;
         }
-        const value=reply({success:true,editing:{revision:sharedServer?.revision || 2,server_document:normalize(submitted)}});
+        const value=reply({success:true,editing:{revision:sharedServer?.revision || 2,server_document:normalize(submitted),source_conflict:null}});
         if(deferSave)return new Promise(resolve=>{pendingSave=()=>resolve(value);});
         return value;
     };
@@ -1031,4 +1036,49 @@ for(const [name,change] of [
     assert.equal(app.element('service-form').classList.contains('is-readonly'),true);
     assert.deepEqual(records.get('user:doc').payload,local,'comparison must not rewrite recovery');
     assert.equal(sharedServer.accepted,0);
+});
+
+for(const choice of ['source','recovery'])test(`source conflict during editing loads the true source and stays editable after ${choice}`,async t=>{
+    const original={...signed('valid'),intervention_report:'Old server autosave'};
+    const sharedServer={document:original,revision:1,accepted:0,conflicts:0};
+    const app=harness(t,{remote:original,sharedServer});
+    await waitFor(()=>!app.element('btn-save-draft').disabled);
+    sharedServer.sourceDocument={...original,intervention_report:'New external source'};
+    sharedServer.sourceConflict={token:'synthetic-source-token',detected_at:100};
+    sharedServer.revision++;
+    app.setPayload({...original,intervention_report:'Latest local work'});
+    app.coordinator.markDirty();
+    await waitFor(()=>app.bootstrapCount()===2 && !app.element('btn-ignore-recovery').disabled);
+    assert.equal(sharedServer.accepted,0);
+    const button=choice==='source'?'btn-ignore-recovery':'btn-restore-recovery';
+    await app.element(button).events.get('click')();
+    const expected=choice==='source'?'New external source':'Latest local work';
+    assert.equal(sharedServer.document.intervention_report,expected);
+    assert.equal(app.payload().intervention_report,expected);
+    assert.equal(app.element('btn-save-draft').disabled,false);
+    assert.equal(app.element('btn-save-send').disabled,false);
+    app.setPayload({...app.payload(),intervention_report:expected+' then continued'});
+    app.coordinator.markDirty();
+    await waitFor(()=>sharedServer.accepted===2);
+    assert.equal(sharedServer.document.intervention_report,expected+' then continued');
+});
+
+test('failed source read offers a read retry and never submits the old server autosave as the source',async t=>{
+    const original={...signed('valid'),intervention_report:'Old server autosave'};
+    const sharedServer={document:original,revision:1,accepted:0,conflicts:0};
+    const app=harness(t,{remote:original,sharedServer});
+    await waitFor(()=>!app.element('btn-save-draft').disabled);
+    app.failBootstrap();
+    sharedServer.sourceDocument={...original,intervention_report:'True external source'};
+    sharedServer.sourceConflict={token:'source-token',detected_at:100};sharedServer.revision++;
+    app.setPayload({...original,intervention_report:'Local preserved'});
+    app.coordinator.markDirty();
+    await waitFor(()=>app.element('btn-ignore-recovery').textContent==='Voltar a obter versões');
+    assert.equal(sharedServer.accepted,0);
+    assert.equal(app.element('btn-restore-recovery').disabled,true);
+    app.recoverNetwork();
+    await app.element('btn-ignore-recovery').events.get('click')();
+    assert.equal(sharedServer.accepted,0); // Retrying a read is never choosing a version.
+    await app.element('btn-ignore-recovery').events.get('click')();
+    assert.equal(sharedServer.document.intervention_report,'True external source');
 });

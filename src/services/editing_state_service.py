@@ -443,7 +443,7 @@ class EditingStateService:
             resolving = bool(state.get('source_conflict') and source_resolution == state['source_conflict']['token'])
             self._assert_no_pending_operation(state, allow_publication=resolving)
             existing = state.get("autosave") or {}
-            if existing.get("idempotency_key") == idempotency_key:
+            if existing.get("idempotency_key") == idempotency_key and not state.get('source_conflict'):
                 return self._public_snapshot(
                     state, now=now, include_token=True, session_token=lease_token
                 )
@@ -766,20 +766,44 @@ class EditingStateService:
         try:
             # This short local-phase lock also covers readers without an
             # operation/bundle mutex. It is acquired BEFORE opening SQLite.
-            with file_mutex(self._publication_mutex(document_id)):
+            with self._publication_guard(document_id):
+                if path is not None:
+                    # Detection is durable even when the subsequent client write
+                    # is refused. Keep this lock across both SQL transactions.
+                    with self.repository.transaction(
+                        document_id, lambda: self._new_state(document_id),
+                        must_exist=must_exist, validator=validate_editing_state,
+                    ) as state:
+                        self._normalize_state(state)
+                        self._sync_fingerprint(state, path)
                 with self.repository.transaction(
                     document_id, lambda: self._new_state(document_id),
                     audit=audit, must_exist=must_exist, validator=validate_editing_state,
                 ) as state:
                     self._normalize_state(state)
-                    if path is not None:
-                        self._sync_fingerprint(state, path)
                     yield state
         except FileMutexBusy as exc:
             raise OperationInProgressError('A publicação está a ser confirmada. Aguarde e tente novamente.') from exc
 
     def _publication_mutex(self, document_id):
         return self.root / 'publication-locks' / hashlib.sha256(document_id.encode()).hexdigest()
+
+    @contextmanager
+    def _publication_guard(self, document_id):
+        deadline = time.monotonic() + self.repository.busy_timeout_ms / 1000
+        while True:
+            guard = file_mutex(self._publication_mutex(document_id))
+            try:
+                guard.__enter__()
+                break
+            except FileMutexBusy:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+        try:
+            yield
+        finally:
+            guard.__exit__(None, None, None)
 
     def publish_own_metadata(self, path, *, publication_id, files, apply):
         """Journal one confirmed local transition; no Microsoft calls in locks.
@@ -790,7 +814,7 @@ class EditingStateService:
         """
         document_id = self.resolve_document_id(path)
         operation_lock = self.root / 'operation-locks' / hashlib.sha256(document_id.encode()).hexdigest()
-        with file_mutex(operation_lock), bundle_guard(path.parent), file_mutex(self._publication_mutex(document_id)):
+        with file_mutex(operation_lock), bundle_guard(path.parent), self._publication_guard(document_id):
             def transaction():
                 return self.repository.transaction(document_id, lambda: self._new_state(document_id),
                     must_exist=True, validator=validate_editing_state)

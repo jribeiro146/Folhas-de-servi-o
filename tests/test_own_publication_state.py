@@ -181,6 +181,7 @@ def test_restart_finishes_only_local_phase_after_remote_success(publication, mon
 def test_reader_during_local_copy_cannot_invalidate_autosave(publication, monkeypatch):
     source, editing, actor, before, metadata, graph, queue = publication
     reader = EditingStateService(editing.root)
+    reader.repository.busy_timeout_ms = 40
     copy = queue._publish_locked_metadata
     attempts = []
     def concurrent_reader(*args, **kwargs):
@@ -194,6 +195,87 @@ def test_reader_during_local_copy_cannot_invalidate_autosave(publication, monkey
     assert attempts == [True]
     assert queue.status(job['id'])['status'] == 'complete'
     assert reader.snapshot(source)['server_document'] == before['server_document']
+
+
+def test_first_conflict_detected_by_autosave_has_a_durable_resolution_token(publication):
+    source, editing, actor, before, metadata, graph, queue = publication
+    source.write_bytes(b'external source first seen by autosave')
+    with pytest.raises(RevisionConflictError) as caught:
+        editing.save_autosave(**metadata, path=source, document={'report': 'unconfirmed'})
+    conflict = caught.value.snapshot
+    resolved = editing.save_autosave(**dict(metadata, base_revision=conflict['revision'], idempotency_key='choice'),
+        document=before['server_document'], path=source, source_resolution=conflict['source_conflict']['token'])
+    assert resolved['source_conflict'] is None
+    assert resolved['server_document'] == before['server_document']
+
+
+def test_heartbeat_waits_for_a_concurrent_autosave_without_false_conflict(publication, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    source, editing, actor, before, metadata, graph, queue = publication
+    second = EditingStateService(editing.root)
+    entered, release = threading.Event(), threading.Event()
+    check = editing._assert_session
+    def delayed_check(*args, **kwargs):
+        result = check(*args, **kwargs)
+        entered.set()
+        assert release.wait(3)
+        return result
+    monkeypatch.setattr(editing, '_assert_session', delayed_check)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        save = executor.submit(editing.save_autosave, **dict(metadata, idempotency_key='concurrent'),
+            path=source, document={'report': 'concurrent autosave'})
+        assert entered.wait(2)
+        heartbeat = executor.submit(second.renew_lease, before['document_id'], actor,
+                                    metadata['client_id'], metadata['lease_token'])
+        release.set()
+        saved = save.result(3)
+        assert heartbeat.result(3)['revision'] == saved['revision']
+
+
+@pytest.mark.parametrize('retryable', [False, True])
+def test_partial_remote_error_keeps_its_retry_policy_when_local_mutex_is_busy(publication, retryable):
+    import time
+    from src.services.graph_storage_service import GraphConflictError
+    source, editing, actor, before, metadata, graph, queue = publication
+    remote = GraphStorageError('synthetic provider pause') if retryable else GraphConflictError('synthetic remote conflict')
+    remote.retry_after_seconds = 120 if retryable else None
+    upload = graph.upload_active_bundle
+    def fail_after_metadata(*args, **kwargs):
+        upload(*args, **kwargs)
+        raise remote
+    graph.upload_active_bundle = fail_after_metadata
+    job = queue.enqueue('upload_active', {'draft_path': str(source)})
+    started = time.time()
+    with editing.operation_guard(before['document_id'], actor):
+        queue.run_until_idle()
+    failed = queue.status(job['id'])
+    assert failed['last_error'] == str(remote)
+    assert failed['will_retry'] is retryable
+    assert failed['result']['phase'] == 'publication_local_pending'
+    if retryable:
+        assert failed['next_attempt_at'] >= started + 120
+
+
+def test_newer_complete_job_cannot_retire_local_phase_without_owner_refusal(publication, monkeypatch):
+    source, editing, actor, before, metadata, graph, queue = publication
+    copy = queue._publish_locked_metadata
+    def interrupted(*args, **kwargs):
+        raise OSError('interrupted before copying metadata')
+    monkeypatch.setattr(queue, '_publish_locked_metadata', interrupted)
+    old = queue.enqueue('upload_active', {'draft_path': str(source)})
+    queue.run_until_idle()
+    new = queue.enqueue('upload_active', {'draft_path': str(source)})
+    with queue._connect() as connection:
+        connection.execute("UPDATE graph_sync_jobs SET status='complete' WHERE id=?", (new['id'],))
+    assert queue.unfinished_upload(source)['id'] == old['id']
+    assert queue.status(old['id'])['status'] == 'failed'
+    monkeypatch.setattr(queue, '_publish_locked_metadata', copy)
+    with queue._connect() as connection:
+        connection.execute('UPDATE graph_sync_jobs SET next_attempt_at=0 WHERE id=?', (old['id'],))
+    queue.run_until_idle()
+    assert queue.status(old['id'])['status'] == 'complete'
+    assert graph.calls == 1
 
 
 def test_divergent_partial_phase_requires_choice_and_cannot_be_replayed(publication, monkeypatch):
@@ -334,4 +416,38 @@ def test_production_routes_continue_after_own_publication(tmp_path, monkeypatch,
         # Final archive/mail phase is deliberately not run.
     else:
         assert editing.snapshot(draft)['server_document']['intervention_report'] == document['intervention_report']
+
+@pytest.mark.parametrize('external', [False, True])
+def test_refresh_after_own_publication_reuses_matching_etag_and_protects_changes(publication, external):
+    from tests.test_graph_publication_recovery import InventoryGraph, item
+    source, editing, actor, before, metadata, graph, queue = publication
+    job = queue.enqueue('upload_active', {'draft_path': str(source)})
+    queue.run_until_idle()
+    assert queue.status(job['id'])['status'] == 'complete'
+    refresh = InventoryGraph(source.parent.name)
+    refresh.items = [{'id': 'folder', 'name': source.parent.name, 'eTag': 'folder-current',
+                      'folder': {'childCount': 1}}]
+    refresh.children = [item(source.name, 'synthetic-workbook', 'external-v2' if external else 'own-1')]
+    refresh.version = b'changed external workbook'
+    refresh.sync_active_files(source.parent.parent)
+    after = editing.snapshot(source)
+    assert after['server_document'] == before['server_document']
+    assert bool(after['source_conflict']) is external
+    assert after['revision'] == before['revision'] + int(external)
+    assert refresh.downloads == (['synthetic-workbook'] if external else [])
+
+
+def test_unrelated_corrupt_editing_record_cannot_hide_a_valid_publication_refusal(publication):
+    source, editing, actor, before, metadata, graph, queue = publication
+    with editing.repository._connect() as connection:
+        row = connection.execute('SELECT * FROM editing_states WHERE document_id=?', (before['document_id'],)).fetchone()
+        connection.execute('DELETE FROM editing_states WHERE document_id=?', (before['document_id'],))
+        connection.execute('INSERT INTO editing_states VALUES(?,?,?)', ('corrupt-other', '{"publication_refusals":{}}', 1))
+        state = json.loads(row['state_json'])
+        state['publication_refusals'] = {'confirmed-choice': 100}
+        connection.execute('INSERT INTO editing_states VALUES(?,?,?)',
+                           (before['document_id'], json.dumps(state), row['updated_at']))
+    assert queue._publication_refused('confirmed-choice') is True
+    assert queue._publication_refused('unconfirmed') is False
+
 

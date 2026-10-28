@@ -33,7 +33,7 @@ from src.services.atomic_files import replace_local
 from src.services.runtime_admission import admitted, operation_for
 from src.services.runtime_contract import ContractError, ContractBusy
 from src.services.sqlite_storage_format import initialize_store, validate_store, StorageFormatError
-from src.services.editing_state_format import decode_editing_state
+from src.services.editing_state_format import decode_editing_state, EditingStateError
 from src.services.graph_job_visibility import normalize_job_owner
 from src.services.diagnostic_views import safe_provider_failure
 from src.services.publication_evidence import file_evidence, metadata_name, evidence_valid
@@ -409,12 +409,40 @@ class GraphSyncQueue:
                 confirmed.setdefault(source, row["id"])
             elif source in confirmed and row["status"] in {"pending", "failed", "held"}:
                 result = self._json_object(row["result_json"])
+                if result.get('phase') == 'publication_local_pending':
+                    if not self._publication_refused(result.get('publication_id')):
+                        continue
+                    result['publication_refused_by_owner'] = True
                 result["superseded_by"] = confirmed[source]
                 connection.execute(
                     "UPDATE graph_sync_jobs SET status = 'complete', retryable = 0, "
                     "result_json = ?, last_error = NULL, updated_at = ? WHERE id = ?",
                     (json.dumps(result), time.time(), row["id"]),
                 )
+
+    def _publication_refused(self, publication_id):
+        """Read immutable refusal evidence; never open an editing write here."""
+        if not isinstance(publication_id, str) or not publication_id:
+            return False
+        database = (self.editing_state_service.repository.database_path if self.editing_state_service
+                    else self.database_path.parent / 'editing-state/editing-state.sqlite3')
+        if not database.is_file():
+            return False
+        try:
+            with sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True, timeout=1) as reader:
+                validate_store(reader, 'editing')
+                rows = reader.execute("SELECT document_id,state_json FROM editing_states WHERE state_json LIKE ?",
+                                      ('%publication_refusals%',)).fetchall()
+            for document_id, raw in rows:
+                try:
+                    state = decode_editing_state(raw, document_id)
+                except EditingStateError:
+                    continue
+                if publication_id in state.get('publication_refusals', {}):
+                    return True
+        except (sqlite3.Error, ValueError, EditingStateError, StorageFormatError):
+            return False  # Missing/corrupt evidence cannot retire a local phase.
+        return False
 
     def _hold_outdated_upload_retries(self, connection: sqlite3.Connection) -> None:
         """Never let an older retry overwrite a newer, partially published save."""
@@ -745,12 +773,19 @@ class GraphSyncQueue:
                     Path(payload["draft_path"]),
                     fail_if_exists=bool(payload.get("fail_if_exists")) and attempts == 1,
                 )
-            except Exception:
+            except Exception as remote_error:
                 # Keep confirmed partial writes/ownership for the next snapshot.
                 self._assert_job_running(job_id)
-                publication = self._publication_checkpoint(payload, job_id, complete=False, uploaded=[])
-                self._publish_staging_metadata(payload, clear_dirty=False, publication=publication)
-                self._checkpoint_result(job_id, {'phase': 'publication_partial_confirmed'})
+                try:
+                    publication = self._publication_checkpoint(payload, job_id, complete=False, uploaded=[])
+                    self._publish_staging_metadata(payload, clear_dirty=False, publication=publication)
+                    self._checkpoint_result(job_id, {'phase': 'publication_partial_confirmed'})
+                except GraphJobNoLongerActiveError:
+                    raise
+                except Exception as local_error:
+                    # Local contention cannot make a definite remote conflict
+                    # retryable, nor discard a provider's waiting deadline.
+                    raise remote_error from local_error
                 raise
             self._assert_job_running(job_id)
             publication = self._publication_checkpoint(payload, job_id, complete=True, uploaded=uploaded)

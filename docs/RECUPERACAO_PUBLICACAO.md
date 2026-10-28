@@ -23,6 +23,12 @@ Conta estados que requerem escolha sem expor nomes ou conteúdo nem alterar
 estados. Não consegue reconstruir um autosave já perdido antes desta correção;
 nesse caso verificar a recuperação do navegador e o backup.
 
+Se a publicação remota estiver confirmada mas a pasta local tiver desaparecido,
+o trabalho preserva o snapshot e a confirmação remota. A confirmação local fica
+pendente de recuperação da pasta (refresh ou recuperação controlada da cópia).
+Uma repetição nessa fase não envia novamente a folha ao SharePoint. Não apagar
+o snapshot nem marcar manualmente o trabalho como concluído.
+
 Os novos campos são aditivos no estado v2; os recibos e hashes existentes não
 mudam. Só a nova versão reconhece publication_journal e source_conflict.
 Não arrancar a versão anterior sobre dados já utilizados pela nova versão:

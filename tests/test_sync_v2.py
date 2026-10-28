@@ -200,6 +200,15 @@ def test_graph_queue_retries_from_immutable_snapshot(tmp_path):
         )
     wait_until(lambda: not queue._worker_running)
     queue.start()
+    wait_until(lambda: queue.status(job_id)["attempts"] == 2 and queue.status(job_id)["status"] == "failed")
+    # Remote publication used the immutable snapshot. A missing local bundle
+    # cannot be silently acknowledged; retain the checkpoint until it returns.
+    assert queue.status(job_id)['result']['publication_remote_complete'] is True
+    assert staging_dir.exists()
+    draft_dir.mkdir()
+    source.write_bytes(b'draft-v1')
+    wait_until(lambda: not queue._worker_running)
+    queue.retry(job_id)
     wait_until(lambda: queue.status(job_id)["status"] == "complete")
 
     assert [call[1] for call in graph.calls] == [True, False]
