@@ -357,5 +357,9 @@ def test_graph_queue_keeps_nested_photo_metadata_paths(tmp_path):
     assert staged_metadata.read_text(encoding="utf-8") == '{"eTag":"old"}'
 
     staged_metadata.write_text('{"eTag":"new"}', encoding="utf-8")
-    queue._publish_staging_metadata(payload)
+    from src.services.publication_evidence import file_evidence
+    queue._publish_staging_metadata(payload, publication={
+        'publication_id': 'synthetic-confirmed-upload',
+        'publication_metadata': {staged_metadata.relative_to(staged_dir).as_posix(): file_evidence(staged_metadata)},
+    })
     assert original_metadata.read_text(encoding="utf-8") == '{"eTag":"new"}'

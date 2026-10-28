@@ -288,9 +288,12 @@ def _create_app(
             teams_notification_service=teams_notification_service,
             auto_start=GRAPH_QUEUE_IN_WEB,
             runtime_contract=runtime_contract,
+            editing_state_service=editing_state_service,
         )
         if graph_service is not None or mail_service is not None else None
     )
+    if graph_sync_queue is not None:
+        graph_sync_queue.editing_state_service = editing_state_service
 
     @app.before_request
     def begin_request_logging():
@@ -1688,6 +1691,7 @@ def _create_app(
                     metadata.get("idempotency_key") or secrets.token_urlsafe(18)
                 ),
                 document=document,
+                path=path,
             )
             return jsonify({"success": True, **result})
         except EditingStateError as exc:
@@ -1717,6 +1721,8 @@ def _create_app(
                 base_revision=int(metadata["base_revision"]),
                 idempotency_key=idempotency_key,
                 document=document,
+                source_resolution=data.get('source_resolution'),
+                path=path,
             )
             return jsonify({
                 "success": True,

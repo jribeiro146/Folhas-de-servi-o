@@ -352,7 +352,8 @@ const startEditingCoordinator = () => {
     };
 
     const showConflictPanel = (localRecord, remotePayload, title = "Existem duas versões da folha") => {
-        pendingPanelAction = { kind: "conflict", localRecord, remotePayload };
+        pendingPanelAction = { kind: "conflict", localRecord, remotePayload,
+            sourceToken: editing.source_conflict?.token || null };
         recoveryPanel?.classList.add("is-conflict");
         if (recoveryPanel) recoveryPanel.hidden = false;
         if (recoveryEyebrow) recoveryEyebrow.textContent = "Conflito protegido";
@@ -361,6 +362,11 @@ const startEditingCoordinator = () => {
         if (recoveryTimestamp) recoveryTimestamp.textContent = "A cópia deste dispositivo continua guardada.";
         if (ignoreRecoveryButton) ignoreRecoveryButton.textContent = "Usar servidor";
         if (restoreRecoveryButton) restoreRecoveryButton.textContent = "Usar este dispositivo";
+        if (pendingPanelAction.sourceToken) {
+            if (ignoreRecoveryButton) ignoreRecoveryButton.textContent = "Usar versão atual da folha";
+            if (restoreRecoveryButton) restoreRecoveryButton.textContent = "Continuar este rascunho";
+            if (recoveryTimestamp) recoveryTimestamp.textContent = "O rascunho recuperável foi preservado.";
+        }
     };
 
     const handleConflict = (result) => {
@@ -400,6 +406,7 @@ const startEditingCoordinator = () => {
         persistLocalRecovery({ force: true });
         setAutosaveStatus("Conflito — escolha a versão a manter", "conflict");
         showConflictPanel(localRecord, serverPayload, "A folha foi alterada noutra sessão");
+        if (editing.source_conflict) resumeEditingSession();
         return true;
     };
 
@@ -544,6 +551,10 @@ const startEditingCoordinator = () => {
         if (event?.target?.closest?.("#photos-section")) return;
         if (hydrating || readOnly || !initialized) return;
         dirty = true;
+        if (pendingPanelAction?.sourceToken) {
+            pendingPanelAction.localRecord = { ...pendingPanelAction.localRecord,
+                payload: editor.collectFormData(), updatedAt: Date.now() };
+        }
         setAutosaveStatus("A guardar neste dispositivo…", "saving");
         schedulePersistence();
     };
@@ -622,7 +633,8 @@ const startEditingCoordinator = () => {
                 // Keep the conflict choice and future autosaves free of rejected
                 // proofs, while retaining all edits made before suspension.
                 localPayload.maintenance_checklists = verifiedLocal.maintenance_checklists;
-                const remotePayload = result.document || result.source_document || {};
+                const remotePayload = resumedEditing.source_conflict
+                    ? result.source_document || {} : result.document || result.source_document || {};
                 const revisionChanged = Number(resumedEditing.revision || 1) !== previousRevision;
                 const contentChanged = comparablePayload(remotePayload) !== comparablePayload(localPayload);
 
@@ -647,7 +659,7 @@ const startEditingCoordinator = () => {
                 if (rejectedSignatures || restoredMaintenance) await persistLocalRecovery({ force:true });
                 if (revoked || otherTabActive) return false;
                 editor.setVerificationPending?.(false);
-                if (revisionChanged && contentChanged) {
+                if (resumedEditing.source_conflict || (revisionChanged && contentChanged)) {
                     resumeConflictPending = true;
                     dirty = true;
                     await persistLocalRecovery({ force: true });
@@ -839,7 +851,24 @@ const startEditingCoordinator = () => {
                 }
             }
 
+            if (editing.source_conflict) {
+                // Display the recovery, and persist edits to that recovery;
+                // the current source stays a separate, explicitly chosen version.
+                initialPayload = localRecovery?.payload || result.editing?.server_document || initialPayload;
+                initialSignatures = localRecovery?.payload || sourceSignatures;
+                resumeConflictPending = true;
+                initialConflictPending = false;
+                shouldSave = false;
+                showConflictPanel({ ...localRecovery, payload: initialPayload,
+                    baseRevision: Number(editing.revision || 1), updatedAt: Date.now() },
+                    result.source_document || {}, "Confirme a versão a continuar");
+            }
+
             applyPayload(initialPayload, initialSignatures, { shouldSave });
+            if (editing.source_conflict) {
+                dirty = true;
+                await persistLocalRecovery({ force: true });
+            }
             if (localRecovery?.payload === initialPayload) await persistLocalRecovery({ force:true });
             initialRecoveryPending = false;
             initialized = true;
@@ -908,10 +937,60 @@ const startEditingCoordinator = () => {
         else await resumeEditingSession();
     });
 
+    const resolveSourceChoice = async (action, payload, signatures) => {
+        // This is invoked only by the two explicit choice buttons. Timers,
+        // reconnect and pagehide never carry the source-resolution token.
+        const serialized = JSON.stringify(payload);
+        if (!action.resolution || action.resolution.serialized !== serialized) {
+            action.resolution = { key: makeId(), serialized, baseRevision: Number(editing.revision || 1) };
+        }
+        const requestState = action.resolution;
+        setFormReadOnly(true);
+        if (ignoreRecoveryButton) ignoreRecoveryButton.disabled = true;
+        if (restoreRecoveryButton) restoreRecoveryButton.disabled = true;
+        try {
+            const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/autosave`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ document: payload, source_resolution: action.sourceToken,
+                    _edit: { ...editMetadata(requestState.key), base_revision: requestState.baseRevision } }),
+            });
+            const result = await response.json();
+            if (revoked || pendingPanelAction !== action) return false;
+            if (!response.ok || !result.success || result.editing?.source_conflict) {
+                if (!handleConflict(result)) showToast(result.error || "A escolha não foi confirmada. Volte a tentar.", "error");
+                return false;
+            }
+            editing = { ...editing, ...result.editing };
+            sessionToken = result.editing?.lease?.token || sessionToken;
+            serverPayload = result.editing?.server_document || payload;
+            pendingAutosave = null;
+            resumeConflictPending = false;
+            initialConflictPending = false;
+            applyPayload(payload, signatures);
+            hideRecoveryPanel();
+            await persistLocalRecovery({ force: true });
+            syncCommitActions();
+            setAutosaveStatus("Versão escolhida guardada no servidor", "saved");
+            return true;
+        } catch (error) {
+            showToast(error.message || "Não foi possível confirmar a escolha. O rascunho foi preservado.", "error");
+            return false;
+        } finally {
+            if (ignoreRecoveryButton) ignoreRecoveryButton.disabled = false;
+            if (restoreRecoveryButton) restoreRecoveryButton.disabled = false;
+            setFormReadOnly(otherTabActive || revoked || !hasActiveSession());
+            syncCommitActions();
+        }
+    };
+
     ignoreRecoveryButton?.addEventListener("click", async () => {
         if (revoked || otherTabActive || initializing || initialRecoveryPending) return;
         const action = pendingPanelAction;
         if (!action) return hideRecoveryPanel();
+        if (action.sourceToken) {
+            await resolveSourceChoice(action, action.remotePayload, sourceSignatures);
+            return;
+        }
         if (action.kind === "conflict") {
             // An explicit choice against the freshly loaded server revision
             // supersedes the old autosave, including an unknown pre-resume one.
@@ -942,6 +1021,10 @@ const startEditingCoordinator = () => {
                 return; // Keep the conflict and original recovery for another attempt.
             }
             if (revoked || otherTabActive || initializing || initialRecoveryPending || pendingPanelAction !== action) return;
+            if (action.sourceToken) {
+                await resolveSourceChoice(action, payload, payload);
+                return;
+            }
             pendingAutosave = null;
             resumeConflictPending = false;
             initialConflictPending = false;

@@ -36,6 +36,7 @@ from src.services.sqlite_storage_format import initialize_store, validate_store,
 from src.services.editing_state_format import decode_editing_state
 from src.services.graph_job_visibility import normalize_job_owner
 from src.services.diagnostic_views import safe_provider_failure
+from src.services.publication_evidence import file_evidence, metadata_name, evidence_valid
 
 
 LOGGER = logging.getLogger(__name__)
@@ -101,8 +102,10 @@ class GraphSyncQueue:
         teams_notification_service: TeamsNotificationService | None = None,
         auto_start: bool = True,
         runtime_contract=None,
+        editing_state_service=None,
     ):
         self.runtime_contract = runtime_contract
+        self.editing_state_service = editing_state_service
         self.graph_service = graph_service
         self.mail_service = mail_service
         self.local_pdf_service = local_pdf_service
@@ -406,6 +409,8 @@ class GraphSyncQueue:
                 confirmed.setdefault(source, row["id"])
             elif source in confirmed and row["status"] in {"pending", "failed", "held"}:
                 result = self._json_object(row["result_json"])
+                if result.get('phase') == 'publication_local_pending':
+                    continue  # Its committed editing journal must still be acknowledged.
                 result["superseded_by"] = confirmed[source]
                 connection.execute(
                     "UPDATE graph_sync_jobs SET status = 'complete', retryable = 0, "
@@ -429,6 +434,8 @@ class GraphSyncQueue:
                 continue
             if source in started and row["status"] in {"pending", "failed", "held"}:
                 result = self._json_object(row["result_json"])
+                if result.get('phase') == 'publication_local_pending':
+                    continue  # Local acknowledgement never repeats the remote PUT.
                 if not result.get("blocked_by_newer_upload"):
                     result["blocked_by_newer_upload"] = started[source]
                     connection.execute(
@@ -725,6 +732,14 @@ class GraphSyncQueue:
         if kind == "upload_active":
             if self.graph_service is None:
                 raise RuntimeError("O armazenamento Microsoft Graph não está ativo.")
+            if prior_result.get('phase') == 'publication_local_pending':
+                self._assert_job_running(job_id)
+                self._publish_staging_metadata(payload,
+                    clear_dirty=prior_result.get('publication_remote_complete') is True,
+                    publication=prior_result)
+                if prior_result.get('publication_remote_complete') is True:
+                    return {'uploaded_files': prior_result['uploaded_files'], 'phase': 'publication_confirmed'}
+                self._checkpoint_result(job_id, {'phase': 'publication_partial_confirmed'})
             self._hydrate_staging_metadata(payload)
             self._assert_job_running(job_id)
             try:
@@ -735,11 +750,14 @@ class GraphSyncQueue:
             except Exception:
                 # Keep confirmed partial writes/ownership for the next snapshot.
                 self._assert_job_running(job_id)
-                self._publish_staging_metadata(payload, clear_dirty=False)
+                publication = self._publication_checkpoint(payload, job_id, complete=False, uploaded=[])
+                self._publish_staging_metadata(payload, clear_dirty=False, publication=publication)
+                self._checkpoint_result(job_id, {'phase': 'publication_partial_confirmed'})
                 raise
             self._assert_job_running(job_id)
-            self._publish_staging_metadata(payload)
-            return {"uploaded_files": uploaded}
+            publication = self._publication_checkpoint(payload, job_id, complete=True, uploaded=uploaded)
+            self._publish_staging_metadata(payload, publication=publication)
+            return {"uploaded_files": uploaded, 'phase': 'publication_confirmed'}
         if kind == "archive_and_remove":
             if self.graph_service is None:
                 raise RuntimeError("O armazenamento Microsoft Graph não está ativo.")
@@ -1442,16 +1460,49 @@ class GraphSyncQueue:
             copy_confirmations(original.parent, staged.parent)
             refresh_own_removal_versions(staged.parent)
 
-    def _publish_staging_metadata(self, payload: dict[str, Any], *, clear_dirty: bool = True) -> None:
+    def _publication_checkpoint(self, payload, job_id, *, complete, uploaded):
+        staged = Path(payload['draft_path'])
+        metadata = {p.relative_to(staged.parent).as_posix(): file_evidence(p)
+                    for p in self._metadata_files(staged.parent)}
+        result = {'phase': 'publication_local_pending', 'publication_id': uuid.uuid4().hex,
+                  'publication_remote_complete': complete, 'publication_metadata': metadata,
+                  'uploaded_files': uploaded}
+        # Persist the remote outcome BEFORE any copy back to the editor bundle.
+        # A reclaim/exception afterwards resumes this phase without another PUT.
+        self._checkpoint_result(job_id, result)
+        return result
+
+    def _publish_staging_metadata(self, payload: dict[str, Any], *, clear_dirty: bool = True,
+                                  publication=None) -> None:
         staged = Path(str(payload["draft_path"]))
         original_value = str(payload.get("_original_draft_path") or "")
         if not original_value:
             return
         original = Path(original_value)
         if not original.parent.exists() or not staged.parent.exists():
-            return
-        with bundle_guard(original.parent):
-            self._publish_locked_metadata(staged, original, clear_dirty=clear_dirty)
+            raise GraphConflictError('A origem ou a cópia da publicação não está disponível; requer revisão.')
+        if not publication:
+            raise GraphConflictError('Confirmação da publicação em falta; os dados locais foram preservados.')
+        expected = publication.get('publication_metadata')
+        if (not isinstance(expected, dict) or len(expected) > 10000
+                or not isinstance(publication.get('publication_id'), str)
+                or not publication['publication_id']
+                or any(not metadata_name(k) or v is None or not evidence_valid(v) for k, v in expected.items())):
+            raise GraphConflictError('Prova da publicação inválida; requer revisão.')
+        observed = {p.relative_to(staged.parent).as_posix(): file_evidence(p)
+                    for p in self._metadata_files(staged.parent)}
+        if observed != expected:
+            raise GraphConflictError('Os metadados da publicação mudaram; requer revisão.')
+        if self.editing_state_service is None:
+            from src.services.editing_state_service import EditingStateService
+            self.editing_state_service = EditingStateService(self.database_path.parent / 'editing-state')
+        from src.services.editing_state_service import RevisionConflictError
+        try:
+            self.editing_state_service.publish_own_metadata(original,
+                publication_id=publication['publication_id'], files=expected,
+                apply=lambda: self._publish_locked_metadata(staged, original, clear_dirty=clear_dirty))
+        except RevisionConflictError as exc:
+            raise GraphConflictError('A folha mudou antes da confirmação local; as versões foram preservadas.') from exc
 
     def _copy_newer_metadata(self, source_dir: Path, destination_dir: Path) -> None:
         for source in self._metadata_files(source_dir):

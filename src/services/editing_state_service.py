@@ -22,6 +22,7 @@ from src.services.editing_state_format import (
 from src.services.file_mutex import FileMutexBusy, file_mutex
 from src.services.local_changes import bundle_guard
 from src.services.admin_access import can_administer
+from src.services.publication_evidence import content_evidence, file_evidence, journal_position, legacy_fingerprint
 
 
 EDIT_METADATA_NAME = ".fs_edit.json"
@@ -433,17 +434,29 @@ class EditingStateService:
         base_revision: int,
         idempotency_key: str,
         document: dict[str, Any],
+        source_resolution: str | None = None,
+        path: Path | None = None,
     ) -> dict[str, Any]:
         now = time.time()
-        with self._state_transaction(document_id) as state:
+        with self._state_transaction(document_id, path=path) as state:
             self._assert_session(state, identity, client_id, lease_token, now)
-            self._assert_no_pending_operation(state)
+            resolving = bool(state.get('source_conflict') and source_resolution == state['source_conflict']['token'])
+            self._assert_no_pending_operation(state, allow_publication=resolving)
             existing = state.get("autosave") or {}
             if existing.get("idempotency_key") == idempotency_key:
                 return self._public_snapshot(
                     state, now=now, include_token=True, session_token=lease_token
                 )
-            self._assert_revision(state, base_revision, now)
+            self._assert_revision(state, base_revision, now, source_resolution=source_resolution)
+            if state.get('source_conflict'):
+                # Only an explicit choice against this exact conflict can retire
+                # the old recovery. Keep it available for later diagnosis.
+                state['previous_source_recovery'] = state.get('autosave')
+                journal = state.pop('publication_journal', None)
+                if journal:
+                    state.setdefault('publication_refusals', {})[journal['publication_id']] = time.time()
+                    state['previous_publication_journal'] = journal
+                state['source_conflict'] = None
             state["revision"] = int(state.get("revision") or 1) + 1
             state["autosave"] = {
                 "document": document,
@@ -467,15 +480,17 @@ class EditingStateService:
         base_revision: int,
         idempotency_key: str,
         document: dict[str, Any] | None,
+        path: Path | None = None,
     ) -> dict[str, Any]:
         """Best-effort autosave followed by browser-session cleanup."""
         now = time.time()
-        with self._state_transaction(document_id) as state:
+        with self._state_transaction(document_id, path=path) as state:
             self._assert_session(state, identity, client_id, lease_token, now)
             autosaved = False
             revision_conflict = False
 
-            if document is not None and not self._has_pending_operation(state):
+            if (document is not None and not self._has_pending_operation(state)
+                    and not state.get('source_conflict') and not state.get('publication_journal')):
                 existing = state.get("autosave") or {}
                 if existing.get("idempotency_key") == idempotency_key:
                     autosaved = True
@@ -748,15 +763,85 @@ class EditingStateService:
         path: Path | None = None,
         audit: dict[str, Any] | None = None, must_exist: bool = False,
     ) -> Iterator[dict[str, Any]]:
-        with self.repository.transaction(
-            document_id,
-            lambda: self._new_state(document_id),
-            audit=audit, must_exist=must_exist, validator=validate_editing_state,
-        ) as state:
-            self._normalize_state(state)
-            if path is not None:
-                self._sync_fingerprint(state, path)
-            yield state
+        try:
+            # This short local-phase lock also covers readers without an
+            # operation/bundle mutex. It is acquired BEFORE opening SQLite.
+            with file_mutex(self._publication_mutex(document_id)):
+                with self.repository.transaction(
+                    document_id, lambda: self._new_state(document_id),
+                    audit=audit, must_exist=must_exist, validator=validate_editing_state,
+                ) as state:
+                    self._normalize_state(state)
+                    if path is not None:
+                        self._sync_fingerprint(state, path)
+                    yield state
+        except FileMutexBusy as exc:
+            raise OperationInProgressError('A publicação está a ser confirmada. Aguarde e tente novamente.') from exc
+
+    def _publication_mutex(self, document_id):
+        return self.root / 'publication-locks' / hashlib.sha256(document_id.encode()).hexdigest()
+
+    def publish_own_metadata(self, path, *, publication_id, files, apply):
+        """Journal one confirmed local transition; no Microsoft calls in locks.
+
+        The queue persists its remote checkpoint first. A crash between these
+        two commits can therefore repeat only this local phase, preserving the
+        editing revision, emitted etag, autosave and old operation receipts.
+        """
+        document_id = self.resolve_document_id(path)
+        operation_lock = self.root / 'operation-locks' / hashlib.sha256(document_id.encode()).hexdigest()
+        with file_mutex(operation_lock), bundle_guard(path.parent), file_mutex(self._publication_mutex(document_id)):
+            def transaction():
+                return self.repository.transaction(document_id, lambda: self._new_state(document_id),
+                    must_exist=True, validator=validate_editing_state)
+            with self.repository._connect() as connection:
+                exists = connection.execute('SELECT 1 FROM editing_states WHERE document_id=?', (document_id,)).fetchone()
+            if exists is None:
+                # No old editing state or recovery exists. A first session is
+                # excluded by the same local-phase mutex until copying ends.
+                apply()
+                return
+            with transaction() as state:
+                self._normalize_state(state)
+                if publication_id in state.get('publication_refusals', {}):
+                    raise RevisionConflictError(self._public_snapshot(state))
+                if self._has_pending_operation(state) or state.get('closed_by_operation'):
+                    raise OperationInProgressError('A operação da folha ainda não permite confirmar a publicação.')
+                journal = state.get('publication_journal')
+                if journal:
+                    if journal['publication_id'] != publication_id:
+                        raise OperationInProgressError('Existe outra publicação local por confirmar.')
+                    position = journal_position(path, journal)
+                    if position == 'diverged':
+                        raise RevisionConflictError(self._public_snapshot(state))
+                else:
+                    fingerprint = self._fingerprint(path)
+                    if state.get('source_conflict') or (state.get('fingerprint') and state['fingerprint'] != fingerprint):
+                        # Do not acknowledge an unknown earlier mutation.
+                        raise RevisionConflictError(self._public_snapshot(state))
+                    if not state['fingerprint']:
+                        state['fingerprint'] = fingerprint
+                    changes = {}
+                    for name, proof in files.items():
+                        before = file_evidence(path.parent / name)
+                        if before != proof and (before is None or before['mtime_ns'] < proof['mtime_ns']):
+                            changes[name] = {'before': before, 'after': proof}
+                    journal = {'version': 1, 'publication_id': publication_id,
+                        'source_name': path.name, 'before_fingerprint': fingerprint,
+                        'content': content_evidence(path), 'files': changes}
+                    if changes:
+                        state['publication_journal'] = journal
+            # The journal is committed before the first replacement.
+            apply()
+            with transaction() as state:
+                journal = state.get('publication_journal')
+                if journal:
+                    if (journal['publication_id'] != publication_id
+                            or journal_position(path, journal) != 'after'
+                            or state['fingerprint'] != journal['before_fingerprint']):
+                        raise RevisionConflictError(self._public_snapshot(state))
+                    state['fingerprint'] = self._fingerprint(path)
+                    state.pop('publication_journal', None)
 
     def _new_state(self, document_id: str) -> dict[str, Any]:
         return {
@@ -776,6 +861,23 @@ class EditingStateService:
         }
 
     def _sync_fingerprint(self, state: dict[str, Any], path: Path) -> None:
+        journal = state.get('publication_journal')
+        if journal:
+            position = journal_position(path, journal)
+            if position == 'after' and state['fingerprint'] == journal['before_fingerprint']:
+                state['fingerprint'] = self._fingerprint(path)
+                state.pop('publication_journal', None)
+            else:
+                # A reader never clears recovery during a partial local phase.
+                # Only the queue may finish copying its frozen metadata.
+                if position == 'diverged':
+                    fingerprint = self._fingerprint(path)
+                    if not state.get('source_conflict') or state['fingerprint'] != fingerprint:
+                        state['source_conflict'] = {'token': secrets.token_urlsafe(24), 'detected_at': time.time()}
+                        state['revision'] += 1
+                        state['fingerprint'] = fingerprint
+                        state['etag'] = self._etag(state)
+                return
         if self._has_pending_operation(state):
             return
         fingerprint = self._fingerprint(path)
@@ -785,7 +887,8 @@ class EditingStateService:
                 state["source_changed_at"] = time.time()
             else:
                 state["revision"] = int(state.get("revision") or 1) + 1
-                state["autosave"] = None
+                state['source_conflict'] = {'token': secrets.token_urlsafe(24), 'detected_at': time.time()}
+                state['source_changed_at'] = time.time()
                 state["etag"] = self._etag(state)
         state["fingerprint"] = fingerprint
         state.setdefault("aliases", [])
@@ -810,8 +913,11 @@ class EditingStateService:
             raise LeaseRequiredError(self._public_snapshot(state, now=now))
         return session
 
-    def _assert_revision(self, state: dict[str, Any], base_revision: int, now: float) -> None:
-        if int(base_revision) != int(state.get("revision") or 1):
+    def _assert_revision(self, state: dict[str, Any], base_revision: int, now: float,
+                         *, source_resolution: str | None = None) -> None:
+        conflict = state.get('source_conflict')
+        if (int(base_revision) != int(state.get("revision") or 1)
+                or (conflict and source_resolution != conflict['token'])):
             raise RevisionConflictError(self._public_snapshot(state, now=now))
 
     @staticmethod
@@ -821,8 +927,8 @@ class EditingStateService:
             for key, operation in state.get("operations", {}).items()
         )
 
-    def _assert_no_pending_operation(self, state: dict[str, Any], except_key: str = "") -> None:
-        if self._has_pending_operation(state, except_key):
+    def _assert_no_pending_operation(self, state: dict[str, Any], except_key: str = "", *, allow_publication=False) -> None:
+        if self._has_pending_operation(state, except_key) or (state.get('publication_journal') and not allow_publication):
             raise OperationInProgressError("Outra operação sobre esta folha está em curso.")
 
     @contextmanager
@@ -952,24 +1058,13 @@ class EditingStateService:
             "server_document": autosave.get("document"),
             "autosaved_at": autosave.get("updated_at"),
             "source_changed_at": state.get("source_changed_at"),
+            "source_conflict": state.get('source_conflict'),
+            "publication_pending": bool(state.get('publication_journal')),
         }
 
     @staticmethod
     def _fingerprint(path: Path) -> str:
-        parts: list[str] = []
-        related = [
-            path,
-            path.with_name(f"{path.stem}__documento.json"),
-            path.with_name(f"{path.stem}__assinatura_cliente.png"),
-            path.with_name(f"{path.name}.graph.json"),
-        ]
-        for item in related:
-            try:
-                stat = item.stat()
-                parts.append(f"{item.name}:{stat.st_mtime_ns}:{stat.st_size}")
-            except FileNotFoundError:
-                parts.append(f"{item.name}:missing")
-        return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+        return legacy_fingerprint(path)
 
     @staticmethod
     def _etag(state: dict[str, Any]) -> str:

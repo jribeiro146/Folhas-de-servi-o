@@ -3,6 +3,7 @@ import json
 import math
 import hashlib
 import logging
+from src.services.publication_evidence import validate_journal
 
 STATE_VERSION = 2
 
@@ -132,6 +133,22 @@ def validate_editing_state(state, document_id):
     for field in ("original_name", "closed_by_operation"):
         if field in state:
             _require(isinstance(state[field], str))
+    if state.get('publication_journal') is not None:
+        _require(validate_journal(state['publication_journal']))
+    if state.get('source_conflict') is not None:
+        conflict = state['source_conflict']
+        _require(isinstance(conflict, dict) and _text(conflict.get('token'))
+                 and _number(conflict.get('detected_at')))
+    if 'publication_refusals' in state:
+        _require(isinstance(state['publication_refusals'], dict)
+                 and all(_text(k) and _number(v) for k, v in state['publication_refusals'].items()))
+    if state.get('previous_publication_journal') is not None:
+        _require(validate_journal(state['previous_publication_journal']))
+    previous = state.get('previous_source_recovery')
+    if previous is not None:
+        _require(isinstance(previous, dict) and isinstance(previous.get('document'), dict))
+        _require(_number(previous.get('updated_at')) and _text(previous.get('owner_id')))
+        _require(_text(previous.get('idempotency_key')) and isinstance(previous.get('owner_name'), str))
     return state
 
 
