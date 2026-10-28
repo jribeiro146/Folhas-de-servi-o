@@ -887,7 +887,8 @@ class EditingStateService:
                 state["source_changed_at"] = time.time()
             else:
                 state["revision"] = int(state.get("revision") or 1) + 1
-                state['source_conflict'] = {'token': secrets.token_urlsafe(24), 'detected_at': time.time()}
+                if state.get('autosave') is not None or state.get('source_conflict'):
+                    state['source_conflict'] = {'token': secrets.token_urlsafe(24), 'detected_at': time.time()}
                 state['source_changed_at'] = time.time()
                 state["etag"] = self._etag(state)
         state["fingerprint"] = fingerprint

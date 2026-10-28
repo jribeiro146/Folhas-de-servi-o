@@ -128,6 +128,27 @@ def test_choice_against_another_source_change_is_refused(publication):
     assert editing.snapshot(source)['server_document'] == before['server_document']
 
 
+def test_explicit_resolution_and_new_publication_release_old_local_failure(publication, monkeypatch):
+    source, editing, actor, before, metadata, graph, queue = publication
+    copy = queue._publish_locked_metadata
+    def diverge(*args, **kwargs):
+        copy(*args, **kwargs)
+        source.write_bytes(b'different source during acknowledgement')
+    monkeypatch.setattr(queue, '_publish_locked_metadata', diverge)
+    old = queue.enqueue('upload_active', {'draft_path': str(source)})
+    queue.run_until_idle()
+    conflict = editing.snapshot(source)
+    editing.save_autosave(**dict(metadata, base_revision=conflict['revision'], idempotency_key='resolve'),
+        document=before['server_document'], path=source, source_resolution=conflict['source_conflict']['token'])
+    monkeypatch.setattr(queue, '_publish_locked_metadata', copy)
+    mark_dirty(source.parent)
+    new = queue.enqueue('upload_active', {'draft_path': str(source)})
+    queue.run_until_idle()
+    assert queue.status(new['id'])['status'] == 'complete'
+    assert queue.status(old['id'])['result']['superseded_by'] == new['id']
+    assert queue.unfinished_upload(source) is None
+
+
 @pytest.mark.parametrize('boundary', ['before_copy', 'after_copy'])
 def test_restart_finishes_only_local_phase_after_remote_success(publication, monkeypatch, boundary):
     source, editing, actor, before, metadata, graph, queue = publication

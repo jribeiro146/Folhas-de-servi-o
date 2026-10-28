@@ -409,8 +409,6 @@ class GraphSyncQueue:
                 confirmed.setdefault(source, row["id"])
             elif source in confirmed and row["status"] in {"pending", "failed", "held"}:
                 result = self._json_object(row["result_json"])
-                if result.get('phase') == 'publication_local_pending':
-                    continue  # Its committed editing journal must still be acknowledged.
                 result["superseded_by"] = confirmed[source]
                 connection.execute(
                     "UPDATE graph_sync_jobs SET status = 'complete', retryable = 0, "

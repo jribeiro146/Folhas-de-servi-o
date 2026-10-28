@@ -8,7 +8,7 @@ from tests.test_editing_quarantine import quarantine_app, replace_stored_state
 
 
 @pytest.mark.parametrize('process_death', [False, True])
-def test_partial_draft_then_reload_keeps_autosave_but_later_external_change_invalidates(quarantine_app, monkeypatch, process_death):
+def test_partial_draft_then_reload_keeps_autosave_and_later_change_requires_choice(quarantine_app, monkeypatch, process_death):
     app, service, document_id, path = quarantine_app
     raw = app.config['SYNTHETIC_INITIAL_STATE']
     replace_stored_state(service, document_id, raw)
@@ -49,8 +49,13 @@ def test_partial_draft_then_reload_keeps_autosave_but_later_external_change_inva
     DocumentDataService(path).write({'intervention_report':'Alteração externa posterior e distinta'})
     external = client.get(f'/api/file/{path.stem}/bootstrap?client_id=tab-1')
     assert external.status_code == 200
-    assert external.json['editing']['server_document'] is None
+    assert external.json['editing']['server_document']['intervention_report'] == payload['intervention_report']
+    assert external.json['editing']['source_conflict']['token']
     assert external.json['editing']['revision'] > reopened.json['editing']['revision']
+    metadata.update(base_revision=external.json['editing']['revision'],
+                    lease_token=external.json['editing']['lease']['token'], idempotency_key='unconfirmed-source-change')
+    refused = client.post(f'/api/file/{path.stem}/autosave', json={'_edit': metadata, 'document': payload})
+    assert refused.status_code == 409 and refused.json['code'] == 'revision_conflict'
 
 
 @pytest.mark.parametrize('kind,other_path', [('send',False), ('draft',True)])
