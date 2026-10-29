@@ -53,6 +53,8 @@ def test_accepted_send_with_lost_response_never_repeats(tmp_path, monkeypatch, f
 
 
 def test_explicit_throttling_can_retry_without_uncertainty(tmp_path, monkeypatch):
+    now = [time.time()]
+    monkeypatch.setattr(time, 'time', lambda: now[0])
     calls = []
     def transport(req, **_):
         calls.append(req)
@@ -67,6 +69,9 @@ def test_explicit_throttling_can_retry_without_uncertainty(tmp_path, monkeypatch
     assert state["next_attempt_at"] >= time.time() + 5
     with queue._connect() as db:
         db.execute("UPDATE graph_sync_jobs SET next_attempt_at=0 WHERE id=?", (job["id"],))
+    queue.run_until_idle()
+    assert len(calls) == 1 and queue.status(job['id'])['attempts'] == 1
+    now[0] += 8
     queue.run_until_idle()
     assert queue.status(job["id"])["result"]["mail"]["accepted"]
     assert len(calls) == 2
