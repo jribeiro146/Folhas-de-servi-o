@@ -1082,3 +1082,23 @@ test('failed source read offers a read retry and never submits the old server au
     await app.element('btn-ignore-recovery').events.get('click')();
     assert.equal(sharedServer.document.intervention_report,'True external source');
 });
+
+test('a late source choice response cannot reenable a tab after another becomes active',async t=>{
+    let channel;
+    class Channel {constructor(){channel=this;} postMessage(){} close(){}}
+    const original={...signed('valid'),intervention_report:'Old autosave'};
+    const sharedServer={document:original,revision:1,accepted:0,conflicts:0};
+    const app=harness(t,{remote:original,sharedServer,deferSave:true,BroadcastChannel:Channel});
+    await waitFor(()=>!app.element('btn-save-draft').disabled);
+    sharedServer.sourceDocument={...original,intervention_report:'New external source'};
+    sharedServer.sourceConflict={token:'source-token',detected_at:100};sharedServer.revision++;
+    app.setPayload({...original,intervention_report:'Preserved local text'});app.coordinator.markDirty();
+    await waitFor(()=>app.bootstrapCount()===2 && !app.element('btn-ignore-recovery').disabled);
+    const choice=app.element('btn-ignore-recovery').events.get('click')();
+    await waitFor(()=>app.pendingSave());
+    channel.onmessage({data:{type:'active',fileName:'synthetic-draft',userId:'user',instanceId:'other-tab'}});
+    app.finishSave();await choice;
+    assert.equal(app.payload().intervention_report,'Preserved local text');
+    assert.equal(app.element('btn-save-draft').disabled,true);
+    assert.equal(app.element('service-form').classList.contains('is-readonly'),true);
+});

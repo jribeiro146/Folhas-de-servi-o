@@ -250,9 +250,17 @@ def test_partial_remote_error_keeps_its_retry_policy_when_local_mutex_is_busy(pu
     with editing.operation_guard(before['document_id'], actor):
         queue.run_until_idle()
     failed = queue.status(job['id'])
+    assert failed['will_retry'] is True  # Only the local acknowledgement resumes.
+    assert failed['result']['publication_remote_failure']['retryable'] is retryable
+    assert failed['result']['phase'] == 'publication_local_pending'
+    with queue._connect() as connection:
+        connection.execute('UPDATE graph_sync_jobs SET next_attempt_at=0 WHERE id=?', (job['id'],))
+    queue.run_until_idle()
+    failed = queue.status(job['id'])
+    assert failed['result']['phase'] == 'publication_partial_confirmed'
     assert failed['last_error'] == str(remote)
     assert failed['will_retry'] is retryable
-    assert failed['result']['phase'] == 'publication_local_pending'
+    assert graph.calls == 1
     if retryable:
         assert failed['next_attempt_at'] >= started + 120
 
@@ -449,5 +457,104 @@ def test_unrelated_corrupt_editing_record_cannot_hide_a_valid_publication_refusa
                            (before['document_id'], json.dumps(state), row['updated_at']))
     assert queue._publication_refused('confirmed-choice') is True
     assert queue._publication_refused('unconfirmed') is False
+
+
+@pytest.mark.parametrize('newer_complete', [False, True])
+def test_partial_local_retry_never_republishes_after_a_newer_started_upload(publication, monkeypatch, newer_complete):
+    from src.services.graph_storage_service import GraphConflictError
+    source, editing, actor, before, metadata, graph, queue = publication
+    upload = graph.upload_active_bundle
+    def partial_first(*args, **kwargs):
+        result = upload(*args, **kwargs)
+        if graph.calls == 1:
+            raise GraphStorageError('synthetic retryable failure')
+        if not newer_complete:
+            raise GraphConflictError('synthetic newer refusal')
+        return result
+    graph.upload_active_bundle = partial_first
+    publish = queue._publish_staging_metadata
+    monkeypatch.setattr(queue, '_publish_staging_metadata',
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError('busy before local journal')))
+    old = queue.enqueue('upload_active', {'draft_path': str(source)})
+    queue.run_until_idle()
+    monkeypatch.setattr(queue, '_publish_staging_metadata', publish)
+    new = queue.enqueue('upload_active', {'draft_path': str(source)})
+    queue.run_until_idle()
+    assert graph.calls == 2
+    with queue._connect() as connection:
+        connection.execute('UPDATE graph_sync_jobs SET next_attempt_at=0 WHERE id=?', (old['id'],))
+    queue.run_until_idle()
+    assert graph.calls == 2  # Never a third PUT of the older immutable snapshot.
+    result = queue.status(old['id'])
+    assert result['result']['blocked_by_newer_upload'] == new['id']
+    assert result['status'] == ('complete' if newer_complete else 'failed')
+    assert result['will_retry'] is False
+    assert editing.snapshot(source)['server_document'] == before['server_document']
+
+
+def test_partial_412_and_half_local_copy_recovers_locally_while_autosave_continues(publication, monkeypatch):
+    import shutil
+    from src.services.graph_storage_service import GraphConflictError
+    source, editing, actor, before, metadata, graph, queue = publication
+    upload = graph.upload_active_bundle
+    def refused(path, **kwargs):
+        upload(path, **kwargs)
+        (path.parent / '.graph_bundle.json').write_text('{"synthetic":true}')
+        raise GraphConflictError('synthetic definitive 412')
+    graph.upload_active_bundle = refused
+    copy = queue._publish_locked_metadata
+    def interrupted(staged, original, **kwargs):
+        shutil.copy2(staged.with_name(staged.name + '.graph.json'),
+                     original.with_name(original.name + '.graph.json'))
+        raise OSError('interrupted before second metadata file')
+    monkeypatch.setattr(queue, '_publish_locked_metadata', interrupted)
+    job = queue.enqueue('upload_active', {'draft_path': str(source)})
+    queue.run_until_idle()
+    assert queue.status(job['id'])['will_retry']
+    pending = editing.snapshot(source)
+    assert pending['publication_pending'] and not pending['source_conflict']
+    saved = editing.save_autosave(**dict(metadata, idempotency_key='while-pending'),
+        document={'report': 'More text while local acknowledgement waits'}, path=source)
+    closed = editing.close_editing_session(**dict(metadata, base_revision=saved['revision'], idempotency_key='close-pending'),
+        document={'report': 'Last text before closing'}, path=source)
+    assert closed['autosaved']
+    monkeypatch.setattr(queue, '_publish_locked_metadata', copy)
+    with queue._connect() as connection:
+        connection.execute('UPDATE graph_sync_jobs SET next_attempt_at=0 WHERE id=?', (job['id'],))
+    queue.run_until_idle()
+    failed = queue.status(job['id'])
+    assert failed['will_retry'] is False
+    assert failed['result']['phase'] == 'publication_partial_confirmed'
+    assert graph.calls == 1  # The definite 412 never becomes a remote retry.
+    assert not editing.snapshot(source)['publication_pending']
+    assert editing.snapshot(source)['server_document'] == {'report': 'Last text before closing'}
+
+
+@pytest.mark.parametrize('newer_save', [False, True])
+def test_missing_origin_recovers_automatically_and_unblocks_finalization(publication, monkeypatch, newer_save):
+    source, editing, actor, before, metadata, graph, queue = publication
+    absent = source.parent.with_name('synthetic-temporarily-absent')
+    upload = graph.upload_active_bundle
+    def missing_after_put(*args, **kwargs):
+        result = upload(*args, **kwargs)
+        source.parent.rename(absent)
+        return result
+    graph.upload_active_bundle = missing_after_put
+    old = queue.enqueue('upload_active', {'draft_path': str(source)})
+    queue.run_until_idle()
+    assert queue.status(old['id'])['will_retry']
+    absent.rename(source.parent)
+    graph.upload_active_bundle = upload
+    if newer_save:
+        new = queue.enqueue('upload_active', {'draft_path': str(source)})
+        queue.run_until_idle()
+        assert queue.status(new['id'])['status'] == 'complete'
+    with queue._connect() as connection:
+        connection.execute('UPDATE graph_sync_jobs SET next_attempt_at=0 WHERE id=?', (old['id'],))
+    queue.run_until_idle()  # No admin retry() needed after the folder returns.
+    assert graph.calls == (2 if newer_save else 1)
+    assert queue.status(old['id'])['status'] == 'complete'
+    assert queue.unfinished_upload(source) is None
+    assert editing.snapshot(source)['server_document'] == before['server_document']
 
 

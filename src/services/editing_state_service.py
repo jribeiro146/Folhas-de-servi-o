@@ -440,8 +440,9 @@ class EditingStateService:
         now = time.time()
         with self._state_transaction(document_id, path=path) as state:
             self._assert_session(state, identity, client_id, lease_token, now)
-            resolving = bool(state.get('source_conflict') and source_resolution == state['source_conflict']['token'])
-            self._assert_no_pending_operation(state, allow_publication=resolving)
+            # Autosave only changes SQLite recovery, never the bundle covered
+            # by the publication journal. Keep accepting text while it resumes.
+            self._assert_no_pending_operation(state, allow_publication=True)
             existing = state.get("autosave") or {}
             if existing.get("idempotency_key") == idempotency_key and not state.get('source_conflict'):
                 return self._public_snapshot(
@@ -490,7 +491,7 @@ class EditingStateService:
             revision_conflict = False
 
             if (document is not None and not self._has_pending_operation(state)
-                    and not state.get('source_conflict') and not state.get('publication_journal')):
+                    and not state.get('source_conflict')):
                 existing = state.get("autosave") or {}
                 if existing.get("idempotency_key") == idempotency_key:
                     autosaved = True

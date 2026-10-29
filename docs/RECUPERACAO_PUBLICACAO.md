@@ -26,8 +26,22 @@ nesse caso verificar a recuperação do navegador e o backup.
 Se a publicação remota estiver confirmada mas a pasta local tiver desaparecido,
 o trabalho preserva o snapshot e a confirmação remota. A confirmação local fica
 pendente de recuperação da pasta (refresh ou recuperação controlada da cópia).
+O worker tenta novamente a confirmação local com espera progressiva. Depois de
+a pasta regressar, não é necessária uma repetição administrativa. Mesmo perante
+um erro remoto definitivo, uma cópia local interrompida pode ser concluída pelo
+worker: essa tentativa não repete a escrita remota e mantém a recusa original.
+O autosave e o fecho da página continuam a preservar texto durante essa espera;
+guardar o Excel e finalizar aguardam a confirmação dos metadados. Uma tentativa
+antiga nunca volta a escrever remotamente após outra mais recente ter arrancado.
 Uma repetição nessa fase não envia novamente a folha ao SharePoint. Não apagar
 o snapshot nem marcar manualmente o trabalho como concluído.
+
+Uma prova inválida, snapshot desaparecido ou alteração externa exige diagnóstico:
+o painel indica revisão administrativa, em vez de pedir novas gravações inúteis.
+O administrador deve recuperar o snapshot consistente ou resolver o conflito
+de origem, verificar as provas e só então usar Repetir com motivo no painel.
+As proteções existentes continuam a recusar prova divergente; não editar SQLite
+à mão nem converter uma falha em sucesso sem confirmação.
 
 Os novos campos são aditivos no estado v2; os recibos e hashes existentes não
 mudam. Só a nova versão reconhece publication_journal e source_conflict.

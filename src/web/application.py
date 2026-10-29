@@ -2059,10 +2059,13 @@ def _create_app(
                 publication = graph_sync_queue.unfinished_upload(path)
                 if publication:
                     failed = publication["status"] == "failed" and not publication["will_retry"]
+                    local_pending = (publication.get('result') or {}).get('phase') == 'publication_local_pending'
                     return jsonify({"success": False,
                         "code": "publication_failed" if failed else "publication_pending",
                         "graph_job_id": publication["id"],
                         "error": (
+                            "O rascunho está guardado. A confirmação local da publicação requer revisão no painel de administração."
+                            if failed and local_pending else
                             "O rascunho está guardado no servidor, mas a publicação no SharePoint falhou. "
                             "Guarde novamente o rascunho para repetir a publicação antes de finalizar."
                             if failed else

@@ -994,7 +994,7 @@ const startEditingCoordinator = () => {
                     _edit: { ...editMetadata(requestState.key), base_revision: requestState.baseRevision } }),
             });
             const result = await response.json();
-            if (revoked || pendingPanelAction !== action) return false;
+            if (revoked || otherTabActive || pendingPanelAction !== action) return false;
             if (!response.ok || !result.success || result.editing?.source_conflict) {
                 if (!handleConflict(result)) showToast(result.error || "A escolha não foi confirmada. Volte a tentar.", "error");
                 return false;

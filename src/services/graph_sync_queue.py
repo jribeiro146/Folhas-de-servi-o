@@ -42,6 +42,20 @@ from src.services.publication_evidence import file_evidence, metadata_name, evid
 LOGGER = logging.getLogger(__name__)
 
 
+class PublicationRemoteFailure(RuntimeError):
+    """Resume a recorded remote policy after finishing only local bookkeeping."""
+    def __init__(self, evidence):
+        super().__init__(evidence.get('message') or 'Publicação remota incompleta; requer revisão.')
+        self.retryable = evidence.get('retryable') is True
+        deadline = evidence.get('retry_not_before')
+        self.retry_after_seconds = max(0.0, deadline - time.time()) if isinstance(deadline, (int, float)) else None
+
+
+class PublicationLocalPendingError(RuntimeError):
+    """A retry of this phase performs no remote write, even after a remote 412."""
+    retryable = True
+
+
 def delivery_uncertain(kind: str, result: dict[str, Any]) -> bool:
     # Malformed legacy evidence cannot prove whether an external effect occurred.
     # Migration preserves its raw text separately and explicitly requires review.
@@ -461,7 +475,13 @@ class GraphSyncQueue:
             if source in started and row["status"] in {"pending", "failed", "held"}:
                 result = self._json_object(row["result_json"])
                 if result.get('phase') == 'publication_local_pending':
-                    continue  # Local acknowledgement never repeats the remote PUT.
+                    # Finish local bookkeeping even for a partial remote failure,
+                    # but never let that partial snapshot resume remote writes.
+                    if result.get('publication_remote_complete') is not True:
+                        result['blocked_by_newer_upload'] = started[source]
+                        connection.execute('UPDATE graph_sync_jobs SET result_json=? WHERE id=?',
+                                           (json.dumps(result), row['id']))
+                    continue
                 if not result.get("blocked_by_newer_upload"):
                     result["blocked_by_newer_upload"] = started[source]
                     connection.execute(
@@ -766,6 +786,13 @@ class GraphSyncQueue:
                 if prior_result.get('publication_remote_complete') is True:
                     return {'uploaded_files': prior_result['uploaded_files'], 'phase': 'publication_confirmed'}
                 self._checkpoint_result(job_id, {'phase': 'publication_partial_confirmed'})
+                if prior_result.get('blocked_by_newer_upload'):
+                    raise PublicationRemoteFailure({'retryable': False,
+                        'message': 'Existe uma gravação posterior. Resolva a publicação mais recente.'})
+                # This attempt was admitted solely to recover local metadata.
+                # Restore the remote policy; a later due attempt may retry it.
+                # Missing legacy evidence never authorizes a fresh remote PUT.
+                raise PublicationRemoteFailure(prior_result.get('publication_remote_failure') or {})
             self._hydrate_staging_metadata(payload)
             self._assert_job_running(job_id)
             try:
@@ -777,15 +804,18 @@ class GraphSyncQueue:
                 # Keep confirmed partial writes/ownership for the next snapshot.
                 self._assert_job_running(job_id)
                 try:
-                    publication = self._publication_checkpoint(payload, job_id, complete=False, uploaded=[])
+                    publication = self._publication_checkpoint(payload, job_id, complete=False, uploaded=[],
+                                                               remote_error=remote_error)
                     self._publish_staging_metadata(payload, clear_dirty=False, publication=publication)
                     self._checkpoint_result(job_id, {'phase': 'publication_partial_confirmed'})
                 except GraphJobNoLongerActiveError:
                     raise
                 except Exception as local_error:
-                    # Local contention cannot make a definite remote conflict
-                    # retryable, nor discard a provider's waiting deadline.
-                    raise remote_error from local_error
+                    if isinstance(local_error, GraphConflictError):
+                        raise local_error from remote_error
+                    # Persisted remote policy stays unchanged. Only the local
+                    # phase is retried; it cannot repeat even a definite 412.
+                    raise PublicationLocalPendingError('Confirmação local pendente; o texto permanece guardado.') from local_error
                 raise
             self._assert_job_running(job_id)
             publication = self._publication_checkpoint(payload, job_id, complete=True, uploaded=uploaded)
@@ -1214,6 +1244,12 @@ class GraphSyncQueue:
         below_limit = max_attempts is None or attempts < int(max_attempts)
         retryable = bool(getattr(error, "retryable", True)) and below_limit
         latest = self.status(str(job["id"]))
+        if (latest and job['kind'] == 'upload_active'
+                and (latest.get('result') or {}).get('phase') == 'publication_local_pending'
+                and not isinstance(error, GraphConflictError)):
+            # Local recovery has no remote effect and must not inherit a remote
+            # terminal failure or exhaust the remote-attempt budget.
+            retryable = True
         if latest and (latest["reconciliation_required"] or (latest.get("result") or {}).get("invalid_state")):
             retryable = False
         with self._connect() as connection:
@@ -1493,13 +1529,20 @@ class GraphSyncQueue:
             copy_confirmations(original.parent, staged.parent)
             refresh_own_removal_versions(staged.parent)
 
-    def _publication_checkpoint(self, payload, job_id, *, complete, uploaded):
+    def _publication_checkpoint(self, payload, job_id, *, complete, uploaded, remote_error=None):
         staged = Path(payload['draft_path'])
         metadata = {p.relative_to(staged.parent).as_posix(): file_evidence(p)
                     for p in self._metadata_files(staged.parent)}
         result = {'phase': 'publication_local_pending', 'publication_id': uuid.uuid4().hex,
                   'publication_remote_complete': complete, 'publication_metadata': metadata,
                   'uploaded_files': uploaded}
+        if remote_error is not None:
+            wait = getattr(remote_error, 'retry_after_seconds', None)
+            result['publication_remote_failure'] = {
+                'retryable': bool(getattr(remote_error, 'retryable', True)),
+                'message': str(remote_error)[:2000],
+                'retry_not_before': time.time() + max(0.0, float(wait)) if wait is not None else None,
+            }
         # Persist the remote outcome BEFORE any copy back to the editor bundle.
         # A reclaim/exception afterwards resumes this phase without another PUT.
         self._checkpoint_result(job_id, result)
@@ -1512,8 +1555,10 @@ class GraphSyncQueue:
         if not original_value:
             return
         original = Path(original_value)
-        if not original.parent.exists() or not staged.parent.exists():
-            raise GraphConflictError('A origem ou a cópia da publicação não está disponível; requer revisão.')
+        if not staged.parent.exists():
+            raise GraphConflictError('A cópia da publicação não está disponível; requer revisão administrativa.')
+        if not original.parent.exists():
+            raise FileNotFoundError('A pasta local está temporariamente indisponível; a confirmação será retomada sem novo envio.')
         if not publication:
             raise GraphConflictError('Confirmação da publicação em falta; os dados locais foram preservados.')
         expected = publication.get('publication_metadata')
