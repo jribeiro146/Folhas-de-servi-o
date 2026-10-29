@@ -27,7 +27,7 @@ from src.config import (
     MAIL_SIGNATURE_FILE,
 )
 from src.services.runtime_safety import require_live_delivery
-from src.services.provider_waits import ProviderWaitStore, ProviderWaitError, provider_scope, parse_retry_after
+from src.services.provider_waits import ProviderWaitStore, ProviderWaitError, provider_scope
 
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
@@ -682,8 +682,7 @@ class GraphMailService:
                 # pause must never turn this delivery into a retryable refusal.
                 try:
                     if exc.code == 503:
-                        self.provider_wait_store.record(self.provider_scopes[0], http_status=exc.code,
-                            retry_after=exc.headers.get('Retry-After') if exc.headers else None)
+                        self._record_refusal(self.provider_scopes[0], exc)
                 except Exception:
                     pass
                 finally:
@@ -730,7 +729,7 @@ class GraphMailService:
             # a representable deadline in the job, stop automatic retries and
             # require repair/review instead of inventing an uncertain delivery.
             now = time.time()
-            wait = parse_retry_after(header, now=now, fallback=30.0)
+            wait = self.provider_wait_store.defer(scope, http_status=response.code, retry_after=header)
             problem = GraphMailTransientError(
                 "O pedido Microsoft foi recusado e não foi possível guardar a espera. "
                 "O envio não foi aceite; é necessária revisão do armazenamento.",

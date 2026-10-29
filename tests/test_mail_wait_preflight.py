@@ -8,6 +8,7 @@ from urllib.error import HTTPError
 import pytest
 
 from src.services.graph_sync_queue import GraphSyncQueue
+from src.services.provider_waits import ProviderWaitError
 from tests.test_mail_provider_waits import clock,mail_at,enqueue,accepted
 from tests.test_durable_mail import Graph
 from tests.test_maintenance_access import synthetic_production_sadi,login,lease
@@ -17,6 +18,7 @@ from tests.test_maintenance import complete_document
 @pytest.mark.parametrize('scope,seconds,cached,status',[
     ('mail','900',False,200),('mail','90000',False,200),
     ('application','900',False,503),('application','900',True,200),
+    ('application','90000',True,200),
 ])
 def test_finalization_archives_while_mail_waits_but_respects_required_token_preflight(
         tmp_path,clock,monkeypatch,verified_test_release,scope,seconds,cached,status):
@@ -98,7 +100,7 @@ def test_failures_known_before_send_do_not_create_unknown_delivery(tmp_path,cloc
     if failure.endswith('record'):
         assert not state['will_retry']  # storage repair and review are required
         assert state['result']['retry_not_before']==clock[0]+900
-        with pytest.raises(ValueError,match='prazo'):
+        with pytest.raises((ValueError,ProviderWaitError),match='prazo'):
             queue.retry(job['id'])
         clock[0]+=900
         assert queue.retry(job['id'])['status']=='pending'
@@ -106,10 +108,13 @@ def test_failures_known_before_send_do_not_create_unknown_delivery(tmp_path,cloc
         assert state['will_retry']
 
 
-def test_unrecordable_unbounded_refusal_preserves_message_and_blocks_manual_retry(tmp_path,clock,monkeypatch):
+@pytest.mark.parametrize('failure', ['token','send'])
+def test_unrecordable_unbounded_refusal_preserves_message_and_blocks_manual_retry(tmp_path,clock,monkeypatch,failure):
     calls=[]
     def transport(req,**_):
         calls.append(req)
+        if failure=='send' and '/oauth2/' in req.full_url:
+            return accepted()
         raise HTTPError(req.full_url,429,'synthetic',{'Retry-After':'9'*65},io.BytesIO(b''))
     mail=mail_at(tmp_path,transport,clock)
     def fail(*_,**__):
@@ -124,4 +129,5 @@ def test_unrecordable_unbounded_refusal_preserves_message_and_blocks_manual_retr
     assert state['result']['phase']=='mail_rejected'
     with pytest.raises(ValueError,match='inválidos'):
         queue.retry(job['id'])
-    assert len(calls)==1 and '/sendMail' not in calls[0].full_url
+    assert len(calls)==(2 if failure=='send' else 1)
+    assert sum(req.full_url.endswith('/sendMail') for req in calls)==(1 if failure=='send' else 0)

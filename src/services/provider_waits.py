@@ -8,9 +8,11 @@ from email.utils import parsedate_to_datetime
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import sqlite3
+import threading
 import time
 import uuid
 
@@ -19,6 +21,10 @@ from src.services.sqlite_storage_format import initialize_store, validate_store
 STORE_NAME = 'provider-waits.sqlite3'
 AUTOMATIC_WAIT_LIMIT = 86400
 _SCOPE = re.compile(r'(storage|mail|teams|application):[0-9a-f]{64}\Z')
+_deferred_lock = threading.RLock()
+# Emergency containment when the durable write fails. Shared by every service
+# instance using this database in this process; never treated as durable proof.
+_deferred_waits = {}
 
 
 def default_store_path():
@@ -175,13 +181,85 @@ class ProviderWaitStore:
                 raise
 
     def blocking(self, scopes):
+        scopes = tuple(scopes)
+        deferred = self._flush_deferred(scopes)
         now = self.clock()
         with closing(self._connect()) as db:
             db.execute('BEGIN')
             values = [value for scope in scopes if (value := self._read(db, scope)) is not None
                       and (value['suspended'] or value['deadline'] > now)]
+        values.extend(value for value in deferred if value['suspended'] or value['deadline'] > now)
         return max(values, key=lambda value: (value['suspended'], value['deadline'] is None,
                    value['deadline'] or 0)) if values else None
+
+    def defer(self, scope, *, http_status, retry_after):
+        """Contain a failed durable write and retain its original absolute time."""
+        now = self.clock()
+        wait = parse_retry_after(retry_after, now=now, fallback=30.0)
+        value = {'format': 1, 'scope': scope, 'provider': scope.split(':')[0], 'version': 1,
+                 **wait, 'observed_at': now, 'http_status': http_status,
+                 'evidence_id': uuid.uuid4().hex, 'failures': 1}
+        validate_pause(value, scope)
+        key = (os.path.normcase(str(self.database_path.resolve())), scope)
+        with _deferred_lock:
+            before = _deferred_waits.get(key)
+            if before:
+                value = self._merge_observed(before['value'], value)
+            _deferred_waits[key] = {'value': value, 'retry_at': now}
+        return dict(value)
+
+    @staticmethod
+    def _merge_observed(before, value):
+        if before is None:
+            return dict(value)
+        return {**value, 'version': before['version'] + 1,
+                'suspended': before['suspended'] or value['suspended'],
+                'deadline': (max(before['deadline'], value['deadline'])
+                             if before['deadline'] is not None and value['deadline'] is not None else None)}
+
+    def _persist_deferred(self, value):
+        # Do not reparse a relative Retry-After: doing so would extend the wait
+        # on every recovery attempt or lose an anomalous suspension near expiry.
+        with closing(self._connect()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                before = self._read(db, value['scope'])
+                after = self._merge_observed(before, value)
+                validate_pause(after, after['scope'])
+                db.execute('INSERT INTO provider_waits VALUES(?,?,?) ON CONFLICT(scope) DO UPDATE '
+                           'SET state_json=excluded.state_json,updated_at=excluded.updated_at',
+                           (after['scope'], json.dumps(after), self.clock()))
+                self._audit(db, actor='system', action='provider_wait_recorded', before=before,
+                            after=after, reason='Espera recuperada após falha de armazenamento.', now=self.clock())
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+
+    def _flush_deferred(self, scopes=None):
+        path = os.path.normcase(str(self.database_path.resolve()))
+        now = self.clock()
+        with _deferred_lock:
+            pending = [(key, dict(entry['value']), entry['retry_at'])
+                       for key, entry in _deferred_waits.items()
+                       if key[0] == path and (scopes is None or key[1] in scopes)]
+            for key, value, retry_at in pending:
+                if retry_at <= now:
+                    _deferred_waits[key]['retry_at'] = now + 10
+        for key, value, retry_at in pending:
+            if retry_at > now:
+                continue
+            try:
+                self._persist_deferred(value)
+            except Exception:
+                continue  # Keep the in-process guard; never turn failure into readiness.
+            with _deferred_lock:
+                current = _deferred_waits.get(key)
+                if current and current['value']['evidence_id'] == value['evidence_id']:
+                    del _deferred_waits[key]
+        with _deferred_lock:
+            return [dict(entry['value']) for key, entry in _deferred_waits.items()
+                    if key[0] == path and (scopes is None or key[1] in scopes)]
 
     def require_ready(self, scopes):
         value = self.blocking(scopes)
@@ -223,10 +301,16 @@ class ProviderWaitStore:
                 'can_resume': value['suspended'] and value['deadline'] is not None and value['deadline'] <= now}
 
     def overview(self):
+        deferred = self._flush_deferred()
         now = self.clock()
         with closing(self._connect()) as db:
             rows = db.execute('SELECT scope,state_json FROM provider_waits ORDER BY updated_at DESC LIMIT 100').fetchall()
-        return [self.public(decode_pause(row['state_json'], row['scope']), now=now) for row in rows]
+        values = {row['scope']: decode_pause(row['state_json'], row['scope']) for row in rows}
+        for value in deferred:
+            values[value['scope']] = self._merge_observed(values.get(value['scope']), value)
+        unrecorded = {value['scope'] for value in deferred}
+        return [self.public(value, now=now) | ({'can_resume': False} if scope in unrecorded else {})
+                for scope, value in values.items()]
 
     def history(self, *, automatic=None):
         clause, params = '', ()
