@@ -2,6 +2,7 @@
 from copy import deepcopy
 import errno
 import os
+from pathlib import Path
 
 import pytest
 
@@ -63,7 +64,8 @@ def test_private_bundle_rename_denied_preserves_draft_and_explicit_retry(product
     original = os.rename
     denied = []
     def rename(source, destination, *args, **kwargs):
-        if source.parent == root / 'private/sadi/pdf' and source.name.startswith('.t-'):
+        source_path = Path(source)
+        if source_path.parent == root / 'private/sadi/pdf' and source_path.name.startswith('.t-'):
             denied.append(source)
             raise PermissionError(errno.EACCES, 'Synthetic private publication denied')
         return original(source, destination, *args, **kwargs)
