@@ -137,6 +137,12 @@
                     { code: "mail_not_confirmed", job }
                 );
             }
+            if (job.result?.provider_suspended === true && !job.reconciliation_required && !job.result?.invalid_state) {
+                throw new MailJobMonitorError(
+                    "A Microsoft indicou uma espera que requer análise do administrador. O envio permanece guardado.",
+                    { code: "mail_provider_review", job }
+                );
+            }
             if (job.status === "failed" && !job.will_retry) {
                 // Migration may preserve an uncertain send in quarantine. Keep
                 // the uncertainty explicit so an operator does not resend it.
@@ -171,7 +177,9 @@
                 const delay = Math.max(intervalMs, retryAt - now());
                 if (retryAt - now() >= deadline - clock()) {
                     throw new MailJobMonitorError(
-                        "O envio está agendado para uma tentativa posterior. A aceitação ainda não está confirmada.",
+                        job.result?.provider_wait
+                            ? "O envio aguarda o prazo indicado pela Microsoft. A aceitação ainda não está confirmada."
+                            : "O envio está agendado para uma tentativa posterior. A aceitação ainda não está confirmada.",
                         { code: "mail_scheduled", job, retryAt }
                     );
                 }

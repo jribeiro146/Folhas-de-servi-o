@@ -27,6 +27,7 @@ from src.config import (
     MAIL_SIGNATURE_FILE,
 )
 from src.services.runtime_safety import require_live_delivery
+from src.services.provider_waits import ProviderWaitStore, ProviderWaitError, provider_scope
 
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
@@ -120,11 +121,26 @@ class GraphMailConfig:
 class GraphMailService:
     """Prepara e envia uma folha final em PDF usando ``/users/{sender}/sendMail``."""
 
-    def __init__(self, config: GraphMailConfig | None = None, *, transport=None):
+    def __init__(self, config: GraphMailConfig | None = None, *, transport=None, provider_wait_store=None):
         self.config = config or GraphMailConfig.from_env()
         self._transport = transport
+        self._provider_wait_store = provider_wait_store
         self._access_token: str | None = None
         self._access_token_expires_at = 0.0
+
+    @property
+    def provider_wait_store(self):
+        if self._provider_wait_store is None:
+            self._provider_wait_store = ProviderWaitStore()
+        return self._provider_wait_store
+
+    @property
+    def provider_scopes(self):
+        return (provider_scope('mail', self.config.tenant_id, self.config.client_id, self.config.sender),
+                provider_scope('application', self.config.tenant_id, self.config.client_id))
+
+    def provider_pause(self):
+        return self.provider_wait_store.blocking(self.provider_scopes)
 
     def validate_config(self) -> None:
         missing = self.config.missing_fields()
@@ -541,6 +557,7 @@ class GraphMailService:
         return {"emailAddress": {"address": address}}
 
     def _access_token_value(self) -> str:
+        self.provider_wait_store.require_ready(self.provider_scopes)
         self.validate_config()
         if self._access_token and time.time() < self._access_token_expires_at:
             return self._access_token
@@ -640,19 +657,43 @@ class GraphMailService:
         is_send = self._allowed_request_is_send(url, method, authenticated)
         if is_send:
             self._validate_delivery_payload(data)
+        self.provider_wait_store.require_ready(self.provider_scopes)
         request_headers = dict(headers or {})
         if authenticated:
             request_headers["Authorization"] = f"Bearer {self._access_token_value()}"
         req = request.Request(url, data=data, headers=request_headers, method=method)
+        # A different worker may have observed a pause while acquiring a token.
+        self.provider_wait_store.require_ready(self.provider_scopes)
         try:
             with transport(req, timeout=60) as response:
                 return response.read()
         except error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
             if is_send and (exc.code in {408, 425} or 500 <= exc.code <= 599):
+                # A sendMail 5xx is ambiguous. Even a failure to persist its
+                # pause must never turn this delivery into a retryable refusal.
+                try:
+                    if exc.code == 503:
+                        self.provider_wait_store.record(self.provider_scopes[0], http_status=exc.code,
+                            retry_after=exc.headers.get('Retry-After') if exc.headers else None)
+                except Exception:
+                    pass
+                finally:
+                    exc.close()
                 raise GraphMailUnknownResultError(
                     "Resultado do envio desconhecido. Confirme a aceitação antes de repetir."
                 ) from exc
+            if exc.code in {408, 425, 429} or 500 <= exc.code <= 599:
+                try:
+                    pause = self.provider_wait_store.record(self.provider_scopes[0 if is_send else 1],
+                        http_status=exc.code,
+                        retry_after=exc.headers.get('Retry-After') if exc.headers else None)
+                finally:
+                    exc.close()
+                raise ProviderWaitError(pause) from exc
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")
+            finally:
+                exc.close()
             if not authenticated and exc.code in {400, 401, 403}:
                 if "invalid_client" in detail or "AADSTS7000215" in detail:
                     raise GraphMailConfigurationError(
@@ -661,16 +702,6 @@ class GraphMailService:
                     ) from exc
                 raise GraphMailConfigurationError(
                     "A Microsoft rejeitou as credenciais configuradas para o serviço de e-mail."
-                ) from exc
-            if exc.code in {408, 425, 429} or 500 <= exc.code <= 599:
-                retry_after = None
-                try:
-                    retry_after = max(int(exc.headers.get("Retry-After", "")), 0)
-                except (AttributeError, TypeError, ValueError):
-                    pass
-                raise GraphMailTransientError(
-                    f"O Microsoft Graph está temporariamente indisponível (HTTP {exc.code}).",
-                    retry_after_seconds=retry_after,
                 ) from exc
             raise GraphMailError(f"Microsoft Graph Mail HTTP {exc.code}: {detail}") from exc
         except (error.URLError, OSError, HTTPException) as exc:

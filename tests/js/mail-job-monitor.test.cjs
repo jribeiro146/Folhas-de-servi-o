@@ -5,6 +5,34 @@ const {
     waitForMailJob,
 } = require("../../src/web/static/js/mail-job-monitor.js");
 
+for (const suspended of [false,true]) {
+    test('shared provider wait is explained even before first claim, suspended='+suspended, async () => {
+        const now = Date.parse('2026-10-29T10:00:00Z');
+        const job={id:'pending-mail',status:'pending',next_attempt_at:now/1000+900,
+            result:{provider_wait:true,provider_suspended:suspended}};
+        let requests=0;
+        await assert.rejects(waitForMailJob(job.id,{
+            nowFn:()=>now,clockFn:()=>0,timeoutMs:1000,
+            fetchFn:async (_url,options)=>{
+                requests++;
+                assert.equal(options.method,undefined);
+                return {ok:true,json:async()=>({success:true,job})};
+            },
+            waitFn:async()=>assert.fail('No polling before a long provider wait expires'),
+        }),error=>error.code===(suspended?'mail_provider_review':'mail_scheduled') && /Microsoft/.test(error.message));
+        assert.equal(requests,1);
+    });
+}
+
+test('provider suspension never conceals an uncertain send or an accepted receipt',async()=>{
+    const base={id:'protected',status:'failed',result:{provider_suspended:true}};
+    const options=job=>({fetchFn:async()=>({ok:true,json:async()=>({success:true,job})}),waitFn:async()=>{}});
+    const unknown={...base,reconciliation_required:true};
+    await assert.rejects(waitForMailJob(base.id,options(unknown)),error=>error.code==='mail_unknown');
+    const accepted={...base,result:{...base.result,mail:{accepted:true}}};
+    assert.equal(await waitForMailJob(base.id,options(accepted)),accepted);
+});
+
 test("an ambiguous send requires reconciliation instead of offering retry", async () => {
     const job = { id: "synthetic", status: "failed", will_retry: false,
         reconciliation_required: true, result: { phase: "mail_unknown" } };

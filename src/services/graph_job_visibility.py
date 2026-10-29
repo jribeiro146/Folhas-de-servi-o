@@ -61,7 +61,7 @@ def _timestamp(value):
     return value if math.isfinite(value) and value >= 0 else None
 
 
-def public_job_status(job):
+def public_job_status(job, *, provider_pause=None):
     """Keep internal serialization for workers; allowlist every browser field.
 
     Never copy result/payload wholesale: they contain paths, receipts, raw
@@ -85,7 +85,21 @@ def public_job_status(job):
     if not isinstance(status, str) or status not in STATUSES:
         status = "failed"
         result["invalid_state"] = True
+    next_attempt = _timestamp(job.get('next_attempt_at'))
+    if (isinstance(provider_pause, dict) and status in {'pending', 'failed'}
+            and not job.get('reconciliation_required') and not result.get('invalid_state')
+            and not result.get('mail', {}).get('accepted')
+            and (status == 'pending' or job.get('will_retry') is True
+                 or source.get('provider_suspended') is True)):
+        # The shared guard also applies to jobs which have never been claimed.
+        # Expose only presentation fields, never the scope/evidence or raw state.
+        result['provider_wait'] = True
+        result['provider_suspended'] = provider_pause.get('suspended') is True
+        deadline = _timestamp(provider_pause.get('deadline'))
+        if deadline is not None:
+            next_attempt = max(next_attempt or 0, deadline)
+            result['retry_not_before'] = max(retry_not_before or 0, deadline)
     return {"id": job["id"], "status": status,
             "will_retry": job.get("will_retry") is True and not result.get("invalid_state", False),
             "reconciliation_required": job.get("reconciliation_required") is True,
-            "next_attempt_at": _timestamp(job.get("next_attempt_at")), "result": result}
+            "next_attempt_at": next_attempt, "result": result}

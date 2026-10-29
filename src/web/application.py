@@ -1448,7 +1448,9 @@ def _create_app(
         administrator = operational_admin_allowed()
         if not can_read_job(job, current_job_owner(), administrator=administrator):
             return json_error("Não tem autorização para consultar este trabalho.", 403, code="job_access_denied")
-        return jsonify({"success": True, "job": public_job_status(job)})
+        inspect_pause = getattr(graph_sync_queue, 'provider_pause_for_job', None)
+        pause = inspect_pause(job['kind'], job.get('payload') or {}, job.get('result') or {}) if callable(inspect_pause) else None
+        return jsonify({"success": True, "job": public_job_status(job, provider_pause=pause)})
 
     @app.get("/api/editing/operations/<document_id>/<idempotency_key>")
     def recover_editing_operation(document_id: str, idempotency_key: str):

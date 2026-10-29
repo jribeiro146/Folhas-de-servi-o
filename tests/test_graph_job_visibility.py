@@ -18,6 +18,34 @@ OWNER = {"provider": "microsoft", "tenant_id": TENANT, "object_id": OWNER_ID}
 MARKER = "private@example.invalid /private/synthetic-path Bearer synthetic-private-marker"
 
 
+@pytest.mark.parametrize('state', ['pending', 'retry', 'suspended', 'unknown', 'accepted'])
+def test_shared_mail_pause_is_visible_to_owner_without_exposing_scope_or_hiding_receipts(service,tmp_path,state):
+    from src.services.graph_mail_service import GraphMailService, GraphMailConfig
+    from src.services.provider_waits import ProviderWaitStore
+    app,queue=service
+    store=ProviderWaitStore(tmp_path/'waits.sqlite3')
+    mail=GraphMailService(GraphMailConfig('synthetic','synthetic','synthetic','sender@example.invalid'),
+        provider_wait_store=store,transport=lambda *a,**k:pytest.fail('Status must not send'))
+    queue.mail_service=mail
+    result={'phase':'mail_unknown'} if state=='unknown' else ({'mail':{'accepted':True}} if state=='accepted' else {})
+    if state=='suspended':
+        result={'phase':'mail_rejected','provider_suspended':True}
+    identifier=make_job(queue,status='pending' if state=='pending' else 'failed',result=result,
+                        retryable=int(state=='retry'))
+    pause=store.record(mail.provider_scopes[0],http_status=429,retry_after='90000' if state=='suspended' else '900')
+    response=login(app).get(f'/api/graph/jobs/{identifier}')
+    assert response.status_code==200
+    public=response.json['job']
+    if state in {'pending','retry','suspended'}:
+        assert public['result']['provider_wait'] is True
+        assert public['result']['provider_suspended'] is (state=='suspended')
+        assert public['next_attempt_at']>=pause['deadline']
+    else:
+        assert 'provider_wait' not in public['result']
+    encoded=response.get_data(as_text=True)
+    assert MARKER not in encoded and pause['scope'] not in encoded and pause['evidence_id'] not in encoded
+
+
 def login(app, *, oid=OWNER_ID, tenant=TENANT, email="owner@example.invalid"):
     client = app.test_client()
     with client.session_transaction() as session:

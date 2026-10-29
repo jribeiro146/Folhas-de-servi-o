@@ -1076,7 +1076,9 @@ class GraphStorageService:
         except error.HTTPError as exc:
             if exc.code in {429, 503}:
                 try:
-                    pause = self.provider_wait_store.record(self.provider_scopes[0], http_status=exc.code,
+                    token_url = TOKEN_URL_TEMPLATE.format(tenant_id=parse.quote(self.config.tenant_id))
+                    scope = self.provider_scopes[1 if url == token_url else 0]
+                    pause = self.provider_wait_store.record(scope, http_status=exc.code,
                         retry_after=exc.headers.get('Retry-After') if exc.headers else None)
                 finally:
                     exc.close()

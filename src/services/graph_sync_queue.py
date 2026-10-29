@@ -17,7 +17,7 @@ from typing import Any
 
 from src.logging_config import log_event
 from src.services.graph_mail_service import (
-    GraphMailService, GraphMailDelivery, GraphMailError, GraphMailUnknownResultError,
+    GraphMailService, GraphMailDelivery, GraphMailError, GraphMailUnknownResultError, GraphMailTransientError,
     MAX_SIMPLE_REQUEST_BYTES,
 )
 from src.services.graph_storage_service import GraphStorageService, GraphConflictError
@@ -1083,6 +1083,11 @@ class GraphSyncQueue:
         self._checkpoint_result(job_id, {"phase": "sending_mail", "delivery_request_id": request_id})
         try:
             mail_result = self.mail_service.send_delivery(delivery, request_id=request_id)
+        except ProviderWaitError:
+            # This exception proves either no request started or a known 429
+            # refusal. Keep the immutable message for an eligible later attempt.
+            self._checkpoint_result(job_id, {"phase": "mail_rejected"})
+            raise
         except GraphMailUnknownResultError:
             self._checkpoint_result(job_id, {"phase": "mail_unknown"})
             raise
@@ -1265,12 +1270,14 @@ class GraphSyncQueue:
         retry_after = getattr(error, "retry_after_seconds", None)
         if retry_after is not None:
             delay = max(delay, float(retry_after))
-            if job["kind"] != "notify_teams" and not isinstance(error, (ProviderWaitError, PublicationRemoteFailure)):
+            if job["kind"] != "notify_teams" and not isinstance(error, (ProviderWaitError, PublicationRemoteFailure, GraphMailTransientError)):
                 delay = min(300.0, delay)
         now = time.time()
         max_attempts = job.get("max_attempts")
         below_limit = max_attempts is None or attempts < int(max_attempts)
         retryable = bool(getattr(error, "retryable", True)) and below_limit
+        if isinstance(error, GraphMailTransientError) and retry_after is not None and delay > 86400:
+            retryable = False
         latest = self.status(str(job["id"]))
         result = dict((latest or {}).get('result') or {})
         if isinstance(error, ProviderWaitError):
@@ -1281,6 +1288,8 @@ class GraphSyncQueue:
                           retry_not_before=error.retry_not_before)
         elif isinstance(error, PublicationRemoteFailure) and error.retry_after_seconds is not None:
             result.update(provider_wait=True, retry_not_before=now + error.retry_after_seconds)
+        elif isinstance(error, GraphMailTransientError) and retry_after is not None:
+            result.update(provider_wait=True, retry_not_before=now + delay)
         if (latest and job['kind'] == 'upload_active'
                 and (latest.get('result') or {}).get('phase') == 'publication_local_pending'
                 and not isinstance(error, GraphConflictError)):

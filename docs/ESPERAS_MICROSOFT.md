@@ -21,3 +21,11 @@ O contrato de armazenamento acrescenta `provider_waits: 1`; não há nova variá
 O backup inclui a base e os dados já confirmados no WAL. A restauração preserva os prazos do snapshot e mantém a retenção global existente. Um backup antigo não contém respostas Microsoft recebidas posteriormente: antes de libertar essa retenção, o implementador deve conservar/conferir também as esperas mais recentes na cópia do armazenamento retirado e resolver as diferenças, além dos envios posteriores ao backup. A confirmação global de reconciliação não deve ser dada com este ponto por verificar. Não apagar nem substituir manualmente a base para contornar uma espera.
 
 Testes usam transportes e relógios sintéticos, incluindo 120 segundos, data HTTP, dez instâncias, recusa a meio da listagem/download, repetição manual, migração e backup. Não constituem medição de latência da Microsoft em produção.
+
+## Email
+
+O transporte de email usa a mesma base e o mesmo parser de prazos. Uma recusa 429 de envio cria uma espera por tenant/aplicação/remetente; uma espera de email não suspende só por si a leitura do SharePoint ou a edição local. Uma recusa temporária na obtenção do token usa o âmbito da aplicação Microsoft, partilhado com o armazenamento que utiliza a mesma credencial. A guarda é consultada antes do token e imediatamente antes do POST.
+
+Um prazo de 900 segundos mantém os 900 segundos, incluindo quando vem numa data HTTP. Reiniciar, abrir novas sessões, criar outro trabalho ou repetir manualmente não permite antecipá-lo. A mensagem já preparada conserva os mesmos bytes. O acompanhamento do envio mostra a espera também nos trabalhos ainda não iniciados e identifica as suspensões que exigem análise; não repete o POST.
+
+Uma resposta 503 depois de enviar continua a significar resultado incerto: o serviço pode ter aceite a mensagem. Regista-se a espera para outros trabalhos quando possível, mas o envio incerto continua retido para reconciliação mesmo depois desse prazo. Falhar o registo da espera também não torna esse envio repetível. O mesmo cuidado mantém-se para falhas de comunicação e restantes respostas ambíguas. Não foram alterados destinatários, limites de tentativas, permissões nem configuração obrigatória.

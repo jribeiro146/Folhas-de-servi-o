@@ -274,6 +274,7 @@
         mail_cancelled: "Envio cancelado", mail_not_confirmed: "Sem confirmação de aceitação",
         mail_status_missing: "Trabalho não encontrado; resultado por confirmar",
         mail_scheduled: "Tentativa de envio agendada; aceitação por confirmar",
+        mail_provider_review: "Espera Microsoft a aguardar análise do administrador",
         mail_status_deferred: "Consultas em espera pelo prazo indicado pelo serviço",
         mail_status_timeout: "Ainda sem confirmação; pode voltar a consultar",
         status_response_invalid: "Resposta inválida; resultado por confirmar"};
