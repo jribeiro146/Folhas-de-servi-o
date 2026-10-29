@@ -166,7 +166,7 @@ def test_admin_wait_review_is_protected_versioned_and_audit_is_read_from_same_da
     assert admin.post(url,json=args).status_code==403
     overview=admin.get('/api/admin/overview').json
     assert overview['provider_waits'][0]['can_resume']
-    assert overview['audit'][0]['action']=='provider_wait_recorded'
+    assert overview['provider_events'][0]['action']=='provider_wait_recorded'
     assert admin.post(url,json={**args,'version':99},headers=headers).status_code==409
     assert admin.post(url,json=args,headers=headers).status_code==200
     assert admin.post(url,json=args,headers=headers).status_code==409
@@ -212,3 +212,48 @@ def test_backup_restore_retains_wait_and_audit_under_global_hold(tmp_path):
     assert restore(destination,workspace,source_sha256=SOURCE,key=KEY)['state']=='held'
     recovered=ProviderWaitStore(data/'provider-waits.sqlite3')
     assert recovered.blocking([scope])==pause and recovered.history()==history
+
+
+def test_expired_wait_is_neutral_and_new_refresh_does_not_wait_for_normal_interval(tmp_path,monkeypatch):
+    now=[time.time()]
+    graph=graph_with_clock(tmp_path,now)
+    calls=[]
+    def list_items():
+        calls.append(1)
+        if len(calls)==1:
+            pause=graph.provider_wait_store.record(graph.provider_scopes[0],http_status=429,retry_after='5')
+            raise ProviderWaitError(pause)
+        return []
+    monkeypatch.setattr(graph,'list_active_items',list_items)
+    coordinator=GraphRefreshCoordinator(graph,tmp_path/'active',refresh_seconds=3600)
+    coordinator.request_refresh(force=True)
+    assert wait_finished(coordinator)['outcome']=='provider_wait'
+    now[0]+=10
+    status=coordinator.status()
+    assert status['outcome']=='idle' and status['provider_retry_at'] is None and status['inventory']['stale']
+    coordinator.request_refresh()
+    assert wait_finished(coordinator)['outcome']=='success' and len(calls)==2
+
+
+def test_automatic_wait_events_cannot_hide_human_admin_history(admin_app):
+    app,editing,_=admin_app
+    editing.repository.record_admin_action({'actor_email':ADMIN.email,'action':'release_sheet',
+        'target':'synthetic-document','reason':'Synthetic human action','details':{}})
+    store=ProviderWaitStore()
+    scope=provider_scope('storage','tenant','app','library')
+    for _ in range(150): store.record(scope,http_status=429,retry_after='1')
+    overview=login(app,ADMIN.email).get('/api/admin/overview').json
+    assert len(overview['provider_events'])==100
+    assert any(event['action']=='release_sheet' for event in overview['audit'])
+    assert not any(event['action']=='provider_wait_recorded' for event in overview['audit'])
+
+
+def test_held_confirmation_is_checked_while_another_scope_waits_an_hour(tmp_path):
+    graph=graph_with_clock(tmp_path,[time.time()])
+    queue=GraphSyncQueue(graph,tmp_path/'queue.sqlite3',auto_start=False)
+    graph.provider_wait_store.record(graph.provider_scopes[0],http_status=429,retry_after='3600')
+    queued(queue,'waiting')
+    queued(queue,'local-confirmation',kind='archive_and_mail_local',status='held')
+    assert queue._claim_next() is None
+    assert queue._next_retry_delay()==5.0
+    assert queue.status('waiting')['attempts']==queue.status('local-confirmation')['attempts']==0

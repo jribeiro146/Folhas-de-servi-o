@@ -203,10 +203,13 @@ def test_graph_listing_rejects_external_next_link(monkeypatch):
         service.list_folder_children("07-Obras/Obras a realizar")
 
 
-def test_graph_get_retries_once_on_throttling(monkeypatch):
+def test_graph_get_defers_retry_until_persisted_deadline(monkeypatch, tmp_path):
     import src.services.graph_storage_service as graph_module
+    from src.services.provider_waits import ProviderWaitError, ProviderWaitStore
 
-    service = GraphStorageService(GraphConfig("tenant", "client", "secret", "drive"))
+    now = [1700000000.0]
+    service = GraphStorageService(GraphConfig("tenant", "client", "secret", "drive"),
+        provider_wait_store=ProviderWaitStore(tmp_path / 'waits.sqlite3', clock=lambda: now[0]))
     calls = []
 
     def fake_urlopen(req, timeout):
@@ -216,13 +219,18 @@ def test_graph_get_retries_once_on_throttling(monkeypatch):
                 req.full_url,
                 429,
                 "throttled",
-                {"Retry-After": "0"},
+                {"Retry-After": "120"},
                 BytesIO(b"busy"),
             )
         return BytesIO(b"ok")
 
     monkeypatch.setattr(graph_module.request, "urlopen", fake_urlopen)
 
+    for _ in range(2):
+        with pytest.raises(ProviderWaitError):
+            service._request_bytes(f"{GRAPH_ROOT}/drives/drive", method="GET", authenticated=False)
+    assert len(calls) == 1
+    now[0] += 120
     assert service._request_bytes(
         f"{GRAPH_ROOT}/drives/drive",
         method="GET",
@@ -233,6 +241,7 @@ def test_graph_get_retries_once_on_throttling(monkeypatch):
 
 def test_graph_post_is_not_retried(monkeypatch):
     import src.services.graph_storage_service as graph_module
+    from src.services.provider_waits import ProviderWaitError
 
     service = GraphStorageService(GraphConfig("tenant", "client", "secret", "drive"))
     calls = []
@@ -243,7 +252,7 @@ def test_graph_post_is_not_retried(monkeypatch):
 
     monkeypatch.setattr(graph_module.request, "urlopen", fake_urlopen)
 
-    with pytest.raises(GraphStorageError, match="HTTP 503"):
+    with pytest.raises(ProviderWaitError) as failure:
         service._request_bytes(
             f"{GRAPH_ROOT}/drives/drive",
             method="POST",
@@ -252,3 +261,4 @@ def test_graph_post_is_not_retried(monkeypatch):
         )
 
     assert len(calls) == 1
+    assert failure.value.http_status == 503

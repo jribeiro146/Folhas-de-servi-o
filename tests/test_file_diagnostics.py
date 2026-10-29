@@ -163,11 +163,12 @@ def test_http_outcomes_and_privacy(monkeypatch, caplog, kind):
 
     monkeypatch.setattr(request, "urlopen", open_fake)
     req = Request("https://private.invalid/customer?sig=secret", headers={"Authorization": "Bearer secret"})
+    service = GraphStorageService(GraphConfig('synthetic', 'synthetic', 'synthetic', 'synthetic'))
     if kind == "success":
-        assert GraphStorageService._open_request_with_retry(req, "GET") == b"ok"
+        assert service._open_request_with_retry(req, "GET") == b"ok"
     else:
         with pytest.raises((TimeoutError, HTTPError)):
-            GraphStorageService._open_request_with_retry(req, "GET")
+            service._open_request_with_retry(req, "GET")
     record = events(caplog, "graph_http_attempt")[-1]
     assert record["status_code"] == {"timeout": None, "http": 404, "success": 200}[kind]
     assert record["graph_request_id"] == (None if kind == "timeout" else request_id)

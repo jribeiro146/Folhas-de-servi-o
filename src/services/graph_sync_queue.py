@@ -1542,12 +1542,16 @@ class GraphSyncQueue:
 
     def _next_retry_delay(self) -> float | None:
         delays = self._scheduled_delays()
+        with self._connect() as connection:
+            held = connection.execute(
+                "SELECT 1 FROM graph_sync_jobs WHERE status = 'held' LIMIT 1"
+            ).fetchone()
+        # A long provider pause must not postpone observing a separate local
+        # commit or expiration of its existing confirmation deadline.
+        if held:
+            delays.append(5.0)
         if not delays:
-            with self._connect() as connection:
-                held = connection.execute(
-                    "SELECT 1 FROM graph_sync_jobs WHERE status = 'held' LIMIT 1"
-                ).fetchone()
-            return 5.0 if held else None
+            return None
         return max(min(delays), 0.05)
 
     def _stage_payload(

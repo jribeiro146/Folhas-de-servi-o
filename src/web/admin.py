@@ -169,13 +169,15 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
                   "reason": redact_diagnostic_text(entry["reason"])}
                  for entry in editing.repository.admin_history()]
         store = wait_store()
-        audit.extend({'id': 'provider:' + entry['id'], 'action': entry['action'] if entry['action'] in {
+        def provider_event(entry):
+            return {'id': 'provider:' + entry['id'], 'action': entry['action'] if entry['action'] in {
                     'provider_wait_recorded', 'provider_wait_resumed'} else 'admin_action',
                       'created_at': entry['created_at'],
                       'actor_label': 'Sistema' if entry['actor'] == 'system' else 'Administrador',
                       'target': {'storage': 'SharePoint', 'mail': 'Email', 'application': 'Integração Microsoft',
                                  'teams': 'Teams'}.get(entry['scope'].split(':')[0], 'Microsoft'),
-                      'reason': redact_diagnostic_text(entry['reason'])} for entry in store.history())
+                      'reason': redact_diagnostic_text(entry['reason'])}
+        audit.extend(provider_event(entry) for entry in store.history(automatic=False))
         audit.sort(key=lambda entry: entry['created_at'], reverse=True)
         return jsonify(success=True, documents=editing.admin_documents(), jobs=jobs,
                        release=app.config["RELEASE_INFO"],
@@ -183,7 +185,8 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
                        queue_backlog=queue.diagnostic_backlog() if queue is not None else None,
                        queue_summary=safe_queue_summary(queue.summary()) if queue is not None else None,
                        refresh=safe_refresh_status(refresh.status()) if refresh is not None else None,
-                       provider_waits=store.overview(), audit=audit[:100])
+                       provider_waits=store.overview(), audit=audit[:100],
+                       provider_events=[provider_event(entry) for entry in store.history(automatic=True)])
 
     @bp.get("/api/admin/activity")
     def activity():

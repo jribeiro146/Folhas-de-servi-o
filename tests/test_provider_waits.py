@@ -100,3 +100,20 @@ def test_failed_audit_cannot_leave_an_unaudited_wait(tmp_path,monkeypatch):
     with pytest.raises(OSError): store.record(scope,http_status=429,retry_after='900')
     assert store.blocking([scope])==original
     assert len(store.history())==1
+
+
+def test_unrelated_episodes_reset_backoff_but_consecutive_retries_still_back_off(tmp_path):
+    now=[1700000000.0]
+    store=ProviderWaitStore(tmp_path/'waits.sqlite3',clock=lambda:now[0])
+    scope=provider_scope('storage','tenant','app','library')
+    for _ in range(10):
+        pause=store.record(scope,http_status=503,retry_after=None)
+        assert pause['deadline']==now[0]+1 and pause['failures']==1
+        now[0]+=86400
+    first=store.record(scope,http_status=503,retry_after=None)
+    now[0]=first['deadline']
+    second=store.record(scope,http_status=503,retry_after=None)
+    assert second['deadline']==now[0]+2 and second['failures']==2
+    now[0]=second['deadline']+301
+    fresh=store.record(scope,http_status=503,retry_after=None)
+    assert fresh['deadline']==now[0]+1

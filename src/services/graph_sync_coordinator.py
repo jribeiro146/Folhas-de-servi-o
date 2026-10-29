@@ -87,7 +87,8 @@ class GraphRefreshCoordinator:
                 if self._provider_pause():
                     return self._public_status(state)
                 now = time.time()
-                if (not force and state["last_started_at"] is not None
+                if (not force and state['outcome'] not in {'provider_wait', 'provider_review'}
+                        and state["last_started_at"] is not None
                         and now - state["last_started_at"] < self.refresh_seconds):
                     return self._public_status(state)
                 refresh_id = secrets.token_hex(16)
@@ -199,6 +200,10 @@ class GraphRefreshCoordinator:
         if pause and not state['in_progress']:
             result.update(outcome='provider_review' if pause['suspended'] else 'provider_wait',
                           provider_retry_at=pause['deadline'], provider_suspended=pause['suspended'], last_error=None)
+        elif result['outcome'] in {'provider_wait', 'provider_review'}:
+            # Preserve last-completion evidence without displaying an elapsed
+            # pause as still active. The inventory still needs a fresh read.
+            result.update(outcome='idle', provider_retry_at=None, provider_suspended=False, last_error=None)
         inventory = read_active_inventory(self.local_active_dir)
         result["inventory"] = {
             "available": inventory["available"], "updated_at": inventory["updated_at"],
@@ -207,7 +212,8 @@ class GraphRefreshCoordinator:
             "unavailable_count": len(inventory["unavailable_files"]),
             "unavailable_files": sorted(inventory["unavailable_files"]),
             "stale": (not inventory["available"] or inventory["updated_at"] is None
-                      or result["outcome"] in {"error", "provider_wait", "provider_review"}
+                      or state["outcome"] in {"error", "provider_wait", "provider_review"}
+                      or pause is not None
                       or time.time() - inventory["updated_at"] > self.refresh_seconds),
         }
         return result

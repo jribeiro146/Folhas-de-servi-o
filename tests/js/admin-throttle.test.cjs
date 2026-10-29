@@ -35,6 +35,20 @@ async function panel(job, { documents = [], section = "admin-jobs", failure = nu
 
 const job = { id: "synthetic", kind: "notify_teams", status: "failed", attempts: 3 };
 
+test('automatic waits remain separate from human administrative decisions', async () => {
+    const extra = {
+        audit: [{action:'provider_wait_resumed',target:'SharePoint',created_at:1234,
+            actor_label:'Administrador',reason:'Decisão humana confirmada'}],
+        provider_events: [{target:'SharePoint',created_at:1235,reason:'Espera automática confirmada'}],
+    };
+    const human = await panel(null,{section:'admin-audit',extra});
+    const automatic = await panel(null,{section:'admin-provider-events',extra});
+    assert.match(human,/Decisão humana confirmada/);
+    assert.doesNotMatch(human,/Espera automática confirmada/);
+    assert.match(automatic,/Espera automática confirmada/);
+    assert.doesNotMatch(automatic,/Decisão humana confirmada/);
+});
+
 for (const [suspended, can_resume] of [[false,false],[true,false],[true,true]]) {
     test('admin shows shared Microsoft wait with suspended='+suspended+' and can_resume='+can_resume, async () => {
         const text=await panel(null,{section:'admin-provider-waits',extra:{provider_waits:[{

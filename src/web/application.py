@@ -1975,6 +1975,11 @@ def _create_app(
                 publication_queued=graph_sync_job is not None,
             )
             return jsonify(result)
+        except ProviderWaitError as exc:
+            if document_id and idempotency_key:
+                editing_state_service.fail_operation(document_id, idempotency_key, str(exc),
+                                                    partial_draft_path=partial_draft_path)
+            return provider_waiting(exc)
         except DraftCopyUnavailableError:
             editing_state_service.fail_operation(document_id, idempotency_key,
                 "A cópia parcial já não pertence exclusivamente a esta operação.", draft_copy_unavailable=True)
@@ -2370,6 +2375,10 @@ def _create_app(
                 teams_queued=teams_payload is not None,
             )
             return jsonify(result)
+        except ProviderWaitError as exc:
+            if document_id and idempotency_key:
+                editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
+            return provider_waiting(exc)
         except PhotoAttachmentError as exc:
             if document_id and idempotency_key:
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
@@ -2514,6 +2523,10 @@ def _create_app(
                 publication_queued=graph_sync_job is not None,
             )
             return jsonify(result)
+        except ProviderWaitError as exc:
+            if document_id and idempotency_key:
+                editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
+            return provider_waiting(exc)
         except EditingStateError as exc:
             return editing_error_response(exc)
         except GraphConflictError as exc:

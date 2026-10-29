@@ -314,6 +314,17 @@
                 node("p", entry.target, card).classList.add("operation-reference");
                 node("p", entry.reason, card);
             }
+            const providerEvents = $('admin-provider-events');
+            if (providerEvents) {
+                providerEvents.replaceChildren();
+                if (!data.provider_events?.length) empty(providerEvents, 'Sem esperas automáticas registadas.');
+                for (const entry of data.provider_events || []) {
+                    const card = node('article', '', providerEvents);
+                    node('h3', entry.target, card);
+                    node('p', date(entry.created_at) + ' · Sistema', card);
+                    node('p', entry.reason, card);
+                }
+            }
             $("admin-refresh").hidden = !data.refresh;
             $("admin-graph").textContent = data.refresh
                 ? "SharePoint: " + (data.refresh.provider_suspended ? "espera Microsoft requer análise" :

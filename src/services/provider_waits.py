@@ -145,7 +145,11 @@ class ProviderWaitStore:
             db.execute('BEGIN IMMEDIATE')
             try:
                 before = self._read(db, scope)
-                failures = min(16, (before['failures'] if before else 0) + 1)
+                # Consecutive retries keep their exponential backoff, but an
+                # unrelated episode after five quiet minutes starts afresh.
+                # Expiry alone must not reset every scheduled retry to one second.
+                same_episode = before and (before['suspended'] or now <= before['deadline'] + 300)
+                failures = min(16, (before['failures'] if same_episode else 0) + 1)
                 wait = parse_retry_after(retry_after, now=now,
                     fallback=min(300.0, base_delay * 2 ** min(failures - 1, 8)))
                 if before:
@@ -224,10 +228,14 @@ class ProviderWaitStore:
             rows = db.execute('SELECT scope,state_json FROM provider_waits ORDER BY updated_at DESC LIMIT 100').fetchall()
         return [self.public(decode_pause(row['state_json'], row['scope']), now=now) for row in rows]
 
-    def history(self):
+    def history(self, *, automatic=None):
+        clause, params = '', ()
+        if automatic is not None:
+            clause = 'WHERE action=? '
+            params = ('provider_wait_recorded' if automatic else 'provider_wait_resumed',)
         with closing(self._connect()) as db:
             rows = db.execute('SELECT id,scope,actor,action,reason,created_at FROM provider_wait_actions '
-                              'ORDER BY created_at DESC,id DESC LIMIT 100').fetchall()
+                              + clause + 'ORDER BY created_at DESC,id DESC LIMIT 100', params).fetchall()
         return [dict(row) for row in rows]
 
 

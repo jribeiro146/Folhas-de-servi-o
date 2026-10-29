@@ -84,6 +84,8 @@ def test_explicit_refusal_without_retry_after_is_terminal_and_not_ambiguous(tmp_
 
 def test_explicit_throttle_respects_delay_and_persisted_attempt_limit(tmp_path, monkeypatch):
     monkeypatch.setenv("FS_TEAMS_JOB_MAX_ATTEMPTS", "2")
+    now = [time.time()]
+    monkeypatch.setattr(time, 'time', lambda: now[0])
     calls = []
     def transport(req, **kwargs):
         calls.append(req.data)
@@ -96,6 +98,9 @@ def test_explicit_throttle_respects_delay_and_persisted_attempt_limit(tmp_path, 
     with queue._connect() as db:
         db.execute("UPDATE graph_sync_jobs SET next_attempt_at=0 WHERE id=?", (job["id"],))
     resumed = GraphSyncQueue(None, queue.database_path, teams_notification_service=service(transport), auto_start=False)
+    resumed.run_until_idle()
+    assert resumed.status(job['id'])['attempts'] == 1 and len(calls) == 1
+    now[0] += 701
     resumed.run_until_idle()
     state = resumed.status(job["id"])
     assert state["attempts"] == 2 and not state["will_retry"] and not state["reconciliation_required"]
