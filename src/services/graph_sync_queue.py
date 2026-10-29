@@ -48,6 +48,7 @@ class PublicationRemoteFailure(RuntimeError):
     def __init__(self, evidence):
         super().__init__(evidence.get('message') or 'Publicação remota incompleta; requer revisão.')
         self.retryable = evidence.get('retryable') is True
+        self.provider_deadline_unrecordable = evidence.get('provider_deadline_unrecordable') is True
         deadline = evidence.get('retry_not_before')
         self.retry_after_seconds = max(0.0, deadline - time.time()) if isinstance(deadline, (int, float)) else None
 
@@ -1642,6 +1643,7 @@ class GraphSyncQueue:
                 'retryable': bool(getattr(remote_error, 'retryable', True)),
                 'message': str(remote_error)[:2000],
                 'retry_not_before': time.time() + max(0.0, float(wait)) if wait is not None else None,
+                'provider_deadline_unrecordable': bool(getattr(remote_error, 'provider_deadline_unrecordable', False)),
             }
         # Persist the remote outcome BEFORE any copy back to the editor bundle.
         # A reclaim/exception afterwards resumes this phase without another PUT.

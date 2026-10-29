@@ -114,6 +114,7 @@ class ProviderWaitError(RuntimeError):
 class ProviderWaitStore:
     def __init__(self, database_path=None, *, clock=None):
         self.database_path = Path(database_path) if database_path is not None else default_store_path()
+        self._deferred_key = os.path.normcase(str(self.database_path.resolve()))
         self.clock = clock or time.time
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect(check_format=False)) as db:
@@ -201,7 +202,7 @@ class ProviderWaitStore:
                  **wait, 'observed_at': now, 'http_status': http_status,
                  'evidence_id': uuid.uuid4().hex, 'failures': 1}
         validate_pause(value, scope)
-        key = (os.path.normcase(str(self.database_path.resolve())), scope)
+        key = (self._deferred_key, scope)
         with _deferred_lock:
             before = _deferred_waits.get(key)
             if before:
@@ -238,7 +239,7 @@ class ProviderWaitStore:
                 raise
 
     def _flush_deferred(self, scopes=None):
-        path = os.path.normcase(str(self.database_path.resolve()))
+        path = self._deferred_key
         now = self.clock()
         with _deferred_lock:
             pending = [(key, dict(entry['value']), entry['retry_at'])

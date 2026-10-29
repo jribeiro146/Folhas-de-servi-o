@@ -1079,15 +1079,19 @@ class GraphStorageService:
                     token_url = TOKEN_URL_TEMPLATE.format(tenant_id=parse.quote(self.config.tenant_id))
                     scope = self.provider_scopes[1 if url == token_url else 0]
                     retry_after = exc.headers.get('Retry-After') if exc.headers else None
+                    unrecorded = False
                     try:
                         pause = self.provider_wait_store.record(scope, http_status=exc.code,
                             retry_after=retry_after)
                     except Exception:
+                        unrecorded = True
                         pause = self.provider_wait_store.defer(scope, http_status=exc.code,
                             retry_after=retry_after)
                 finally:
                     exc.close()
-                raise ProviderWaitError(pause) from exc
+                problem = ProviderWaitError(pause)
+                problem.provider_deadline_unrecordable = unrecorded and pause['deadline'] is None
+                raise problem from exc
             detail = exc.read().decode("utf-8", errors="replace")
             if exc.code in {409, 412}:
                 raise GraphConflictError(
