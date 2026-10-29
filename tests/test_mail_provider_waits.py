@@ -60,7 +60,8 @@ def test_900_seconds_survive_restart_ten_sessions_new_jobs_and_manual_retry(tmp_
     def parallel_session(_):
         other=mail_at(tmp_path,transport,clock)
         with pytest.raises(ProviderWaitError):
-            other.test_connection()
+            other._request_bytes('https://graph.microsoft.com/v1.0/users/sender@example.invalid/sendMail',
+                                 method='POST',data=original)
     with ThreadPoolExecutor(max_workers=10) as pool:
         list(pool.map(parallel_session, range(10)))
     restarted=GraphSyncQueue(Graph(tmp_path),queue.database_path,

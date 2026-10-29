@@ -27,7 +27,7 @@ from src.config import (
     MAIL_SIGNATURE_FILE,
 )
 from src.services.runtime_safety import require_live_delivery
-from src.services.provider_waits import ProviderWaitStore, ProviderWaitError, provider_scope
+from src.services.provider_waits import ProviderWaitStore, ProviderWaitError, provider_scope, parse_retry_after
 
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
@@ -557,7 +557,6 @@ class GraphMailService:
         return {"emailAddress": {"address": address}}
 
     def _access_token_value(self) -> str:
-        self.provider_wait_store.require_ready(self.provider_scopes)
         self.validate_config()
         if self._access_token and time.time() < self._access_token_expires_at:
             return self._access_token
@@ -657,13 +656,23 @@ class GraphMailService:
         is_send = self._allowed_request_is_send(url, method, authenticated)
         if is_send:
             self._validate_delivery_payload(data)
-        self.provider_wait_store.require_ready(self.provider_scopes)
-        request_headers = dict(headers or {})
-        if authenticated:
-            request_headers["Authorization"] = f"Bearer {self._access_token_value()}"
-        req = request.Request(url, data=data, headers=request_headers, method=method)
-        # A different worker may have observed a pause while acquiring a token.
-        self.provider_wait_store.require_ready(self.provider_scopes)
+        try:
+            # Credential preflight is independent of a sendMail pause. Token
+            # requests still obey the broader application/credential deadline.
+            scopes = self.provider_scopes if is_send else self.provider_scopes[1:]
+            self.provider_wait_store.require_ready(scopes)
+            request_headers = dict(headers or {})
+            if authenticated:
+                request_headers["Authorization"] = f"Bearer {self._access_token_value()}"
+            req = request.Request(url, data=data, headers=request_headers, method=method)
+            # Another worker may have recorded a pause during token acquisition.
+            self.provider_wait_store.require_ready(scopes)
+        except (ProviderWaitError, GraphMailError):
+            raise
+        except Exception as exc:
+            raise GraphMailTransientError(
+                "Não foi possível preparar o envio; nenhum pedido de e-mail foi iniciado."
+            ) from exc
         try:
             with transport(req, timeout=60) as response:
                 return response.read()
@@ -684,9 +693,7 @@ class GraphMailService:
                 ) from exc
             if exc.code in {408, 425, 429} or 500 <= exc.code <= 599:
                 try:
-                    pause = self.provider_wait_store.record(self.provider_scopes[0 if is_send else 1],
-                        http_status=exc.code,
-                        retry_after=exc.headers.get('Retry-After') if exc.headers else None)
+                    pause = self._record_refusal(self.provider_scopes[0 if is_send else 1], exc)
                 finally:
                     exc.close()
                 raise ProviderWaitError(pause) from exc
@@ -713,3 +720,21 @@ class GraphMailService:
             raise GraphMailTransientError(
                 "O Microsoft Graph está temporariamente indisponível por falha de rede."
             ) from exc
+
+    def _record_refusal(self, scope, response):
+        header = response.headers.get('Retry-After') if response.headers else None
+        try:
+            return self.provider_wait_store.record(scope, http_status=response.code, retry_after=header)
+        except Exception as exc:
+            # The refusal is known even if its shared persistence failed. Keep
+            # a representable deadline in the job, stop automatic retries and
+            # require repair/review instead of inventing an uncertain delivery.
+            now = time.time()
+            wait = parse_retry_after(header, now=now, fallback=30.0)
+            problem = GraphMailTransientError(
+                "O pedido Microsoft foi recusado e não foi possível guardar a espera. "
+                "O envio não foi aceite; é necessária revisão do armazenamento.",
+                retry_after_seconds=max(0.0, wait['deadline']-now) if wait['deadline'] is not None else None)
+            problem.retryable = False
+            problem.provider_deadline_unrecordable = wait['deadline'] is None
+            raise problem from exc

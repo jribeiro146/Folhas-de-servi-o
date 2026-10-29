@@ -93,6 +93,10 @@ def synthetic_production_sadi(tmp_path, monkeypatch, settings, verified_test_rel
         def request_refresh(**_kwargs):
             return {"status": "idle"}
 
+        @staticmethod
+        def status():
+            return {"outcome": "idle", "in_progress": False}
+
     def render(_html, destination):
         destination.write_bytes(b"%PDF-1.4\nsynthetic SADI access test")
 

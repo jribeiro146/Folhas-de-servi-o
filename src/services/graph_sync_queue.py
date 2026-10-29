@@ -1280,6 +1280,11 @@ class GraphSyncQueue:
             retryable = False
         latest = self.status(str(job["id"]))
         result = dict((latest or {}).get('result') or {})
+        if getattr(error, 'provider_deadline_unrecordable', False):
+            # A failed shared write and an unrepresentable deadline require
+            # storage diagnosis; neither an automatic nor a manual retry may
+            # discard that deadline. The fixed message remains preserved.
+            result['invalid_state'] = True
         if isinstance(error, ProviderWaitError):
             # Preserve provider evidence independently of attempt counters. A
             # manual retry or a newly queued job still consults the shared guard.
