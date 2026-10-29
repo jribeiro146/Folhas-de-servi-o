@@ -23,6 +23,14 @@ def no_real_network(monkeypatch):
     monkeypatch.setattr(socket, "create_connection", _deny_network)
 
 
+@pytest.fixture(autouse=True)
+def isolated_provider_waits(tmp_path, monkeypatch):
+    # Services within a test share a store; independent tests never inherit a
+    # provider pause merely because they use the same fictitious credentials.
+    from src.services import provider_waits
+    monkeypatch.setattr(provider_waits, 'default_store_path', lambda: tmp_path / 'provider-waits.sqlite3')
+
+
 @pytest.fixture(scope="session")
 def verified_test_release(tmp_path_factory):
     """An actual manifest for configuration tests which leave the synthetic mode.

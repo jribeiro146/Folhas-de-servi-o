@@ -20,6 +20,24 @@ test("selection follows the current DOM after replacing cards", () => {
     assert.equal(links[0].active, true);
     assert.equal(links[1].active, false);
 });
+
+for (const outcome of ['provider_wait', 'provider_review']) {
+    test('Microsoft '+outcome+' keeps cards and stops waiting for a refresh that did not start', async () => {
+        const refresh = {outcome, provider_suspended:outcome==='provider_review', provider_retry_at:Date.now()/1000+120,
+            in_progress:false, refresh_id:'old', last_completed_refresh_id:null,
+            inventory:{available:true, stale:true, updated_at:1790593200}};
+        const run=setup([{success:true, refresh}, {success:true,refresh,html:'confirmed cached cards'}]);
+        await run.context.refresh();
+        assert.equal(run.requests.length,2);
+        assert.equal(run.context.fileList.innerHTML,'confirmed cached cards');
+        assert.equal(run.context.form.value,'Unsaved technician work');
+        assert.equal(run.context.refreshBtn.disabled,false);
+        assert.equal(run.messages.at(-1).kind,'info');
+        assert.match(run.context.status.textContent,/Microsoft/);
+        assert.match(run.context.status.textContent,/Último inventário confirmado/);
+        assert.doesNotMatch(run.context.status.textContent,/ainda não terminou|erro/i);
+    });
+}
 // Exercise the actual list controller with a simulated DOM and HTTP transport.
 const controller = editor.slice(
     editor.indexOf("    const refreshFileList ="),

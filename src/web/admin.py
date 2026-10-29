@@ -13,6 +13,7 @@ from src.services.graph_job_visibility import PHASES
 from src.services.diagnostic_views import safe_queue_summary, safe_refresh_status
 from src.services.worker_health import configured_status
 from src.services.application_activity import recent_activity
+from src.services.provider_waits import ProviderWaitStore, ProviderWaitError
 
 
 def register_admin(app, editing, queue, refresh, authenticated_microsoft):
@@ -72,11 +73,20 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
             raise ValueError("Os dados do trabalho são inválidos; requerem revisão.")
         return value
 
+    def wait_store():
+        for service in (getattr(refresh, 'graph_service', None), getattr(queue, 'graph_service', None),
+                        getattr(queue, 'mail_service', None)):
+            store = getattr(service, 'provider_wait_store', None)
+            if isinstance(store, ProviderWaitStore):
+                return store
+        return ProviderWaitStore()
+
     def safe_job(row):
         invalid = False
         deadline = None
         will_retry = False
         publication_refused = False
+        pause = None
         try:
             payload = object_json(row["payload_json"])
             for key in ("mail", "teams", "notification", "_commit_guard"):
@@ -101,6 +111,11 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
             # jobs without checkpoints or unrecognized terminal outcomes.
             reported_uncertain = uncertain
             deadline = teams_retry_deadline(row["kind"], result)
+            if queue is not None:
+                deadline = queue.job_retry_deadline(row['kind'], result)
+                pause = queue.provider_pause_for_job(row['kind'], payload, result)
+                if pause and pause['deadline'] is not None:
+                    deadline = max(deadline or 0, pause['deadline'])
             has_mail = row["kind"] == "archive_and_mail_local" or bool(payload.get("mail"))
             if has_mail and mail.get("accepted") is not True and result.get("phase") not in ("uploading_archive", "generating_pdf", "pdf_ready", "mail_rejected"):
                 uncertain = True
@@ -126,13 +141,16 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
                 "error_code": "job_invalid_state" if invalid else "job_publication_replaced" if publication_refused else
                               "job_publication_local_pending" if result.get('phase') == 'publication_local_pending' else
                               "job_reconciliation_required" if reported_uncertain else
+                              "job_provider_review" if pause and pause['suspended'] else
+                              "job_provider_wait" if pause else
                               "job_failed" if row["last_error"] and not will_retry else None,
                 "phase": result.get("phase") if result.get("phase") in PHASES else None,
                 "retry_not_before": deadline,
+                "provider_suspended": bool(pause and pause['suspended']),
                 "will_retry": will_retry,
                 "reconciliation_required": uncertain, "invalid_state": invalid,
                 "can_retry": row["status"] == "failed" and not row["retryable"] and not uncertain and not invalid and not publication_refused
-                    and (deadline is None or time.time() >= deadline)}
+                    and not pause and (deadline is None or time.time() >= deadline)}
 
     @bp.get("/api/admin/overview")
     def overview():
@@ -150,13 +168,22 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
                   "target": redact_diagnostic_text(entry["target"]),
                   "reason": redact_diagnostic_text(entry["reason"])}
                  for entry in editing.repository.admin_history()]
+        store = wait_store()
+        audit.extend({'id': 'provider:' + entry['id'], 'action': entry['action'] if entry['action'] in {
+                    'provider_wait_recorded', 'provider_wait_resumed'} else 'admin_action',
+                      'created_at': entry['created_at'],
+                      'actor_label': 'Sistema' if entry['actor'] == 'system' else 'Administrador',
+                      'target': {'storage': 'SharePoint', 'mail': 'Email', 'application': 'Integração Microsoft',
+                                 'teams': 'Teams'}.get(entry['scope'].split(':')[0], 'Microsoft'),
+                      'reason': redact_diagnostic_text(entry['reason'])} for entry in store.history())
+        audit.sort(key=lambda entry: entry['created_at'], reverse=True)
         return jsonify(success=True, documents=editing.admin_documents(), jobs=jobs,
                        release=app.config["RELEASE_INFO"],
                        worker=configured_status(app.config["RELEASE_INFO"]),
                        queue_backlog=queue.diagnostic_backlog() if queue is not None else None,
                        queue_summary=safe_queue_summary(queue.summary()) if queue is not None else None,
                        refresh=safe_refresh_status(refresh.status()) if refresh is not None else None,
-                       audit=audit)
+                       provider_waits=store.overview(), audit=audit[:100])
 
     @bp.get("/api/admin/activity")
     def activity():
@@ -196,6 +223,18 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
         except (ValueError, EditingStateError) as exc:
             return action_rejected(exc)
 
+    @bp.post('/api/admin/provider-waits/resume')
+    def resume_provider():
+        try:
+            data = received()
+            result = wait_store().resume(data.get('scope'), expected_version=data.get('version'),
+                evidence_id=data.get('evidence_id'), actor=g.current_user.email, reason=data['reason'])
+            if queue is not None:
+                queue._start_if_enabled()
+            return jsonify(success=True, provider_wait=result)
+        except ValueError as exc:
+            return action_rejected(exc)
+
     @bp.post("/api/admin/jobs/<job_id>/retry")
     @bp.post("/api/graph/jobs/<job_id>/retry")
     def retry_job(job_id):
@@ -217,7 +256,7 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
             return jsonify(success=True, job_id=job_id), 202
         except KeyError:
             return jsonify(success=False, error="Trabalho não encontrado."), 404
-        except ValueError as exc:
+        except (ValueError, ProviderWaitError) as exc:
             return action_rejected(exc)
 
     @bp.post("/api/admin/refresh")

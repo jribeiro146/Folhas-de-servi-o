@@ -12,9 +12,16 @@ class StorageFormatError(ContractError):
     code = "storage_format_invalid"
 
 
-IDENTITIES = {"editing": 0x46534544, "queue": 0x46535155}
-VERSIONS = {"editing": 1, "queue": 3}
+IDENTITIES = {"editing": 0x46534544, "queue": 0x46535155, "provider_waits": 0x46535057}
+VERSIONS = {"editing": 1, "queue": 3, "provider_waits": 1}
 SCHEMAS = {
+    'provider_waits': (
+        '''CREATE TABLE provider_waits (
+            scope TEXT PRIMARY KEY, state_json TEXT NOT NULL, updated_at REAL NOT NULL)''',
+        '''CREATE TABLE provider_wait_actions (
+            id TEXT PRIMARY KEY, scope TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL,
+            reason TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, created_at REAL NOT NULL)''',
+    ),
     "editing": (
         """CREATE TABLE editing_states (
             document_id TEXT PRIMARY KEY, state_json TEXT NOT NULL, updated_at REAL NOT NULL)""",
@@ -54,7 +61,7 @@ def _shape(connection):
     ).fetchall()
     result = {}
     for object_type, name, sql in objects:
-        if object_type != "table" or name not in {"editing_states", "admin_actions", "graph_sync_jobs", "graph_mail_messages"}:
+        if object_type != "table" or name not in {"editing_states", "admin_actions", "graph_sync_jobs", "graph_mail_messages", "provider_waits", "provider_wait_actions"}:
             raise StorageFormatError("Estrutura SQLite desconhecida; requer preparação explícita.")
         # Names above are a fixed allowlist, never user SQL. Include defaults,
         # nullability, primary/foreign keys and generated/hidden columns.
@@ -66,7 +73,7 @@ def _shape(connection):
     return result
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=3)
 def _expected_shape(kind):
     with closing(sqlite3.connect(":memory:")) as connection:
         for statement in SCHEMAS[kind]:
@@ -116,7 +123,8 @@ def preflight_stores(data_dir):
     """Inspect every configured store before factories create other services."""
     root = Path(data_dir)
     for kind, path in (("editing", root / "editing-state" / "editing-state.sqlite3"),
-                       ("queue", root / "graph-sync.sqlite3")):
+                       ("queue", root / "graph-sync.sqlite3"),
+                       ("provider_waits", root / "provider-waits.sqlite3")):
         legacy_json = kind == "editing" and any(path.parent.glob("*.json"))
         if path.exists():
             try:

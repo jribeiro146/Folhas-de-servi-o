@@ -37,6 +37,7 @@ from src.services.editing_state_format import decode_editing_state, EditingState
 from src.services.graph_job_visibility import normalize_job_owner
 from src.services.diagnostic_views import safe_provider_failure
 from src.services.publication_evidence import file_evidence, metadata_name, evidence_valid
+from src.services.provider_waits import ProviderWaitError
 
 
 LOGGER = logging.getLogger(__name__)
@@ -73,7 +74,8 @@ def delivery_uncertain(kind: str, result: dict[str, Any]) -> bool:
 
 def teams_retry_deadline(kind: str, result: dict[str, Any]) -> float | None:
     # Reconciled provider refusals also carry a binding mail retry deadline.
-    value = result.get("retry_not_before") if kind == "notify_teams" or result.get("reconciled_retry_deadline") is True else None
+    value = result.get("retry_not_before") if (kind == "notify_teams" or result.get("reconciled_retry_deadline") is True
+                                              or result.get('provider_wait') is True) else None
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
@@ -339,7 +341,11 @@ class GraphSyncQueue:
             if current["reconciliation_required"]:
                 connection.rollback()
                 raise ValueError("Resultado do envio desconhecido. É necessária reconciliação antes de repetir.")
-            deadline = teams_retry_deadline(current["kind"], current["result"] or {})
+            pause = self.provider_pause_for_job(current['kind'], current['payload'], current['result'] or {})
+            if pause:
+                connection.rollback()
+                raise ProviderWaitError(pause)
+            deadline = self.job_retry_deadline(current['kind'], current['result'] or {})
             if deadline is not None and now < deadline:
                 connection.rollback()
                 raise ValueError("O prazo indicado pelo fornecedor ainda não terminou. Atualize o diagnóstico mais tarde.")
@@ -687,20 +693,28 @@ class GraphSyncQueue:
                 connection.commit()
                 return None
 
-            row = connection.execute(
+            candidates = connection.execute(
                 """
                 SELECT * FROM graph_sync_jobs
                 WHERE (
-                    status = 'pending'
+                    (status = 'pending' AND next_attempt_at <= ?)
                     OR (status = 'failed' AND retryable = 1 AND next_attempt_at <= ?)
                 ) OR (
                     status = 'running' AND updated_at <= ?
                 )
                 ORDER BY created_at
-                LIMIT 1
                 """,
-                (now, stale_before),
-            ).fetchone()
+                (now, now, stale_before),
+            ).fetchall()
+            row = None
+            for candidate in candidates:
+                result = self._json_object(candidate['result_json'])
+                deadline = self.job_retry_deadline(candidate['kind'], result)
+                if deadline is not None and deadline > now:
+                    continue
+                if self.provider_pause_for_job(candidate['kind'], self._json_object(candidate['payload_json']), result) is None:
+                    row = candidate
+                    break
             if row is None:
                 connection.commit()
                 return None
@@ -1251,13 +1265,22 @@ class GraphSyncQueue:
         retry_after = getattr(error, "retry_after_seconds", None)
         if retry_after is not None:
             delay = max(delay, float(retry_after))
-            if job["kind"] != "notify_teams":
+            if job["kind"] != "notify_teams" and not isinstance(error, (ProviderWaitError, PublicationRemoteFailure)):
                 delay = min(300.0, delay)
         now = time.time()
         max_attempts = job.get("max_attempts")
         below_limit = max_attempts is None or attempts < int(max_attempts)
         retryable = bool(getattr(error, "retryable", True)) and below_limit
         latest = self.status(str(job["id"]))
+        result = dict((latest or {}).get('result') or {})
+        if isinstance(error, ProviderWaitError):
+            # Preserve provider evidence independently of attempt counters. A
+            # manual retry or a newly queued job still consults the shared guard.
+            result.update(provider_wait=True, provider_wait_scope=error.scope,
+                          provider_suspended=error.pause['suspended'],
+                          retry_not_before=error.retry_not_before)
+        elif isinstance(error, PublicationRemoteFailure) and error.retry_after_seconds is not None:
+            result.update(provider_wait=True, retry_not_before=now + error.retry_after_seconds)
         if (latest and job['kind'] == 'upload_active'
                 and (latest.get('result') or {}).get('phase') == 'publication_local_pending'
                 and not isinstance(error, GraphConflictError)):
@@ -1271,7 +1294,7 @@ class GraphSyncQueue:
                 """
                 UPDATE graph_sync_jobs
                 SET status = 'failed', attempts = ?, next_attempt_at = ?, retryable = ?,
-                    last_error = ?, updated_at = ?
+                    last_error = ?, updated_at = ?, result_json = ?
                 WHERE id = ? AND status='running' AND attempt_token=?
                 """,
                 (
@@ -1280,6 +1303,7 @@ class GraphSyncQueue:
                     1 if retryable else 0,
                     str(error)[:2000],
                     now,
+                    json.dumps(result, ensure_ascii=False),
                     job["id"],
                     job.get("attempt_token", ""),
                 ),
@@ -1441,18 +1465,67 @@ class GraphSyncQueue:
                     job_kind=row["kind"],
                 )
 
-    def _has_due_jobs(self) -> bool:
+    @staticmethod
+    def job_retry_deadline(kind, result):
+        deadline = teams_retry_deadline(kind, result)
+        # This phase only acknowledges already written metadata. Its subsequent
+        # remote phase will recover the recorded provider deadline separately.
+        if kind == 'upload_active' and result.get('phase') == 'publication_local_pending':
+            return None
+        return deadline
+
+    def provider_pause_for_job(self, kind, payload, result):
+        # Local acknowledgement and accepted receipts cannot make a provider
+        # request and remain eligible while that provider is paused.
+        receipt = result.get('mail') if isinstance(result.get('mail'), dict) else {}
+        if (kind == 'upload_active' and result.get('phase') == 'publication_local_pending'
+                or receipt.get('accepted') is True
+                or kind == 'remove_active' and result.get('cancellation_confirmed') is True):
+            return None
+        services = []
+        if kind in {'upload_active', 'archive_and_remove', 'remove_active'} and result.get('active_removed') is not True:
+            services.append(self.graph_service)
+        if kind == 'archive_and_mail_local' or kind == 'archive_and_remove' and payload.get('mail'):
+            services.append(self.mail_service)
+        pauses = []
+        for service in services:
+            inspect = getattr(service, 'provider_pause', None)
+            value = inspect() if callable(inspect) else None
+            if isinstance(value, dict):
+                pauses.append(value)
+        return max(pauses, key=lambda value: (value['suspended'], value['deadline'] is None,
+                    value['deadline'] or 0)) if pauses else None
+
+    def _scheduled_delays(self):
+        now = time.time()
+        stale_seconds = max(int(os.environ.get('FS_GRAPH_JOB_STALE_SECONDS', '900')), 120)
         with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT 1 FROM graph_sync_jobs
-                WHERE status = 'pending'
-                   OR (status = 'failed' AND retryable = 1 AND next_attempt_at <= ?)
-                LIMIT 1
-                """,
-                (time.time(),),
-            ).fetchone()
-        return row is not None
+            rows = connection.execute("SELECT * FROM graph_sync_jobs WHERE status IN ('pending','running') "
+                                      "OR (status='failed' AND retryable=1)").fetchall()
+        delays = []
+        for row in rows:
+            result, payload = self._json_object(row['result_json']), self._json_object(row['payload_json'])
+            pause = self.provider_pause_for_job(row['kind'], payload, result)
+            if pause and pause['suspended']:
+                continue
+            try:
+                due = float(row['next_attempt_at'])
+                deadline = self.job_retry_deadline(row['kind'], result)
+                if not math.isfinite(due):
+                    continue
+            except (TypeError, ValueError, OverflowError):
+                continue  # quarantined by the next admitted processing cycle
+            if deadline is not None:
+                due = max(due, deadline)
+            if row['status'] == 'running':
+                due = max(due, float(row['updated_at']) + stale_seconds)
+            if pause:
+                due = max(due, pause['deadline'])
+            delays.append(max(0.0, due - now))
+        return delays
+
+    def _has_due_jobs(self) -> bool:
+        return any(delay == 0 for delay in self._scheduled_delays())
 
     def _has_active_job(self) -> bool:
         stale_before = time.time() - max(
@@ -1468,19 +1541,14 @@ class GraphSyncQueue:
         return row is not None
 
     def _next_retry_delay(self) -> float | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT MIN(next_attempt_at) AS due_at FROM graph_sync_jobs "
-                "WHERE status = 'failed' AND retryable = 1"
-            ).fetchone()
-        due_at = row["due_at"] if row else None
-        if due_at is None:
+        delays = self._scheduled_delays()
+        if not delays:
             with self._connect() as connection:
                 held = connection.execute(
                     "SELECT 1 FROM graph_sync_jobs WHERE status = 'held' LIMIT 1"
                 ).fetchone()
             return 5.0 if held else None
-        return max(float(due_at) - time.time(), 0.05)
+        return max(min(delays), 0.05)
 
     def _stage_payload(
         self,

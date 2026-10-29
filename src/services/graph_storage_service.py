@@ -33,6 +33,7 @@ from src.services.active_file_index import ACTIVE_INDEX_NAME
 from src.services.file_diagnostics import SYNC_ID, diagnostic, file_fields, fingerprint
 from src.services.bundle_removals import REMOVALS_NAME, read_removals, write_removals, metadata
 from src.services.signature_service import ALL_SIGNATURE_FIELD_TO_SUFFIX
+from src.services.provider_waits import ProviderWaitStore, ProviderWaitError, provider_scope
 
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
@@ -91,10 +92,25 @@ class GraphConfig:
 class GraphStorageService:
     """Downloads active Excel files and uploads archived bundles through Graph."""
 
-    def __init__(self, config: GraphConfig | None = None):
+    def __init__(self, config: GraphConfig | None = None, *, provider_wait_store=None):
         self.config = config or GraphConfig.from_env()
+        self._provider_wait_store = provider_wait_store
         self._access_token: str | None = None
         self._access_token_expires_at = 0.0
+
+    @property
+    def provider_wait_store(self):
+        if self._provider_wait_store is None:
+            self._provider_wait_store = ProviderWaitStore()
+        return self._provider_wait_store
+
+    @property
+    def provider_scopes(self):
+        return (provider_scope('storage', self.config.tenant_id, self.config.client_id, self.config.drive_id),
+                provider_scope('application', self.config.tenant_id, self.config.client_id))
+
+    def provider_pause(self):
+        return self.provider_wait_store.blocking(self.provider_scopes)
 
     def validate_config(self) -> None:
         missing = self.config.missing_fields()
@@ -1049,6 +1065,7 @@ class GraphStorageService:
         headers: dict[str, str] | None = None,
         authenticated: bool = True,
     ) -> bytes:
+        self.provider_wait_store.require_ready(self.provider_scopes)
         request_headers = dict(headers or {})
         if authenticated:
             request_headers["Authorization"] = f"Bearer {self._access_token_value()}"
@@ -1057,6 +1074,13 @@ class GraphStorageService:
         try:
             return self._open_request_with_retry(req, method)
         except error.HTTPError as exc:
+            if exc.code in {429, 503}:
+                try:
+                    pause = self.provider_wait_store.record(self.provider_scopes[0], http_status=exc.code,
+                        retry_after=exc.headers.get('Retry-After') if exc.headers else None)
+                finally:
+                    exc.close()
+                raise ProviderWaitError(pause) from exc
             detail = exc.read().decode("utf-8", errors="replace")
             if exc.code in {409, 412}:
                 raise GraphConflictError(
@@ -1066,9 +1090,10 @@ class GraphStorageService:
         except error.URLError as exc:
             raise GraphStorageError(f"Microsoft Graph indisponível: {exc}") from exc
 
-    @staticmethod
-    def _open_request_with_retry(req: request.Request, method: str) -> bytes:
-        attempts = 2 if method.upper() == "GET" else 1
+    def _open_request_with_retry(self, req: request.Request, method: str) -> bytes:
+        # Keep the historical instrumentation entry point, but never sleep in a
+        # request/worker to retry Graph. The durable scheduler owns the wait.
+        attempts = 1
 
         for attempt in range(attempts):
             started = time.perf_counter()
@@ -1076,6 +1101,7 @@ class GraphStorageService:
             error_type = None
             response_headers = None
             try:
+                self.provider_wait_store.require_ready(self.provider_scopes)
                 with request.urlopen(req, timeout=60) as response:
                     http_status = getattr(response, "status", 200)
                     response_headers = getattr(response, "headers", None)
@@ -1084,18 +1110,7 @@ class GraphStorageService:
                 http_status = exc.code
                 error_type = type(exc).__name__
                 response_headers = exc.headers
-                if exc.code not in {429, 503} or attempt + 1 >= attempts:
-                    raise
-
-                retry_after = exc.headers.get("Retry-After") if exc.headers else None
-                try:
-                    delay_seconds = float(retry_after) if retry_after is not None else 1.0
-                except (TypeError, ValueError):
-                    delay_seconds = 1.0
-                finally:
-                    exc.close()
-
-                time.sleep(max(0.0, min(delay_seconds, 5.0)))
+                raise
             except Exception as exc:
                 error_type = type(exc).__name__
                 raise

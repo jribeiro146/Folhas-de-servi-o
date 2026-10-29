@@ -20,6 +20,7 @@ from src.services.file_mutex import FileMutexBusy, file_mutex
 from src.services.graph_storage_service import GraphStorageService
 from src.services.runtime_admission import admitted, operation_for
 from src.services.runtime_contract import ContractError, ContractBusy
+from src.services.provider_waits import ProviderWaitError
 
 
 LOGGER = logging.getLogger(__name__)
@@ -83,6 +84,8 @@ class GraphRefreshCoordinator:
             accepted = False
             try:
                 self._recover_interrupted(state)
+                if self._provider_pause():
+                    return self._public_status(state)
                 now = time.time()
                 if (not force and state["last_started_at"] is not None
                         and now - state["last_started_at"] < self.refresh_seconds):
@@ -94,6 +97,7 @@ class GraphRefreshCoordinator:
                 state.update(in_progress=True, refresh_id=refresh_id, outcome="running",
                              refresh_sequence=state["refresh_sequence"] + 1,
                              last_started_at=now, last_error=None, synced_files=[])
+                state.update(provider_retry_at=None, provider_suspended=False)
                 self._write_state(state)
                 worker = threading.Thread(
                     target=self._run, args=(refresh_id, run_guard),
@@ -126,6 +130,7 @@ class GraphRefreshCoordinator:
                 "generation_id": None, "refresh_sequence": 0, "last_completed_sequence": 0,
                 "last_started_at": None, "last_completed_at": None, "last_success_at": None,
                 "last_completed_refresh_id": None, "last_completed_outcome": None,
+                "provider_retry_at": None, "provider_suspended": False,
                 "last_error": None, "synced_files": []}
 
     def _read_state(self) -> dict[str, Any]:
@@ -133,11 +138,11 @@ class GraphRefreshCoordinator:
         try:
             saved = json.loads(self._state_path.read_text(encoding="utf-8"))
             if (not isinstance(saved, dict) or saved.get("version") != 1
-                    or saved.get("outcome") not in {"idle", "running", "success", "error"}
+                    or saved.get("outcome") not in {"idle", "running", "success", "error", "provider_wait", "provider_review"}
                     or not isinstance(saved.get("in_progress"), bool)
                     or saved["in_progress"] != (saved["outcome"] == "running")):
                 raise ValueError("invalid refresh state")
-            for key in ("last_started_at", "last_completed_at", "last_success_at"):
+            for key in ("last_started_at", "last_completed_at", "last_success_at", "provider_retry_at"):
                 if saved.get(key) is not None and (
                     isinstance(saved[key], bool) or not isinstance(saved[key], (int, float))
                     or not math.isfinite(saved[key]) or saved[key] <= 0
@@ -148,8 +153,10 @@ class GraphRefreshCoordinator:
                     raise ValueError("invalid refresh result")
             if saved["outcome"] in {"running", "success"} and not saved.get("refresh_id"):
                 raise ValueError("missing refresh identifier")
-            if saved.get("last_completed_outcome") not in {None, "success", "error"}:
+            if saved.get("last_completed_outcome") not in {None, "success", "error", "provider_wait", "provider_review"}:
                 raise ValueError("invalid completion outcome")
+            if type(saved.get('provider_suspended', False)) is not bool:
+                raise ValueError('invalid provider suspension')
             if not isinstance(saved.get("synced_files"), list) or not all(
                 isinstance(name, str) for name in saved["synced_files"]
             ):
@@ -188,6 +195,10 @@ class GraphRefreshCoordinator:
 
     def _public_status(self, state: dict[str, Any]) -> dict[str, Any]:
         result = {key: value for key, value in state.items() if key != "version"}
+        pause = self._provider_pause()
+        if pause and not state['in_progress']:
+            result.update(outcome='provider_review' if pause['suspended'] else 'provider_wait',
+                          provider_retry_at=pause['deadline'], provider_suspended=pause['suspended'], last_error=None)
         inventory = read_active_inventory(self.local_active_dir)
         result["inventory"] = {
             "available": inventory["available"], "updated_at": inventory["updated_at"],
@@ -196,10 +207,14 @@ class GraphRefreshCoordinator:
             "unavailable_count": len(inventory["unavailable_files"]),
             "unavailable_files": sorted(inventory["unavailable_files"]),
             "stale": (not inventory["available"] or inventory["updated_at"] is None
-                      or state["outcome"] == "error"
+                      or result["outcome"] in {"error", "provider_wait", "provider_review"}
                       or time.time() - inventory["updated_at"] > self.refresh_seconds),
         }
         return result
+
+    def _provider_pause(self):
+        inspect = getattr(self.graph_service, 'provider_pause', None)
+        return inspect() if callable(inspect) else None
 
     def _run(self, refresh_id: str, run_guard) -> None:
         deadline = time.monotonic() + 3
@@ -229,6 +244,7 @@ class GraphRefreshCoordinator:
     def _run_admitted(self, refresh_id: str, run_guard) -> None:
         started_at = time.perf_counter()
         error: str | None = None
+        pause = None
         synced_files: list[str] = []
         context = SYNC_ID.set(refresh_id)
         try:
@@ -236,6 +252,11 @@ class GraphRefreshCoordinator:
             synced_files = [path.name for path in files]
             if self.on_complete is not None:
                 self.on_complete()
+        except ProviderWaitError as exc:
+            pause = exc.pause
+            log_event(LOGGER, logging.INFO, 'Atualização adiada pelo prazo Microsoft.',
+                      event='graph_refresh_provider_wait', refresh_id=refresh_id,
+                      retry_not_before=pause['deadline'], intervention_required=pause['suspended'])
         except Exception:
             # Do not expose exception text containing paths, signed URLs or
             # transport details through the public status endpoint.
@@ -255,12 +276,14 @@ class GraphRefreshCoordinator:
                     state = self._read_state()
                     now = time.time()
                     if state["refresh_id"] == refresh_id:
-                        outcome = "error" if error else "success"
+                        outcome = ('provider_review' if pause['suspended'] else 'provider_wait') if pause else ('error' if error else 'success')
                         state.update(in_progress=False, outcome=outcome, last_completed_at=now,
                                      last_completed_refresh_id=refresh_id, last_completed_outcome=outcome,
                                      last_completed_sequence=state["refresh_sequence"],
                                      last_error=error, synced_files=synced_files)
-                        if error is None:
+                        state.update(provider_retry_at=pause['deadline'] if pause else None,
+                                     provider_suspended=pause['suspended'] if pause else False)
+                        if outcome == 'success':
                             state["last_success_at"] = now
                         self._write_state(state)
                     run_guard.__exit__(None, None, None)

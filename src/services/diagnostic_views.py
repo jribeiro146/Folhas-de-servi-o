@@ -78,13 +78,17 @@ def safe_refresh_status(value):
               "error_code": "graph_refresh_failed" if value.get("last_error") else None}
     for key in ("outcome", "last_completed_outcome"):
         outcome = value.get(key)
-        result[key] = outcome if outcome in ("idle", "running", "success", "error") else None
+        result[key] = outcome if outcome in ("idle", "running", "success", "error", "provider_wait", "provider_review") else None
     for key in ("refresh_id", "generation_id", "last_completed_refresh_id"):
         result[key] = _identifier(value.get(key))
     for key in ("refresh_sequence", "last_completed_sequence"):
         result[key] = _number(value.get(key), integer=True)
     for key in ("last_started_at", "last_completed_at", "last_success_at"):
         result[key] = _number(value.get(key))
+    result['provider_retry_at'] = _number(value.get('provider_retry_at'))
+    result['provider_suspended'] = value.get('provider_suspended') is True
+    if result['outcome'] in {'provider_wait', 'provider_review'}:
+        result.update(last_error=None, error_code=result['outcome'])
     inventory = value.get("inventory")
     if isinstance(inventory, dict):
         result["inventory"] = {"available": inventory.get("available") is True,

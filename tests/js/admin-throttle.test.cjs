@@ -35,6 +35,18 @@ async function panel(job, { documents = [], section = "admin-jobs", failure = nu
 
 const job = { id: "synthetic", kind: "notify_teams", status: "failed", attempts: 3 };
 
+for (const [suspended, can_resume] of [[false,false],[true,false],[true,true]]) {
+    test('admin shows shared Microsoft wait with suspended='+suspended+' and can_resume='+can_resume, async () => {
+        const text=await panel(null,{section:'admin-provider-waits',extra:{provider_waits:[{
+            provider:'storage',scope:'synthetic',version:1,evidence_id:'synthetic',blocked:true,
+            deadline:Date.now()/1000+(can_resume?-1:120),suspended,can_resume,
+        }]}});
+        assert.match(text,/SharePoint/);
+        assert.match(text,/Prazo indicado/);
+        assert.equal(text.includes('Concluir revisão da espera'),can_resume);
+    });
+}
+
 test("admin describes a previous phase in plain language without confusing it with a new pending attempt", async () => {
     const text = await panel({...job, status:"pending", phase:"teams_rejected"});
     assert.match(text, /Pendente/);

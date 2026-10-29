@@ -21,12 +21,15 @@
         teams_rejected:"Aviso Teams recusado", sending_teams:"Envio do aviso Teams iniciado",
         teams_unknown:"Resultado do aviso Teams incerto", teams_accepted:"Aviso Teams aceite pelo fornecedor"};
     const jobErrors = {job_failed:"Falha de processamento; consultar o registo da operação.",
+        job_provider_wait:"A aguardar a Microsoft. O trabalho permanece guardado.",
+        job_provider_review:"A Microsoft indicou uma espera anómala. Requer análise administrativa.",
         job_publication_replaced:"O técnico escolheu outra versão. Deve guardar novamente o rascunho para publicar a versão escolhida antes de finalizar.",
         job_publication_local_pending:"A publicação aguarda confirmação local. O worker retoma falhas temporárias; se a pasta ou o snapshot estiverem em falta, recupere-os antes de repetir.",
         job_reconciliation_required:"Resultado incerto; é necessária reconciliação antes de repetir.",
         job_invalid_state:"Estado inválido; é necessária recuperação antes de repetir."};
     const actions = {release_sheet:"Folha libertada",restore_sheet_access:"Acesso reposto",
-        retry_job_requested:"Repetição pedida",retry_job_accepted:"Repetição aceite",refresh_requested:"Atualização pedida"};
+        retry_job_requested:"Repetição pedida",retry_job_accepted:"Repetição aceite",refresh_requested:"Atualização pedida",
+        provider_wait_recorded:"Espera Microsoft registada",provider_wait_resumed:"Suspensão Microsoft revista"};
     const date = (timestamp) => timestamp ? new Date(timestamp * 1000).toLocaleString("pt-PT") : "Sem atividade registada";
     const node = (tag, text, parent) => {
         const element = document.createElement(tag);
@@ -199,6 +202,26 @@
             }
         }
     };
+    const renderProviderWaits = (waits = []) => {
+        const root = $('admin-provider-waits');
+        if (!root) return;
+        root.replaceChildren();
+        const blocked = waits.filter(wait => wait.blocked);
+        $('admin-provider-section').hidden = !blocked.length;
+        for (const wait of blocked) {
+            const card = node('article', '', root);
+            const labels = {storage:'SharePoint', mail:'Email', teams:'Teams', application:'Integração Microsoft'};
+            heading(card, labels[wait.provider] || 'Microsoft', wait.suspended ? 'Requer análise' : 'A aguardar', 'warning');
+            const timestamp = wait.deadline && new Date(wait.deadline * 1000);
+            node('p', timestamp && !Number.isNaN(timestamp.getTime()) ? 'Prazo indicado: ' + date(wait.deadline) + '.' :
+                'O fornecedor indicou um prazo excessivo ou impossível de apresentar. Peça ao suporte para analisar a resposta.', card);
+            node('p', wait.suspended ? 'A suspensão mantém-se até à revisão, mesmo depois do prazo.' :
+                'As operações que possam ser repetidas com segurança retomam após o prazo, dentro do limite de tentativas.', card);
+            if (wait.can_resume) action(card, 'Concluir revisão da espera', '/api/admin/provider-waits/resume',
+                {scope:wait.scope, version:wait.version, evidence_id:wait.evidence_id},
+                'O prazo já terminou. Registar a verificação e permitir novas operações neste serviço. Envios incertos continuam sujeitos a reconciliação.');
+        }
+    };
     const openReconciliation = async (id) => {
         $("admin-lookup-status").textContent = "";
         try {
@@ -274,6 +297,7 @@
             const data = await request("/api/admin/overview");
             renderDocuments(data.documents);
             renderJobs(data.jobs);
+            renderProviderWaits(data.provider_waits);
             renderWorker(data);
             $("admin-count-documents").textContent = data.documents.length;
             // Totals come from the queue summary, never from the capped job list.
@@ -292,7 +316,9 @@
             }
             $("admin-refresh").hidden = !data.refresh;
             $("admin-graph").textContent = data.refresh
-                ? "SharePoint: " + (data.refresh.in_progress ? "a atualizar" : "sem atualização em curso") +
+                ? "SharePoint: " + (data.refresh.provider_suspended ? "espera Microsoft requer análise" :
+                  data.refresh.outcome === 'provider_wait' ? 'a aguardar a Microsoft até ' + date(data.refresh.provider_retry_at) :
+                  data.refresh.in_progress ? "a atualizar" : "sem atualização em curso") +
                   ". Última atualização: " + date(data.refresh.last_completed_at) +
                   (data.refresh.last_error ? ". Erro: " + data.refresh.last_error : "")
                 : "SharePoint não está ativo nesta instalação.";

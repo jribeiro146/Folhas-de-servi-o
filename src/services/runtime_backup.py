@@ -103,6 +103,9 @@ def _current_stores(data):
         if path.exists():
             with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
                 validate_store(db, kind)
+                if kind == 'provider_waits':
+                    from src.services.provider_waits import validate_provider_rows
+                    validate_provider_rows(db)
         elif kind == "editing" and any(path.parent.glob("*.json")):
             raise BackupError("Estado legado requer migração M06 antes deste backup.")
 

@@ -24,7 +24,8 @@ from src.services.sqlite_storage_format import (
     SCHEMAS, IDENTITIES, VERSIONS, _shape, _expected_shape, initialize_store,
 )
 
-STORES = {"editing": "editing-state/editing-state.sqlite3", "queue": "graph-sync.sqlite3"}
+STORES = {"editing": "editing-state/editing-state.sqlite3", "queue": "graph-sync.sqlite3",
+          "provider_waits": "provider-waits.sqlite3"}
 
 
 class MigrationError(ValueError):
@@ -180,6 +181,24 @@ def _known_schema(db, kind):
     raise MigrationError(f"Formato {kind} desconhecido; nenhuma publicação permitida.")
 
 
+def _convert_provider_waits(source, target):
+    from src.services.provider_waits import validate_provider_rows
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(target)) as writer:
+        initialize_store(writer, 'provider_waits')
+        if not source.exists():
+            return {'provider_waits_preserved': 0}
+        with closing(sqlite3.connect(source.as_uri() + '?mode=ro', uri=True)) as reader:
+            _known_schema(reader, 'provider_waits')
+            validate_provider_rows(reader)
+            writer.executemany('INSERT INTO provider_waits VALUES(?,?,?)',
+                               reader.execute('SELECT scope,state_json,updated_at FROM provider_waits'))
+            writer.executemany('INSERT INTO provider_wait_actions VALUES(?,?,?,?,?,?,?,?)',
+                               reader.execute('SELECT id,scope,actor,action,reason,before_json,after_json,created_at FROM provider_wait_actions'))
+        writer.commit()
+        return {'provider_waits_preserved': writer.execute('SELECT COUNT(*) FROM provider_waits').fetchone()[0]}
+
+
 def _convert_editing(snapshot, target):
     target.parent.mkdir(parents=True, exist_ok=True)
     rows = {}
@@ -322,9 +341,10 @@ def prepare(data, extra_roots, work, *, source_sha256):
         with _stopped(data) as contract:
             if contract:
                 formats = contract[1]["formats"]
-                if (set(formats) != set(SUPPORTED_FORMATS)
+                if (set(formats) not in (set(SUPPORTED_FORMATS), set(SUPPORTED_FORMATS) - {'provider_waits'})
                         or formats.get("queue") not in (1, 2, 3)
-                        or any(formats[key] != value for key, value in SUPPORTED_FORMATS.items() if key != "queue")):
+                        or any(formats.get(key, 1 if key == 'provider_waits' else None) != value
+                               for key, value in SUPPORTED_FORMATS.items() if key != "queue")):
                     raise MigrationError("Contrato persistente desconhecido; migração recusada.")
             files = _files(roots, data, work_id=attempt)
             before = {kind: _store_digest(data / name) for kind, name in STORES.items()}
@@ -353,6 +373,8 @@ def prepare(data, extra_roots, work, *, source_sha256):
             report = _convert_editing(stage / "original" / "0", target_root / STORES["editing"])
             queue = stage / "original" / "0" / STORES["queue"]
             report.update(_convert_queue(queue, target_root / STORES["queue"]))
+            report.update(_convert_provider_waits(stage / 'original' / '0' / STORES['provider_waits'],
+                                                 target_root / STORES['provider_waits']))
             prepared = {kind: _store_digest(target_root / name) for kind, name in STORES.items()}
             plan = {**request, "format": 1, "attempt": attempt, "state": "prepared", "files": files,
                     "before": before, "prepared": prepared, "runtime_before": contract[1] if contract else None,

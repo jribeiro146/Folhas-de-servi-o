@@ -96,6 +96,7 @@ from src.services.graph_mail_service import (
     GraphMailService,
 )
 from src.services.graph_storage_service import GraphConflictError, GraphStorageError, GraphStorageService
+from src.services.provider_waits import ProviderWaitError
 from src.services.graph_sync_coordinator import GraphRefreshCoordinator
 from src.services.graph_sync_queue import GraphSyncQueue
 from src.services.admin_access import can_administer
@@ -462,6 +463,12 @@ def _create_app(
         response.status_code = 503
         response.headers["Retry-After"] = "2"
         return response
+
+    @app.errorhandler(ProviderWaitError)
+    def provider_waiting(error):
+        return jsonify(success=False, code='provider_review' if error.pause['suspended'] else 'provider_wait',
+                       error=str(error), provider_retry_at=error.retry_not_before,
+                       provider_suspended=error.pause['suspended']), 503
 
     def current_editor_identity() -> EditorIdentity:
         current_user = g.get("current_user")

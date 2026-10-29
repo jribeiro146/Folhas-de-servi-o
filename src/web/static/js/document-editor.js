@@ -1814,7 +1814,8 @@ document.addEventListener("DOMContentLoaded", () => {
                     Number.isInteger(requestedSequence) && requestedSequence > 0 &&
                     Number.isInteger(refresh?.last_completed_sequence) && refresh.last_completed_sequence >= requestedSequence
                 );
-                const waiting = () => refresh?.in_progress || (requestedId && !completed());
+                const waiting = () => !["provider_wait", "provider_review"].includes(refresh?.outcome)
+                    && (refresh?.in_progress || (requestedId && !completed()));
                 for (let attempt = 0; waiting() && attempt < 40; attempt += 1) {
                     await new Promise((resolve) => window.setTimeout(resolve, 500));
                     const statusResponse = await fetch("/api/graph/status", {
@@ -1841,6 +1842,16 @@ document.addEventListener("DOMContentLoaded", () => {
             fileSearch?.dispatchEvent(new Event("input"));
             refresh = latest.refresh || refresh;
             if (refresh?.inventory?.updated_at) confirmedAt = refresh.inventory.updated_at;
+            if (["provider_wait", "provider_review"].includes(refresh?.outcome)) {
+                const until = new Date(Number(refresh.provider_retry_at) * 1000);
+                const message = refresh.outcome === "provider_review"
+                    ? "A Microsoft indicou uma espera que requer análise pelo administrador. A última lista continua disponível."
+                    : "A aguardar a Microsoft" + (Number.isFinite(refresh.provider_retry_at) && !Number.isNaN(until.getTime())
+                        ? " até " + until.toLocaleString("pt-PT") : "") + ". A última lista continua disponível.";
+                showListStatus(message, "warning", refresh);
+                if (!silent) showToast(message, "info");
+                return;
+            }
             // Even after a download error, render the confirmed inventory: removed
             // remote files must disappear immediately from the old displayed list.
             if (refresh?.last_error) throw new Error(refresh.last_error);
