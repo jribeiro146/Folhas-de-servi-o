@@ -4,6 +4,7 @@ from uuid import UUID
 
 
 PHASES = frozenset({
+    "publication_local_pending", "publication_partial_confirmed", "publication_confirmed",
     "uploading_archive", "generating_pdf", "pdf_ready", "removal_unknown", "removing_active", "active_removed",
     "cancellation_proof_missing", "canceling_remote", "cancellation_rejected", "cancellation_confirmed",
     "message_ready", "mail_snapshot_invalid", "mail_rejected", "sending_mail", "mail_unknown", "mail_accepted",

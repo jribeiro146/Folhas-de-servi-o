@@ -40,6 +40,9 @@ Uma prova inválida, snapshot desaparecido ou alteração externa exige diagnós
 o painel indica revisão administrativa, em vez de pedir novas gravações inúteis.
 O administrador deve recuperar o snapshot consistente ou resolver o conflito
 de origem, verificar as provas e só então usar Repetir com motivo no painel.
+Exceção: se o técnico já escolheu outra versão, o trabalho antigo não pode ser
+repetido. O técnico deve Guardar rascunho para publicar a versão escolhida; quando
+essa publicação termina, a anterior fica substituída e pode finalizar a folha.
 As proteções existentes continuam a recusar prova divergente; não editar SQLite
 à mão nem converter uma falha em sucesso sem confirmação.
 

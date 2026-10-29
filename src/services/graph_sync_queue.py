@@ -329,6 +329,10 @@ class GraphSyncQueue:
                 connection.rollback()
                 raise KeyError(job_id)
             current = self._serialize(row)
+            if (current['kind'] == 'upload_active' and
+                    self._publication_refused((current['result'] or {}).get('publication_id'))):
+                connection.commit()
+                raise ValueError('O técnico escolheu outra versão. Deve guardar novamente o rascunho para publicar essa versão.')
             if (current["result"] or {}).get("invalid_state"):
                 connection.commit()
                 raise ValueError("Dados do trabalho inválidos. É necessário corrigir o estado antes de repetir.")
@@ -388,7 +392,10 @@ class GraphSyncQueue:
             payload = self._json_object(row["payload_json"])
             # New jobs point to immutable staging; older jobs use the live path.
             if self._upload_source(payload) == source:
-                return self._serialize(row)
+                job = self._serialize(row)
+                job['publication_refused_by_owner'] = self._publication_refused(
+                    (job.get('result') or {}).get('publication_id'))
+                return job
         return None
 
     @staticmethod
@@ -806,6 +813,13 @@ class GraphSyncQueue:
                 try:
                     publication = self._publication_checkpoint(payload, job_id, complete=False, uploaded=[],
                                                                remote_error=remote_error)
+                except GraphJobNoLongerActiveError:
+                    raise
+                except Exception as checkpoint_error:
+                    # Without a durable phase, the next attempt would perform
+                    # remote I/O. Preserve its original refusal/deadline.
+                    raise remote_error from checkpoint_error
+                try:
                     self._publish_staging_metadata(payload, clear_dirty=False, publication=publication)
                     self._checkpoint_result(job_id, {'phase': 'publication_partial_confirmed'})
                 except GraphJobNoLongerActiveError:

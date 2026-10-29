@@ -10,6 +10,7 @@ from src.services.editing_state_service import (EditingStateService, EditorIdent
 from src.services.file_mutex import file_mutex
 from src.services.microsoft_auth_service import MicrosoftAuthService
 import src.web.application as web
+from tests.test_own_publication_state import publication
 
 ADMIN = SimpleNamespace(id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", tenant_id="11111111-1111-4111-8111-111111111111",
                         email="jribeiro@sensorpoint.pt", display_name="Administrador fictício")
@@ -40,6 +41,38 @@ def test_role_is_derived_from_exact_account_not_stored_role():
         user = auth.user_from_session({**base,"email":email,"role":"special_admin"})
         assert user.role == expected and can_administer(user) == (expected == "special_admin")
     assert not can_administer(None)
+
+
+@pytest.mark.parametrize('refused', [False, True])
+def test_admin_identifies_local_publication_and_cannot_repeat_owner_refusal(publication, monkeypatch, refused):
+    source, editing, actor, before, metadata, graph, queue = publication
+    copy = queue._publish_locked_metadata
+    def diverge(*args, **kwargs):
+        copy(*args, **kwargs)
+        source.write_bytes(b'synthetic external change')
+    monkeypatch.setattr(queue, '_publish_locked_metadata', diverge)
+    job = queue.enqueue('upload_active', {'draft_path': str(source)})
+    queue.run_until_idle()
+    if refused:
+        conflict = editing.snapshot(source)
+        editing.save_autosave(**dict(metadata, base_revision=conflict['revision'], idempotency_key='choice'),
+            document=before['server_document'], path=source, source_resolution=conflict['source_conflict']['token'])
+    monkeypatch.setattr(web, 'AUTH_ENABLED', True)
+    monkeypatch.setattr(web, 'ACTIVE_AUTH_PROVIDER', 'microsoft')
+    class Auth:
+        def user_from_session(self, payload):
+            return SimpleNamespace(**payload) if payload else None
+    app = web.create_app(editing_state_service=editing, graph_sync_queue=queue, microsoft_auth_service=Auth())
+    admin = login(app, ADMIN.email)
+    shown = admin.get('/api/admin/overview').json['jobs'][0]
+    assert shown['phase'] == 'publication_local_pending'
+    assert shown['error_code'] == ('job_publication_replaced' if refused else 'job_publication_local_pending')
+    if refused:
+        assert shown['can_retry'] is False
+        response = admin.post('/api/admin/jobs/' + job['id'] + '/retry', json={'reason': 'Synthetic check'},
+                              headers={'X-Admin-CSRF': 'synthetic-csrf'})
+        assert response.status_code == 409
+        assert queue.status(job['id'])['status'] == 'failed' and graph.calls == 1
 
 def test_release_revokes_old_tokens_and_reentry_but_preserves_autosave(tmp_path):
     service, file, editor, snapshot = document(tmp_path)

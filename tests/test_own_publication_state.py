@@ -140,6 +140,9 @@ def test_explicit_resolution_and_new_publication_release_old_local_failure(publi
     conflict = editing.snapshot(source)
     editing.save_autosave(**dict(metadata, base_revision=conflict['revision'], idempotency_key='resolve'),
         document=before['server_document'], path=source, source_resolution=conflict['source_conflict']['token'])
+    assert queue.unfinished_upload(source)['publication_refused_by_owner']
+    with pytest.raises(ValueError, match='guardar novamente'):
+        queue.retry(old['id'])
     monkeypatch.setattr(queue, '_publish_locked_metadata', copy)
     mark_dirty(source.parent)
     new = queue.enqueue('upload_active', {'draft_path': str(source)})
@@ -176,6 +179,45 @@ def test_restart_finishes_only_local_phase_after_remote_success(publication, mon
     assert graph.calls == 1
     assert editing.snapshot(source)['server_document'] == before['server_document']
     assert not dirty_version(source.parent)
+
+
+@pytest.mark.parametrize('retryable', [False, True])
+@pytest.mark.parametrize('failure_at', ['proof', 'checkpoint'])
+def test_failed_checkpoint_cannot_replace_a_remote_refusal_or_wait(publication, monkeypatch, retryable, failure_at):
+    import sqlite3
+    import time
+    from src.services.graph_storage_service import GraphConflictError
+    source, editing, actor, before, metadata, graph, queue = publication
+    remote = GraphStorageError('synthetic wait') if retryable else GraphConflictError('synthetic definite 412')
+    remote.retry_after_seconds = 120 if retryable else None
+    upload = graph.upload_active_bundle
+    def refused(*args, **kwargs):
+        upload(*args, **kwargs)
+        raise remote
+    graph.upload_active_bundle = refused
+    if failure_at == 'checkpoint':
+        def unavailable(*args, **kwargs):
+            raise sqlite3.OperationalError('synthetic checkpoint failure')
+        monkeypatch.setattr(queue, '_checkpoint_result', unavailable)
+    else:
+        def bad_proof(*args, **kwargs):
+            raise ValueError('synthetic metadata changed while reading')
+        monkeypatch.setattr(queue, '_publication_checkpoint', bad_proof)
+    job = queue.enqueue('upload_active', {'draft_path': str(source)})
+    started = time.time()
+    queue.run_until_idle()
+    failed = queue.status(job['id'])
+    assert failed['will_retry'] is retryable
+    assert failed['last_error'] == str(remote)
+    assert (failed['result'] or {}).get('phase') != 'publication_local_pending'
+    if retryable:
+        assert failed['next_attempt_at'] >= started + 120
+    else:
+        with queue._connect() as connection:
+            connection.execute('UPDATE graph_sync_jobs SET next_attempt_at=0 WHERE id=?', (job['id'],))
+    queue.run_until_idle()
+    assert graph.calls == 1
+    assert dirty_version(source.parent)
 
 
 def test_reader_during_local_copy_cannot_invalidate_autosave(publication, monkeypatch):
@@ -369,7 +411,7 @@ def test_new_autosave_during_remote_put_survives_metadata_acknowledgement(public
     assert editing.snapshot(source)['revision'] == saved[0]['revision']
 
 @pytest.mark.parametrize('field', ['empty', 'omitted'])
-@pytest.mark.parametrize('action', ['autosave', 'send', 'bootstrap'])
+@pytest.mark.parametrize('action', ['autosave', 'send', 'bootstrap', 'source_choice'])
 def test_production_routes_continue_after_own_publication(tmp_path, monkeypatch, verified_test_release, field, action):
     from tests.test_maintenance_access import synthetic_production_sadi
     from tests.test_maintenance import complete_document
@@ -405,6 +447,28 @@ def test_production_routes_continue_after_own_publication(tmp_path, monkeypatch,
     waiting = client.post(f'/api/file/{draft.stem}/send',
         json={**document, '_edit': {**meta, 'idempotency_key': 'send-after-publication'}})
     assert waiting.status_code == 409 and waiting.get_json()['code'] == 'publication_pending'
+    if action == 'source_choice':
+        import os
+        copy = queue._publish_locked_metadata
+        def diverge(*args, **kwargs):
+            copy(*args, **kwargs)
+            info = draft.stat()
+            os.utime(draft, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
+        monkeypatch.setattr(queue, '_publish_locked_metadata', diverge)
+        queue.run_until_idle()
+        conflict = editing.snapshot(draft)
+        response = client.post(f'/api/file/{draft.stem}/autosave', json={
+            'document': document, 'source_resolution': conflict['source_conflict']['token'],
+            '_edit': {**meta, 'base_revision': conflict['revision'], 'idempotency_key': 'choose-current'}})
+        assert response.status_code == 200, response.get_json()
+        chosen = response.get_json()['editing']
+        response = client.post(f'/api/file/{draft.stem}/send', json={**document,
+            '_edit': {**meta, 'base_revision': chosen['revision'], 'idempotency_key': 'send-chosen'}})
+        assert response.status_code == 409, response.get_json()
+        assert response.get_json()['code'] == 'publication_failed'
+        assert 'Guarde novamente' in response.get_json()['error']
+        assert 'administração' not in response.get_json()['error']
+        return
     queue.run_until_idle()
     assert queue.status(saved.get_json()['graph_job_id'])['status'] == 'complete'
     assert editing.snapshot(draft)['revision'] == meta['base_revision']

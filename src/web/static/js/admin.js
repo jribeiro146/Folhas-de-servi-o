@@ -9,7 +9,9 @@
     const kinds = {upload_active:"Publicar rascunho",archive_and_remove:"Arquivar e publicar folha",
         archive_and_mail_local:"Enviar folha por e-mail",notify_teams:"Enviar aviso Teams",remove_active:"Retirar folha ativa"};
     const statuses = {pending:"Pendente",running:"Em processamento",failed:"Falhou",held:"Aguardar confirmação local",complete:"Concluído"};
-    const phases = {uploading_archive:"Publicação do arquivo em curso", generating_pdf:"PDF em preparação",
+    const phases = {publication_local_pending:"Confirmação local da publicação pendente",
+        publication_partial_confirmed:"Publicação parcial confirmada localmente", publication_confirmed:"Publicação confirmada",
+        uploading_archive:"Publicação do arquivo em curso", generating_pdf:"PDF em preparação",
         pdf_ready:"PDF preparado", removal_unknown:"Resultado da remoção incerto", removing_active:"Remoção da folha ativa em curso",
         active_removed:"Folha ativa removida", cancellation_proof_missing:"Falta confirmação do cancelamento",
         canceling_remote:"Cancelamento remoto em curso", cancellation_rejected:"Cancelamento recusado",
@@ -19,6 +21,8 @@
         teams_rejected:"Aviso Teams recusado", sending_teams:"Envio do aviso Teams iniciado",
         teams_unknown:"Resultado do aviso Teams incerto", teams_accepted:"Aviso Teams aceite pelo fornecedor"};
     const jobErrors = {job_failed:"Falha de processamento; consultar o registo da operação.",
+        job_publication_replaced:"O técnico escolheu outra versão. Deve guardar novamente o rascunho para publicar a versão escolhida antes de finalizar.",
+        job_publication_local_pending:"A publicação aguarda confirmação local. O worker retoma falhas temporárias; se a pasta ou o snapshot estiverem em falta, recupere-os antes de repetir.",
         job_reconciliation_required:"Resultado incerto; é necessária reconciliação antes de repetir.",
         job_invalid_state:"Estado inválido; é necessária recuperação antes de repetir."};
     const actions = {release_sheet:"Folha libertada",restore_sheet_access:"Acesso reposto",

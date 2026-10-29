@@ -2065,7 +2065,7 @@ def _create_app(
                         "graph_job_id": publication["id"],
                         "error": (
                             "O rascunho está guardado. A confirmação local da publicação requer revisão no painel de administração."
-                            if failed and local_pending else
+                            if failed and local_pending and not publication.get('publication_refused_by_owner') else
                             "O rascunho está guardado no servidor, mas a publicação no SharePoint falhou. "
                             "Guarde novamente o rascunho para repetir a publicação antes de finalizar."
                             if failed else

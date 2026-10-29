@@ -76,12 +76,15 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
         invalid = False
         deadline = None
         will_retry = False
+        publication_refused = False
         try:
             payload = object_json(row["payload_json"])
             for key in ("mail", "teams", "notification", "_commit_guard"):
                 if payload.get(key) is not None and not isinstance(payload[key], dict):
                     raise ValueError()
             result = object_json(row["result_json"], optional=True)
+            publication_refused = (row['kind'] == 'upload_active' and queue is not None
+                                   and queue._publication_refused(result.get('publication_id')))
             mail = result.get("mail") or {}
             if not isinstance(mail, dict):
                 raise ValueError()
@@ -120,13 +123,15 @@ def register_admin(app, editing, queue, refresh, authenticated_microsoft):
         return {"id": row["id"], "kind": row["kind"], "status": row["status"],
                 "attempts": row["attempts"], "updated_at": row["updated_at"],
                 "last_error": "Falha registada; consultar a referência do trabalho." if row["last_error"] else None,
-                "error_code": "job_invalid_state" if invalid else "job_reconciliation_required" if reported_uncertain else
+                "error_code": "job_invalid_state" if invalid else "job_publication_replaced" if publication_refused else
+                              "job_publication_local_pending" if result.get('phase') == 'publication_local_pending' else
+                              "job_reconciliation_required" if reported_uncertain else
                               "job_failed" if row["last_error"] and not will_retry else None,
                 "phase": result.get("phase") if result.get("phase") in PHASES else None,
                 "retry_not_before": deadline,
                 "will_retry": will_retry,
                 "reconciliation_required": uncertain, "invalid_state": invalid,
-                "can_retry": row["status"] == "failed" and not row["retryable"] and not uncertain and not invalid
+                "can_retry": row["status"] == "failed" and not row["retryable"] and not uncertain and not invalid and not publication_refused
                     and (deadline is None or time.time() >= deadline)}
 
     @bp.get("/api/admin/overview")
