@@ -186,9 +186,10 @@ class ProviderWaitStore:
         now = self.clock()
         with closing(self._connect()) as db:
             db.execute('BEGIN')
-            values = [value for scope in scopes if (value := self._read(db, scope)) is not None
-                      and (value['suspended'] or value['deadline'] > now)]
-        values.extend(value for value in deferred if value['suspended'] or value['deadline'] > now)
+            observed = {scope: value for scope in scopes if (value := self._read(db, scope)) is not None}
+        for value in deferred:
+            observed[value['scope']] = self._merge_observed(observed.get(value['scope']), value)
+        values = [value for value in observed.values() if value['suspended'] or value['deadline'] > now]
         return max(values, key=lambda value: (value['suspended'], value['deadline'] is None,
                    value['deadline'] or 0)) if values else None
 

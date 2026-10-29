@@ -1078,8 +1078,13 @@ class GraphStorageService:
                 try:
                     token_url = TOKEN_URL_TEMPLATE.format(tenant_id=parse.quote(self.config.tenant_id))
                     scope = self.provider_scopes[1 if url == token_url else 0]
-                    pause = self.provider_wait_store.record(scope, http_status=exc.code,
-                        retry_after=exc.headers.get('Retry-After') if exc.headers else None)
+                    retry_after = exc.headers.get('Retry-After') if exc.headers else None
+                    try:
+                        pause = self.provider_wait_store.record(scope, http_status=exc.code,
+                            retry_after=retry_after)
+                    except Exception:
+                        pause = self.provider_wait_store.defer(scope, http_status=exc.code,
+                            retry_after=retry_after)
                 finally:
                     exc.close()
                 raise ProviderWaitError(pause) from exc
