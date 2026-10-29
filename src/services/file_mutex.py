@@ -16,9 +16,8 @@ def file_mutex(path: Path):
     with path.open("a+b") as handle:
         if os.name == "nt":
             import msvcrt
-            if path.stat().st_size == 0:
-                handle.write(b"0")
-                handle.flush()
+            # Windows permits byte-range locks beyond EOF. Writing a filler
+            # before acquiring the lock races with another holder of that byte.
             handle.seek(0)
             try:
                 msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)

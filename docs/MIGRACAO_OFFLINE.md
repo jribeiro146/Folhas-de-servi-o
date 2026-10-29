@@ -17,6 +17,8 @@ bloqueio e têm obrigatoriamente de ser encerradas pelo instalador.
 | SQLite edição1 atual | Preserva registos/auditoria; a linha SQLite tem precedência sobre um snapshot JSON antigo |
 | Fila sem marcadores, esquema exato `a1cac3c`; queue1 e queue2 | Converte para queue3; mantém payloads, tentativas, recibos, snapshots e MIME. Todos os trabalhos por concluir ficam em quarentena sem repetição automática/manual |
 | Queue3 atual | Preserva estados, resultados e mensagens, sem reiniciar trabalhos |
+| Contrato anterior compatível, sem a base de esperas Microsoft | Acrescenta provider_waits:1 e cria a base vazia, sem alterar rascunhos, fila ou recibos |
+| provider_waits:1 existente | Valida e preserva prazos, suspensões e auditoria; inclui páginas WAL confirmadas |
 | Agregado de edição inválido/futuro com identidade conhecida | Conserva o JSON original na linha, recusado pela quarentena M04 |
 | Esquema SQLite/contrato desconhecido ou snapshot sem identidade comprovada | Recusa publicar o conjunto; guarda o original para diagnóstico |
 
@@ -90,7 +92,7 @@ python -B tools/migrate_runtime.py apply \
 A publicação confere originais, candidatos, bases atuais e ficheiros. Se algo
 mudou, recusa a aplicação. Há exclusão entre workspaces de migração, reserva
 SQLite e exclusão do contrato moderno. Antes da primeira substituição, revoga a
-admissão antiga; só publica o contrato da nova versão depois de ambas as bases.
+admissão antiga; só publica o contrato da nova versão depois de todas as bases preparadas.
 Um processo interrompido deixa a versão moderna recusada até retomar o plano.
 Não se substitui uma base com WAL/journals ainda abertos.
 
@@ -113,6 +115,20 @@ identidades locais e referências absolutas na fila. Não renomear diretórios o
 editar caminhos no plano para o tentar. Os ficheiros de negócio ficam nos mesmos
 locais; a cópia privada serve de evidência/recuperação. Os testes cobrem falhas de
 processo e erros de ficheiro; falhas físicas de disco exigem a política de backup.
+
+Nesta atualização, consultar também [ESPERAS_MICROSOFT.md](ESPERAS_MICROSOFT.md)
+e [RECUPERACAO_PUBLICACAO.md](RECUPERACAO_PUBLICACAO.md). Preservar a configuração
+e a identificação administrativa já confirmadas. Não repetir a reposição única
+de outubro: usar preparação/migração e backup do conjunto existente.
+
+Nos ensaios Windows, o mutex bloqueia diretamente a região mesmo num ficheiro
+vazio, sem escrever antes de obter exclusividade; este comportamento é suportado
+pela [API Microsoft _locking](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/locking?view=msvc-170).
+Uma recusa transitória Windows ao renomear o conjunto privado SADI permite até
+oito tentativas da mesma operação atómica, com 450 ms de espera programada no
+total. A recusa persistente continua a falhar antes do arquivo; não muda nomes,
+conteúdo ou permissões para forçar a publicação. No Linux mantém-se a operação
+de renomeação nativa, sem esse atraso quando não existe recusa Windows.
 
 ## Código, testes e aceitação
 

@@ -8,6 +8,7 @@ import os
 import secrets
 import shutil
 from pathlib import Path
+from src.services.atomic_files import rename_local
 
 
 class MaintenancePrivateService:
@@ -78,7 +79,7 @@ class MaintenancePrivateService:
             if os.name != "nt":
                 for item in temporary.iterdir():
                     item.chmod(0o600)
-            os.rename(temporary, destination)
+            rename_local(temporary, destination)
             return key
         finally:
             if temporary.exists() and temporary.resolve().parent == archive_root.resolve():
