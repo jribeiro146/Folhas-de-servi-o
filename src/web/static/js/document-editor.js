@@ -1,9 +1,9 @@
 document.addEventListener("DOMContentLoaded", () => {
     let activeFileName = null;
+    let preservedMaintenance = [];
     let pendingConfirmation = null;
 
     const filesApp = window.__FILES_APP__ || {};
-    const requiredFields = Array.isArray(filesApp.requiredFields) ? filesApp.requiredFields : [];
     const mailEnabled = Boolean(filesApp.mailEnabled);
     const mailTestRecipient = String(filesApp.mailTestRecipient || "").trim();
     const mailJobStaleSeconds = Math.max(Number(filesApp.mailJobStaleSeconds) || 180, 90);
@@ -15,7 +15,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const selectedSignatures = filesApp.selectedSignatures || {};
     const selectedFileError = filesApp.selectedFileError || null;
 
-    const fileCards = Array.from(document.querySelectorAll(".file-card-link[data-name]"));
     const fileList = document.getElementById("file-list");
     const fileSearch = document.getElementById("file-search");
     const fileCounter = document.getElementById("file-counter");
@@ -145,6 +144,7 @@ document.addEventListener("DOMContentLoaded", () => {
             photo_too_large: "Cada fotografia pode ter no máximo 10 MB.",
             photo_total_limit: "As fotografias podem ocupar no máximo 50 MB no total.",
             technician: "Técnico",
+            technicians_required_help: "Preencha todos os campos de cada técnico para finalizar. Pode guardar um rascunho incompleto.",
             start_time: "Hora Início",
             end_time: "Hora Fim",
             total_hours: "Total efetivo",
@@ -163,7 +163,7 @@ document.addEventListener("DOMContentLoaded", () => {
             signature_help: "Assine no espaço acima com o dedo ou com uma caneta digital.",
             customer_signer_name: "Primeiro e último nome",
             customer_signer_name_placeholder: "Primeiro e último nome",
-            customer_signature_date: "Cliente - data",
+            customer_signature_date: "Data da assinatura",
             save_send: "Finalizar folha",
             cancel_sheet: "Cancelar folha",
             save_draft: "Guardar rascunho",
@@ -240,6 +240,7 @@ document.addEventListener("DOMContentLoaded", () => {
             photo_too_large: "Each photograph can be up to 10 MB.",
             photo_total_limit: "Photographs can use up to 50 MB in total.",
             technician: "Technician",
+            technicians_required_help: "Complete every field for each technician to finalize. You can save an incomplete draft.",
             start_time: "Start time",
             end_time: "End time",
             total_hours: "Effective total",
@@ -258,7 +259,7 @@ document.addEventListener("DOMContentLoaded", () => {
             signature_help: "Sign in the area above using a finger or digital pen.",
             customer_signer_name: "First and last name",
             customer_signer_name_placeholder: "First and last name",
-            customer_signature_date: "Customer - date",
+            customer_signature_date: "Signature date",
             save_send: "Finalize sheet",
             cancel_sheet: "Cancel sheet",
             save_draft: "Save draft",
@@ -971,7 +972,7 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     const setActiveCard = (fileName) => {
-        fileCards.forEach((link) => {
+        document.querySelectorAll(".file-card-link[data-name]").forEach((link) => {
             const card = link.closest(".file-card");
             if (!card) {
                 return;
@@ -1237,10 +1238,22 @@ document.addEventListener("DOMContentLoaded", () => {
         clientPad.clearButton.hidden = shouldWaive;
         clientPad.clearButton.disabled = shouldWaive;
         clientPad.canvas.setAttribute("aria-disabled", String(shouldWaive));
+        ["customer_signer_name", "customer_signature_date"].forEach((key) => {
+            form.querySelector(`[data-field="${key}"]`).setAttribute("aria-required", String(!shouldWaive));
+        });
+    };
+
+    const applyMaintenanceRecovery = (payload) => {
+        // Resume may restore server checklists hidden by an older client. Only
+        // update that section; a full populate would reset unsaved service
+        // photographs and signature pads retained by the suspended page.
+        preservedMaintenance = structuredClone(payload.maintenance_checklists || []);
+        window.MaintenanceEditor?.hydrate(payload);
     };
 
     const populateForm = (fileName, documentData, signatures = {}, photos = []) => {
         const safeDocument = { ...createEmptyDocument(), ...(documentData || {}) };
+        preservedMaintenance = structuredClone(safeDocument.maintenance_checklists || []);
         activeFileName = fileName;
 
         simpleFields.forEach((field) => {
@@ -1262,6 +1275,7 @@ document.addEventListener("DOMContentLoaded", () => {
             clearSignature: Boolean(safeDocument.client_not_present)
         });
         applyLanguage(safeDocument.document_language || "pt");
+        window.MaintenanceEditor?.hydrate(safeDocument);
 
         setActiveCard(fileName);
         setStatusMessage("");
@@ -1274,6 +1288,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const resetActiveState = () => {
         activeFileName = null;
+        preservedMaintenance = [];
         form.reset();
         renderMaterials();
         setMaterialsUsed(false);
@@ -1282,6 +1297,7 @@ document.addEventListener("DOMContentLoaded", () => {
         resetPhotoState();
         setClientNotPresent(false);
         applyLanguage("pt");
+        window.MaintenanceEditor?.hydrate({});
         updateWorkspaceVisibility(false);
         setStatusMessage("");
         setActiveCard(null);
@@ -1332,6 +1348,7 @@ document.addEventListener("DOMContentLoaded", () => {
         });
 
         payload.service_types = collectOptionGroup(serviceTypeInputs);
+        payload.maintenance_checklists = window.MaintenanceEditor ? window.MaintenanceEditor.collect() : structuredClone(preservedMaintenance);
         payload.equipments = collectOptionGroup(equipmentInputs);
         payload.materials_used = materialsUsedYes.checked;
         payload.materials = payload.materials_used
@@ -1347,14 +1364,13 @@ document.addEventListener("DOMContentLoaded", () => {
         return payload;
     };
 
-    const getMissingRequiredFields = (payload) => {
-        const missing = requiredFields
-            .filter((field) => !String(payload[field.key] || "").trim())
-            .map((field) => field.label);
+    const getFinalizationValidation = (payload) => {
+        const result = window.DocumentValidation.validate(payload, filesApp);
+        result.missing.push(...(window.MaintenanceEditor?.validate(payload) || []));
         if (!payload.client_not_present && !String(payload["Assinatura Cliente"] || "").trim()) {
-            missing.push(t("customer_signature_title"));
+            result.missing.push(t("customer_signature_title"));
         }
-        return missing;
+        return result;
     };
 
     const getInvalidDurationInputs = () => (
@@ -1453,23 +1469,61 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
 
+    const commitMessageKey = "sensorpoint-commit-message";
+    const readCommitResult = async (response, kind) => {
+        let result;
+        try { result = await response.json(); } catch (_) { /* A proxy may return HTML or an empty body. */ }
+        if (result && typeof result === "object" && (result.success === false || (result.success === true
+                && (kind === "draft" ? typeof result.file === "string" && result.file.length > 0
+                    : typeof result.email_status === "string")))) return result;
+        // A transport status/body cannot prove that a mutation did not happen.
+        // The caller's recovery path consults the receipt, never retries a POST.
+        const reference = response.headers?.get?.("X-Request-ID") || "";
+        const suffix = /^[A-Za-z0-9._:-]{1,64}$/.test(reference) ? ` Referência: ${reference}.` : "";
+        const error = new Error("Não foi possível confirmar o resultado da gravação." + suffix);
+        error.code = "operation_response_unconfirmed";
+        error.status = response.status;
+        throw error;
+    };
+    const navigateAfterCommit = (url, message, variant = "success") => {
+        try {
+            window.sessionStorage.setItem(commitMessageKey, JSON.stringify({ message, variant }));
+        } catch (_error) {
+            // Navigation must also work when browser storage is unavailable.
+        }
+        window.location.href = url;
+    };
+
+    // Reserve the UI action before awaiting signatures or metadata. A second
+    // click must not enter a finally that could release the first operation.
+    let documentOperationPending = false;
     const saveDraft = async () => {
-        if (!activeFileName) {
+        if (!activeFileName || documentOperationPending) {
             return;
         }
 
+        documentOperationPending = true;
+        let ownsPreparation = false;
         hideConfirm();
         setBusy(true, "A guardar rascunho", "Estamos a guardar a folha.");
 
         try {
+            await window.MaintenanceEditor?.settleSignatures();
             const payload = collectFormData();
             payload._edit = await requireOperationMetadata("draft");
+            ownsPreparation = true;
             const requestOptions = buildCommitRequest(payload);
+            if (!window.SensorpointCommitRecovery) {
+                throw new Error("O acompanhamento da gravação não está disponível. Recarregue a folha antes de guardar.");
+            }
+            const recoveryHeaders = window.SensorpointCommitRecovery.begin(activeFileName, payload._edit, "draft");
+            window.__EDITING_COORDINATOR__?.setCommitPending?.(true);
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/draft`, {
                 method: "POST",
-                ...requestOptions
+                ...requestOptions,
+                headers: {...requestOptions.headers, ...recoveryHeaders}
             });
-            const result = await response.json();
+            const result = await readCommitResult(response, "draft");
 
             if (!response.ok || !result.success) {
                 window.__EDITING_COORDINATOR__?.handleConflict(result);
@@ -1478,23 +1532,41 @@ document.addEventListener("DOMContentLoaded", () => {
 
             commitPhotoState(result.photos || []);
             await window.__EDITING_COORDINATOR__?.markCommitted(result, "draft");
-            const nextFileName = result.file || activeFileName;
-            const successMessage = result.created_copy
-                ? "Rascunho guardado e nova folha em execução criada."
-                : "Rascunho guardado com sucesso.";
-
-            showToast(successMessage, "success");
-            window.setTimeout(() => {
-                window.location.href = `/?file=${encodeURIComponent(nextFileName)}`;
-            }, 800);
+            window.SensorpointCommitRecovery.clear(activeFileName);
+            resumeDraftCommit(result);
         } catch (error) {
+            try {
+                if (await window.__EDITING_COORDINATOR__?.recoverPendingCommit?.()) return;
+            } catch (recoveryError) {
+                showToast(recoveryError.message, "error");
+                return;
+            }
             showToast(error.message, "error");
         } finally {
+            if (ownsPreparation) window.__EDITING_COORDINATOR__?.setCommitPending?.(false);
+            documentOperationPending = false;
             setBusy(false);
         }
     };
 
+    // Both a normal response and an owned receipt use the same draft workflow.
+    const resumeDraftCommit = (result) => {
+            const nextFileName = result.file || activeFileName;
+            const publicationPending = result.publication_status === "pending";
+            const successMessage = publicationPending
+                ? "Rascunho guardado no servidor. A publicação no SharePoint está pendente."
+                : (result.created_copy
+                    ? "Rascunho guardado e nova folha em execução criada."
+                    : "Rascunho guardado com sucesso.");
+
+            navigateAfterCommit(`/?file=${encodeURIComponent(nextFileName)}`, successMessage,
+                publicationPending ? "info" : "success");
+    };
+
     const sendFile = async (payload) => {
+        if (documentOperationPending) return;
+        documentOperationPending = true;
+        let ownsPreparation = false;
         hideConfirm();
         const willSendEmail = mailEnabled && Boolean(String(payload?.customer_email || "").trim());
         setBusy(
@@ -1511,12 +1583,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
         try {
             payload._edit = await requireOperationMetadata("send");
+            ownsPreparation = true;
             const requestOptions = buildCommitRequest(payload);
+            if (!window.SensorpointCommitRecovery) {
+                throw new Error("O acompanhamento da gravação não está disponível. Recarregue a folha antes de enviar.");
+            }
+            const recoveryHeaders = window.SensorpointCommitRecovery.begin(activeFileName, payload._edit);
+            window.__EDITING_COORDINATOR__?.setCommitPending?.(true);
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/send`, {
                 method: "POST",
-                ...requestOptions
+                ...requestOptions,
+                headers: {...requestOptions.headers, ...recoveryHeaders}
             });
-            const result = await response.json();
+            const result = await readCommitResult(response, "send");
 
             if (!response.ok || !result.success) {
                 window.__EDITING_COORDINATOR__?.handleConflict(result);
@@ -1528,8 +1607,19 @@ document.addEventListener("DOMContentLoaded", () => {
                 throw new Error((result.error || "Falha ao fechar a folha.") + suffix);
             }
 
+            // Persist the reference before any asynchronous local bookkeeping.
+            // A reload resumes GET only; it never repeats this send POST.
+            if (result.email_status === "pending" && result.graph_job_id) {
+                window.SensorpointMailFollowup?.remember(result.graph_job_id,
+                    response.headers?.get?.("X-Mail-Monitor-Scope"));
+            }
             commitPhotoState();
             await window.__EDITING_COORDINATOR__?.markCommitted(result, "send");
+            window.SensorpointCommitRecovery?.clear(activeFileName);
+            if (result.maintenance_bundle_url) {
+                navigateAfterCommit(result.maintenance_bundle_url, "Folha e checklists finalizadas. PDFs disponíveis; envio apenas simulado.");
+                return;
+            }
             if (result.email_status === "pending") {
                 setBusy(
                     true,
@@ -1542,79 +1632,57 @@ document.addEventListener("DOMContentLoaded", () => {
                         "A folha foi arquivada, mas o monitor do envio de e-mail não está disponível."
                     );
                 }
-                await monitor.waitForMailJob(result.graph_job_id, {
+                const waitForJob = window.SensorpointMailFollowup?.waitForMailJob || monitor.waitForMailJob;
+                await waitForJob(result.graph_job_id, {
                     timeoutMs: mailJobMonitorTimeoutMs
                 });
-                showToast(
-                    "Folha arquivada e e-mail aceite para envio pela Microsoft.",
-                    "success"
-                );
+                navigateAfterCommit("/", "Folha arquivada e e-mail aceite para envio pela Microsoft.");
             } else {
-                showToast(result.message || "Folha concluída com sucesso.", "success");
+                navigateAfterCommit("/", result.message || "Folha concluída com sucesso.");
             }
-            window.setTimeout(() => {
-                window.location.href = "/";
-            }, 1200);
         } catch (error) {
+            if (error?.code === "suspended") return; // Normal mobile/background navigation; the panel resumes.
+            try {
+                if (await window.__EDITING_COORDINATOR__?.recoverPendingCommit?.()) return;
+            } catch (recoveryError) {
+                showToast(recoveryError.message, "error");
+                return;
+            }
             showToast(error.message, "error");
-            if (error?.code === "mail_failed" && error.job?.id) {
-                const failedJobId = error.job.id;
+            if (error?.jobId && error instanceof window.SensorpointMailJobMonitor.MailJobMonitorError) {
+                const retryDate = new Date(error.retryAt);
+                const schedule = error.retryAt
+                    ? (Number.isFinite(retryDate.getTime())
+                        ? ` Próxima consulta a partir de ${retryDate.toLocaleString("pt-PT")}.`
+                        : " O prazo indicado pelo serviço é muito distante.")
+                    : "";
                 showConfirm({
-                    eyebrow: "Envio não concluído",
-                    title: "E-mail não enviado",
-                    message: (
-                        `${error.message} A folha já está arquivada. `
-                        + "Pretende repetir apenas este envio?"
-                    ),
-                    confirmLabel: "Tentar novamente",
+                    eyebrow: "Acompanhamento do e-mail",
+                    title: "Estado do envio",
+                    message: `${error.message}${schedule} Referência para o administrador: ${error.jobId}.`,
+                    confirmLabel: "Fechar",
                     confirmVariant: "primary",
-                    onAccept: async () => {
-                        hideConfirm();
-                        setBusy(
-                            true,
-                            "A repetir o envio",
-                            "Estamos a repetir apenas este e-mail."
-                        );
-                        try {
-                            const retryResponse = await fetch(
-                                `/api/graph/jobs/${encodeURIComponent(failedJobId)}/retry`,
-                                { method: "POST", headers: { "Accept": "application/json" } }
-                            );
-                            const retryResult = await retryResponse.json();
-                            if (!retryResponse.ok || !retryResult.success) {
-                                throw new Error(
-                                    retryResult.error || "Não foi possível repetir o envio."
-                                );
-                            }
-                            await window.SensorpointMailJobMonitor.waitForMailJob(failedJobId, {
-                                timeoutMs: mailJobMonitorTimeoutMs
-                            });
-                            showToast(
-                                "E-mail aceite para envio pela Microsoft.",
-                                "success"
-                            );
-                            window.setTimeout(() => {
-                                window.location.href = "/";
-                            }, 1200);
-                        } catch (retryError) {
-                            showToast(retryError.message, "error");
-                        } finally {
-                            setBusy(false);
-                        }
-                    }
+                    onAccept: hideConfirm
                 });
             }
         } finally {
+            if (ownsPreparation) window.__EDITING_COORDINATOR__?.setCommitPending?.(false);
+            documentOperationPending = false;
             setBusy(false);
         }
     };
 
     const cancelFile = async () => {
+        if (documentOperationPending) return;
+        documentOperationPending = true;
+        let ownsPreparation = false;
         hideConfirm();
         setBusy(true, "A cancelar a folha", "Estamos a mover a folha para Canceladas.");
 
         try {
             const metadata = await requireOperationMetadata("cancel");
+            ownsPreparation = true;
+            window.__EDITING_COORDINATOR__?.setCommitPending?.(true);
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/cancel`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -1638,12 +1706,20 @@ document.addEventListener("DOMContentLoaded", () => {
         } catch (error) {
             showToast(error.message, "error");
         } finally {
+            if (ownsPreparation) window.__EDITING_COORDINATOR__?.setCommitPending?.(false);
+            documentOperationPending = false;
             setBusy(false);
         }
     };
 
     const openDocumentPreview = async (autoPrint = false) => {
         if (!activeFileName) {
+            return;
+        }
+
+        const checklist = window.MaintenanceEditor?.previewTarget();
+        if (checklist && !checklist.siteId) {
+            showToast("Indique o número de locais e selecione a checklist a pré-visualizar.", "error");
             return;
         }
 
@@ -1656,8 +1732,10 @@ document.addEventListener("DOMContentLoaded", () => {
         previewWindow.document.write(`<p style="font-family:Segoe UI,sans-serif;padding:24px;">${t("preparing_document")}</p>`);
 
         try {
+            await window.MaintenanceEditor?.settleSignatures();
             const payload = collectFormData();
             payload._auto_print = autoPrint;
+            if (checklist) payload._maintenance_site_id = checklist.siteId;
             const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/document-preview`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -1698,43 +1776,114 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
 
-    const refreshFileList = async () => {
+    const refreshFileList = async ({ silent = false } = {}) => {
         if (!refreshBtn || refreshBtn.disabled) return;
+        const status = document.getElementById("file-refresh-status");
+        let confirmedAt = status?.dataset.confirmedAt || "";
+        const showListStatus = (message, state, refresh) => {
+            if (!status) return;
+            confirmedAt = refresh?.inventory?.updated_at || confirmedAt;
+            status.dataset.confirmedAt = confirmedAt;
+            status.dataset.state = state;
+            status.hidden = false;
+            const timestamp = typeof confirmedAt === "number" ? confirmedAt * 1000 : (/^\d+(\.\d+)?$/.test(confirmedAt) ? Number(confirmedAt) * 1000 : confirmedAt);
+            const date = confirmedAt ? new Date(timestamp) : null;
+            const dateText = date && !Number.isNaN(date.getTime()) ? date.toLocaleString("pt-PT") : "";
+            status.textContent = message + (dateText ? ` Último inventário confirmado: ${dateText}.` : "");
+        };
         refreshBtn.disabled = true;
-        showToast("A atualizar a lista em segundo plano…", "info");
+        if (filesApp.graphEnabled) showListStatus("A confirmar a lista do SharePoint…", "running");
+        if (!silent) showToast("A atualizar a lista em segundo plano…", "info");
         try {
-            const response = await fetch("/api/files?refresh=1", {
+            const response = await fetch(silent ? "/api/files" : "/api/files?refresh=1", {
                 headers: { "Accept": "application/json" },
+                cache: "no-store",
             });
             const result = await response.json();
             if (!response.ok || !result.success) {
-                throw new Error(result.error || "N??o foi poss??vel atualizar a lista.");
+                throw new Error(result.error || "Não foi possível atualizar a lista.");
             }
-            if (result.refresh) {
-                let refresh = result.refresh;
-                for (let attempt = 0; refresh?.in_progress && attempt < 40; attempt += 1) {
+            let refresh = result.refresh;
+            let confirmationPending = false;
+            if (refresh) {
+                const requestedId = result.requested_refresh_id || refresh.refresh_id;
+                const requestedSequence = result.requested_refresh_sequence ?? refresh.refresh_sequence;
+                const requestedGeneration = result.requested_refresh_generation || refresh.generation_id;
+                const completed = () => refresh?.last_completed_refresh_id === requestedId || (
+                    requestedGeneration && refresh?.generation_id === requestedGeneration &&
+                    Number.isInteger(requestedSequence) && requestedSequence > 0 &&
+                    Number.isInteger(refresh?.last_completed_sequence) && refresh.last_completed_sequence >= requestedSequence
+                );
+                const waiting = () => !["provider_wait", "provider_review"].includes(refresh?.outcome)
+                    && (refresh?.in_progress || (requestedId && !completed()));
+                for (let attempt = 0; waiting() && attempt < 40; attempt += 1) {
                     await new Promise((resolve) => window.setTimeout(resolve, 500));
                     const statusResponse = await fetch("/api/graph/status", {
                         headers: { "Accept": "application/json" },
+                        cache: "no-store",
                     });
                     const statusResult = await statusResponse.json();
+                    if (!statusResponse.ok || !statusResult.success) {
+                        throw new Error("Não foi possível confirmar a atualização.");
+                    }
                     refresh = statusResult.refresh;
                 }
-                if (refresh?.last_error) throw new Error(refresh.last_error);
+                confirmationPending = Boolean(waiting());
             }
-            if (activeFileName) {
-                showToast("Lista atualizada. A edição atual foi mantida.", "success");
-            } else {
-                window.location.reload();
+            const latestResponse = await fetch("/api/files?refresh=0", {
+                headers: { "Accept": "application/json" }, cache: "no-store",
+            });
+            const latest = await latestResponse.json();
+            if (!latestResponse.ok || !latest.success || typeof latest.html !== "string") {
+                throw new Error("Não foi possível carregar a lista atualizada.");
             }
+            fileList.innerHTML = latest.html;
+            setActiveCard(activeFileName);
+            fileSearch?.dispatchEvent(new Event("input"));
+            refresh = latest.refresh || refresh;
+            if (refresh?.inventory?.updated_at) confirmedAt = refresh.inventory.updated_at;
+            if (["provider_wait", "provider_review"].includes(refresh?.outcome)) {
+                const until = new Date(Number(refresh.provider_retry_at) * 1000);
+                const message = refresh.outcome === "provider_review"
+                    ? "A Microsoft indicou uma espera que requer análise pelo administrador. A última lista continua disponível."
+                    : "A aguardar a Microsoft" + (Number.isFinite(refresh.provider_retry_at) && !Number.isNaN(until.getTime())
+                        ? " até " + until.toLocaleString("pt-PT") : "") + ". A última lista continua disponível.";
+                showListStatus(message, "warning", refresh);
+                if (!silent) showToast(message, "info");
+                return;
+            }
+            // Even after a download error, render the confirmed inventory: removed
+            // remote files must disappear immediately from the old displayed list.
+            if (refresh?.last_error) throw new Error(refresh.last_error);
+            if (confirmationPending) {
+                throw new Error("A atualização ainda não terminou. A lista mostra o último inventário disponível; volte a confirmar dentro de momentos.");
+            }
+            if (refresh?.inventory?.available === false || refresh?.inventory?.stale || refresh?.in_progress) {
+                throw new Error("A lista do SharePoint ainda não está confirmada.");
+            }
+            if (refresh) {
+                const unavailable = refresh.inventory?.unavailable_count || 0;
+                showListStatus(unavailable ? `Inventário confirmado. ${unavailable} folha(s) com conteúdo indisponível.` : "Lista confirmada no SharePoint.", unavailable ? "warning" : "success", refresh);
+            }
+            if (!silent) showToast("Lista atualizada.", "success");
         } catch (error) {
-            showToast(error.message, "error");
+            showListStatus(`Lista por confirmar ou incompleta. ${error.message}`, "warning");
+            if (!silent) showToast(error.message, "error");
         } finally {
             refreshBtn.disabled = false;
         }
     };
 
     refreshBtn?.addEventListener("click", refreshFileList);
+    if (filesApp.graphEnabled) {
+        refreshFileList({ silent: true });
+        window.setInterval(() => {
+            if (!document.hidden) refreshFileList({ silent: true });
+        }, 30000);
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden) refreshFileList({ silent: true });
+        });
+    }
     toggleSidebarBtn?.addEventListener("click", () => {
         setSidebarOpen(!sidebar?.classList.contains("is-open"));
     });
@@ -1831,6 +1980,10 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     btnAddMaterial?.addEventListener("click", () => {
+        if (materialsList.children.length >= 12) {
+            showToast(currentLanguage === "en" ? "Maximum of 12 materials per sheet." : "Máximo de 12 materiais por folha.", "info");
+            return;
+        }
         const row = createMaterialRow();
         materialsList.appendChild(row);
         applyLanguage(currentLanguage, row);
@@ -1899,9 +2052,17 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
-        const missingFields = getMissingRequiredFields(payload);
-        if (missingFields.length > 0) {
-            showToast(`Campos obrigatórios em falta: ${missingFields.join(", ")}`, "error");
+        const validation = getFinalizationValidation(payload);
+        if (validation.missing.length > 0) {
+            const checklistMissing = window.MaintenanceEditor?.validate(payload) || [];
+            const serviceMissing = validation.missing.length - checklistMissing.length;
+            showToast(checklistMissing.length
+                ? `${checklistMissing.join(' ')}${serviceMissing ? ` A folha de serviço também tem ${serviceMissing} campos por concluir.` : ''}`
+                : `Campos obrigatórios em falta: ${validation.missing.join(", ")}`, "error");
+            return;
+        }
+        if (validation.invalid.length > 0) {
+            showToast(`Corrija os campos: ${validation.invalid.join(", ")}.`, "error");
             return;
         }
 
@@ -1926,7 +2087,7 @@ document.addEventListener("DOMContentLoaded", () => {
         showConfirm({
             eyebrow: "Finalizar folha",
             title: finalizeTitle,
-            message: finalizeMessage,
+            message: [finalizeMessage, window.MaintenanceEditor?.finalizationNotice(payload)].filter(Boolean).join(' '),
             confirmLabel: finalizeTitle,
             confirmVariant: "success",
             showInternalNotes: true,
@@ -1955,14 +2116,41 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     window.__FILES_EDITOR__ = {
+        async resumeCompletedCommit(result, kind, scope) {
+            if (!["draft", "send"].includes(kind)) throw new Error("Tipo de conclusão inválido.");
+            // The receipt confirms that attachments were saved too. Otherwise a
+            // stale pending-photo flag can cancel navigation via beforeunload.
+            commitPhotoState();
+            if (kind === "draft") {
+                if (!result.file) throw new Error("O rascunho confirmado não indicou a folha criada.");
+                resumeDraftCommit(result);
+                return;
+            }
+            if (kind !== "send") throw new Error("Tipo de conclusão inválido.");
+            if (result.email_status === "pending" && result.graph_job_id) {
+                window.SensorpointMailFollowup?.remember(result.graph_job_id, scope);
+                navigateAfterCommit("/", "Folha arquivada. Consulte o acompanhamento do e-mail.", "info");
+            } else if (result.maintenance_bundle_url) {
+                navigateAfterCommit(result.maintenance_bundle_url, "Folha e checklists finalizadas. PDFs disponíveis.");
+            } else {
+                navigateAfterCommit("/", "Folha arquivada com sucesso.");
+            }
+        },
         collectFormData,
         populateForm,
+        applyMaintenanceRecovery,
+        verifyRecovery: payload => window.MaintenanceEditor?.verifyRecovery(payload) || payload,
+        pendingRecovery: payload => window.MaintenanceEditor?.pendingRecovery(payload) || payload,
+        setVerificationPending: value => window.MaintenanceEditor?.setVerificationPending(value),
+        reconcileSignatures: (submitted, verified) => window.MaintenanceEditor?.reconcileSignatures(submitted, verified),
         showToast,
+        openDocumentPreview,
         hasPendingPhotoChanges,
         renderAttachments: renderPhotos,
         getActiveFileName: () => activeFileName
     };
 
+    window.MaintenanceEditor?.init();
     initializeSignaturePads();
     resetActiveState();
 
@@ -1975,4 +2163,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
     window.__FILES_EDITOR_READY__ = true;
     document.dispatchEvent(new CustomEvent("files-editor-ready"));
+    try {
+        const message = window.sessionStorage.getItem(commitMessageKey);
+        window.sessionStorage.removeItem(commitMessageKey);
+        if (message) {
+            let feedback;
+            try { feedback = JSON.parse(message); } catch (_error) { /* Older tabs stored plain text. */ }
+            showToast(feedback?.message || message,
+                ["success", "info", "error"].includes(feedback?.variant) ? feedback.variant : "success");
+        }
+    } catch (_error) {
+        // Feedback persistence is optional; document safety is server-side.
+    }
 });

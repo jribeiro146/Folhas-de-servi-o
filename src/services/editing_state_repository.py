@@ -9,6 +9,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
+from src.services.sqlite_storage_format import initialize_store, validate_store, StorageFormatError
+from src.services.editing_state_format import decode_state_object, EditingStateQuarantinedError, EditingStateWriteInvalidError
 
 
 class SqliteStateRepository:
@@ -16,13 +18,14 @@ class SqliteStateRepository:
 
     def __init__(self, database_path: str | Path, *, legacy_root: str | Path | None = None):
         self.database_path = Path(database_path)
+        legacy_json = legacy_root is not None and any(Path(legacy_root).glob("*.json"))
+        if legacy_json and not self.database_path.exists():
+            raise StorageFormatError("Estados JSON antigos requerem preparação explícita.")
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.busy_timeout_ms = max(int(os.environ.get("FS_STATE_DB_BUSY_MS", "10000")), 1000)
-        self._initialize()
-        if legacy_root is not None:
-            self._import_legacy_states(Path(legacy_root))
+        self._initialize(allow_new=not legacy_json)
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self, *, check_format=True) -> sqlite3.Connection:
         connection = sqlite3.connect(
             self.database_path,
             timeout=self.busy_timeout_ms / 1000,
@@ -31,24 +34,22 @@ class SqliteStateRepository:
         connection.row_factory = sqlite3.Row
         connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
         connection.execute("PRAGMA foreign_keys = ON")
+        if check_format:
+            try:
+                validate_store(connection, "editing")
+            except BaseException:
+                connection.close()
+                raise
         return connection
 
-    def _initialize(self) -> None:
+    def _initialize(self, *, allow_new=True) -> None:
         deadline = time.monotonic() + (self.busy_timeout_ms / 1000)
         while True:
             try:
-                with self._connect() as connection:
+                with self._connect(check_format=False) as connection:
+                    initialize_store(connection, "editing", allow_new=allow_new)
                     connection.execute("PRAGMA journal_mode = WAL")
                     connection.execute("PRAGMA synchronous = NORMAL")
-                    connection.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS editing_states (
-                            document_id TEXT PRIMARY KEY,
-                            state_json TEXT NOT NULL,
-                            updated_at REAL NOT NULL
-                        )
-                        """
-                    )
                 return
             except sqlite3.OperationalError as exc:
                 if "locked" not in str(exc).casefold() or time.monotonic() >= deadline:
@@ -60,6 +61,8 @@ class SqliteStateRepository:
         self,
         document_id: str,
         factory: Callable[[], dict[str, Any]],
+        *, audit: dict[str, Any] | None = None, must_exist: bool = False,
+        validator: Callable[[dict[str, Any], str], Any] | None = None,
     ) -> Iterator[dict[str, Any]]:
         connection = self._connect()
         try:
@@ -68,8 +71,22 @@ class SqliteStateRepository:
                 "SELECT state_json FROM editing_states WHERE document_id = ?",
                 (document_id,),
             ).fetchone()
-            state = self._decode(row["state_json"]) if row else factory()
+            if row is None and must_exist:
+                raise KeyError(document_id)
+            state = decode_state_object(row["state_json"]) if row else factory()
+            if validator:
+                try:
+                    validator(state, document_id)
+                except EditingStateQuarantinedError as exc:
+                    if row is None:
+                        raise EditingStateWriteInvalidError() from exc
+                    raise
             yield state
+            if validator:
+                try:
+                    validator(state, document_id)
+                except EditingStateQuarantinedError as exc:
+                    raise EditingStateWriteInvalidError() from exc
             connection.execute(
                 """
                 INSERT INTO editing_states (document_id, state_json, updated_at)
@@ -84,6 +101,8 @@ class SqliteStateRepository:
                     time.time(),
                 ),
             )
+            if audit is not None:
+                self._insert_audit(connection, audit)
             connection.commit()
         except Exception:
             connection.rollback()
@@ -98,44 +117,19 @@ class SqliteStateRepository:
             ).fetchall()
         return [str(row["document_id"]) for row in rows]
 
-    def _import_legacy_states(self, legacy_root: Path) -> None:
-        """Import old JSON aggregates once without deleting recovery files."""
-        candidates: list[tuple[str, str, float]] = []
-        for path in legacy_root.glob("*.json"):
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            if not isinstance(payload, dict):
-                continue
-            document_id = str(payload.get("document_id") or "").strip()
-            if not document_id:
-                continue
-            candidates.append(
-                (
-                    document_id,
-                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-                    path.stat().st_mtime,
-                )
-            )
-
-        if not candidates:
-            return
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            connection.executemany(
-                """
-                INSERT OR IGNORE INTO editing_states (document_id, state_json, updated_at)
-                VALUES (?, ?, ?)
-                """,
-                candidates,
-            )
-            connection.commit()
-
     @staticmethod
-    def _decode(value: str) -> dict[str, Any]:
-        try:
-            payload = json.loads(value)
-        except (TypeError, json.JSONDecodeError):
-            return {}
-        return payload if isinstance(payload, dict) else {}
+    def _insert_audit(connection, audit):
+        connection.execute(
+            "INSERT INTO admin_actions(actor_email,action,target,reason,details_json,created_at) VALUES(?,?,?,?,?,?)",
+            (audit["actor_email"], audit["action"], audit["target"], audit["reason"],
+             json.dumps(audit.get("details") or {}, ensure_ascii=False), time.time()),
+        )
+
+    def record_admin_action(self, audit):
+        with self._connect() as connection:
+            self._insert_audit(connection, audit)
+
+    def admin_history(self, limit=100):
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM admin_actions ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [{**dict(row), "details": json.loads(row["details_json"])} for row in rows]

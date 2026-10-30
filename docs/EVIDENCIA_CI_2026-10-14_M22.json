@@ -1,0 +1,118 @@
+{
+  "run": "https://github.com/jribeiro146/Folhas-de-servi-o/actions/runs/38570674039",
+  "commit": "496bbaa80bca59955164e7932a7973ea16509efd",
+  "zip_sha256": "51d1db08daa0b2c525c0b329ecf60aaa792a5f96ca8eea8443f8e57736eaecfc",
+  "source_sha256": "f676978aa63eb08c177c9313a9c38f43a085b3d603068ee84f38a06cf912b050",
+  "source_files": 122,
+  "javascript": {
+    "passed": 180,
+    "failed": 0
+  },
+  "profiles": [
+    {
+      "identity": "10001:10001",
+      "python": "Python 3.13.16",
+      "chromium": "Chromium 155.0.8059.39 built on Debian GNU/Linux 13 (trixie)",
+      "image": "sha256:8076777734795e01d9d98b85c041d06beedf1950767e349254cdc4d58067f44d",
+      "qa_image": "sha256:e116d7c824ff1bf0d940e5a79d4972ed124eb831ea811aeee28168d517513ea9",
+      "inventories_match_constraints": true,
+      "runtime_has_pytest": false,
+      "acceptance": "PASS",
+      "compose_version": "Docker Compose version v5.6.0",
+      "compose_status": "PASS",
+      "pdf": {
+        "status": "ok",
+        "pages": 2,
+        "bytes": 19889,
+        "uid": 10001,
+        "gid": 10001,
+        "sandbox_disabled": "true"
+      },
+      "python_passed": 1537,
+      "python_skipped": 3,
+      "python_failed": 0,
+      "python_seconds": 75.057
+    },
+    {
+      "identity": "100:101",
+      "python": "Python 3.13.16",
+      "chromium": "Chromium 155.0.8059.39 built on Debian GNU/Linux 13 (trixie)",
+      "image": "sha256:5b183f7559d3f450574b3bf75b5196ff240dc3971d08ef50a531614581d8253d",
+      "qa_image": "sha256:c929f179ce1ebd59c19cfe78f207827d6c8014a76ef852ece341c8b6bc1fa6cf",
+      "inventories_match_constraints": true,
+      "runtime_has_pytest": false,
+      "acceptance": "PASS",
+      "compose_version": "Docker Compose version v2.27.0",
+      "compose_status": "PASS",
+      "pdf": {
+        "status": "ok",
+        "pages": 2,
+        "bytes": 19889,
+        "uid": 100,
+        "gid": 101,
+        "sandbox_disabled": "true"
+      },
+      "python_passed": 1537,
+      "python_skipped": 3,
+      "python_failed": 0,
+      "python_seconds": 69.607
+    }
+  ],
+  "windows": {
+    "commit": "496bbaa80bca59955164e7932a7973ea16509efd",
+    "passed": 1536,
+    "skipped": 4,
+    "failed": 0,
+    "seconds": 399.65,
+    "python": "3.13.1"
+  },
+  "browser": {
+    "status": "PASS",
+    "checks": 12,
+    "chromium": "149.0.7827.55",
+    "playwright": "1.61.0",
+    "pypdf": "6.20.0",
+    "source_sha256": "f676978aa63eb08c177c9313a9c38f43a085b3d603068ee84f38a06cf912b050",
+    "m22_three_tabs_real": true,
+    "simulated_mail": 1,
+    "simulated_teams": 1
+  },
+  "code_review": {
+    "run": "20261014T131543Z_496bbaa8_86934d",
+    "verdict": "approve",
+    "check_exit": 0,
+    "report_sha256": "2a36ecc678402724902ad0e8ebec47d17eab6275e8febf6b99a644a74e9f0479",
+    "target_commit": "496bbaa80bca59955164e7932a7973ea16509efd"
+  },
+  "artifact_downloads": [
+    {
+      "name": "linux-hs4-496bbaa80bca59955164e7932a7973ea16509efd",
+      "sha256": "c6702ed4b5e9025ede96a1703590be9d290faa96366775f0c165e0a315c534d1",
+      "bytes": 42769
+    },
+    {
+      "name": "javascript-496bbaa80bca59955164e7932a7973ea16509efd",
+      "sha256": "9e555d25b78a4695d06e21efe1f493a5963f2c127ea8ff2d18184c9df1c1d9d6",
+      "bytes": 7580
+    },
+    {
+      "name": "linux-default-496bbaa80bca59955164e7932a7973ea16509efd",
+      "sha256": "6449aa72730602c6d61e0a76678c9ddc1cfd244a396c2e87aa4b911a9a690a4d",
+      "bytes": 42670
+    }
+  ],
+  "previous_checkpoint": {
+    "run": 38558533929,
+    "commit": "b4614b5ed4ab6daa174b23bd77c932d03e88e3c3",
+    "m22_was_pending": true,
+    "evidence": "EVIDENCIA_CI_2026-10-14_FINAL.json"
+  },
+  "limits": [
+    "Synthetic providers/authentication; no production deployment or real messages",
+    "AlmaLinux destination and real Microsoft/Graph integrations still require installer validation",
+    "Earlier isolated Windows HTTP400 and WinError5 causes remain unproven",
+    "Retention simulation only: 90/180/365 days; no deletion policy selected",
+    "APT mutable; no byte-identical Docker image claim",
+    "Later evidence-only documentation commits are not new CI runs or tested ZIPs"
+  ]
+}

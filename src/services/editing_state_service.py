@@ -15,14 +15,17 @@ from typing import Any, Iterator
 
 from src.config import APP_DATA_DIR
 from src.services.editing_state_repository import SqliteStateRepository
+from src.services.editing_state_format import (
+    EditingStateError, EditingStateQuarantinedError, STATE_VERSION, validate_editing_state,
+    decode_editing_state, report_quarantined_state,
+)
+from src.services.file_mutex import FileMutexBusy, file_mutex
+from src.services.local_changes import bundle_guard
+from src.services.admin_access import can_administer
+from src.services.publication_evidence import content_evidence, file_evidence, journal_position, legacy_fingerprint
 
 
 EDIT_METADATA_NAME = ".fs_edit.json"
-STATE_VERSION = 2
-
-
-class EditingStateError(Exception):
-    """Base error for editing-state operations."""
 
 
 class EditingSessionMetadataError(EditingStateError):
@@ -59,8 +62,19 @@ class RevisionConflictError(EditingStateError):
         self.snapshot = snapshot
 
 
+class EditingSessionRevokedError(EditingStateError):
+    """A removed editor cannot automatically reacquire this document."""
+
+    def __init__(self):
+        super().__init__("A edição desta folha foi encerrada pelo administrador. Peça a reposição do acesso.")
+
+
 class OperationInProgressError(EditingStateError):
     """Raised when the same idempotent operation is already running."""
+
+
+class DraftCopyUnavailableError(EditingStateError):
+    """The partial copy can no longer be overwritten by its creating operation."""
 
 
 @dataclass(frozen=True)
@@ -160,11 +174,44 @@ class EditingStateService:
         with self._state_transaction(document_id) as state:
             return self._public_snapshot(state)
 
+    @contextmanager
+    def draft_copy_guard(self, path: Path, document_id: str, operation_id: str,
+                         *, fresh: bool, expected_fingerprint: str | None = None):
+        """Reuse only an untouched copy, under both its editing and bundle locks.
+
+        The parent workspace lock alone does not protect this separate document.
+        Reading the copy state must not retire another editor's pending operation.
+        """
+        copy_id = self.resolve_document_id(path)
+        lock_id = hashlib.sha256(copy_id.encode('utf-8')).hexdigest()
+        with file_mutex(self.root / 'operation-locks' / lock_id), bundle_guard(path.parent):
+            with self.repository._connect() as connection:
+                row = connection.execute('SELECT state_json FROM editing_states WHERE document_id=?',
+                                         (copy_id,)).fetchone()
+            state = decode_editing_state(row['state_json'], copy_id) if row else self._new_state(copy_id)
+            untouched = (not state.get('owner') and not state.get('sessions') and not state.get('autosave')
+                         and not state.get('operations') and not state.get('closed_by_operation')
+                         and state['revision'] == 1)
+            fingerprint = self._fingerprint(path)
+            if not untouched or not path.is_file() or (not fresh and expected_fingerprint != fingerprint):
+                raise DraftCopyUnavailableError()
+            self.update_operation_context(document_id, operation_id, draft_copy_fingerprint=fingerprint)
+            try:
+                yield
+            finally:
+                # Even SystemExit is a controlled unwind. An abrupt process kill
+                # cannot checkpoint changed bytes: that uncertain copy is kept,
+                # but a later retry must not overwrite it without this proof.
+                self.update_operation_context(document_id, operation_id,
+                    draft_copy_fingerprint=self._fingerprint(path))
+
     def acquire_lease(
         self,
         path: str | Path,
         identity: EditorIdentity,
         client_id: str,
+        *,
+        allow_foreign_owner: bool = False,
     ) -> dict[str, Any]:
         file_path = Path(path)
         document_id = self.resolve_document_id(file_path)
@@ -174,6 +221,7 @@ class EditingStateService:
             identity,
             client_id,
             workspace_kind="draft",
+            allow_foreign_owner=allow_foreign_owner,
         )
 
     def acquire_private_workspace(
@@ -201,6 +249,7 @@ class EditingStateService:
         client_id: str,
         *,
         workspace_kind: str,
+        allow_foreign_owner: bool = False,
     ) -> dict[str, Any]:
         if not client_id.strip():
             raise EditingStateError("Identificador da sessão de edição em falta.")
@@ -209,8 +258,10 @@ class EditingStateService:
         with self._state_transaction(document_id, path=file_path) as state:
             state["workspace_kind"] = workspace_kind
             self._normalize_sessions(state, now)
+            if identity.id in (state.get("admin_blocked_users") or {}):
+                raise EditingSessionRevokedError()
             owner = state.get("owner")
-            if owner and owner.get("owner_id") != identity.id:
+            if owner and owner.get("owner_id") != identity.id and not allow_foreign_owner:
                 raise LeaseConflictError(self._public_snapshot(state, now=now))
             if not owner:
                 state["owner"] = self._owner_payload(identity, now=now)
@@ -280,17 +331,98 @@ class EditingStateService:
         """Release browser sessions without changing persistent draft ownership."""
         released = 0
         for document_id in self.repository.document_ids():
-            with self._state_transaction(document_id) as state:
-                self._normalize_sessions(state)
-                matching = [
-                    token
-                    for token, session in state.get("sessions", {}).items()
-                    if session.get("owner_id") == owner_id
-                ]
-                for token in matching:
-                    state["sessions"].pop(token, None)
-                released += len(matching)
+            try:
+                with self._state_transaction(document_id) as state:
+                    self._normalize_sessions(state)
+                    matching = [
+                        token
+                        for token, session in state.get("sessions", {}).items()
+                        if session.get("owner_id") == owner_id
+                    ]
+                    for token in matching:
+                        state["sessions"].pop(token, None)
+                    released += len(matching)
+            except EditingStateQuarantinedError:
+                report_quarantined_state(document_id)
+                continue
         return released
+
+    @staticmethod
+    def _admin_lock_version(state):
+        evidence = [state.get("revision"), state.get("owner"),
+                    sorted((state.get("sessions") or {}).keys()),
+                    sorted((state.get("admin_blocked_users") or {}).keys()),
+                    [(key, op.get("status")) for key, op in sorted((state.get("operations") or {}).items())]]
+        return hashlib.sha256(json.dumps(evidence, sort_keys=True).encode()).hexdigest()
+
+    def admin_documents(self):
+        with self.repository._connect() as connection:
+            rows = connection.execute("SELECT document_id,state_json FROM editing_states ORDER BY updated_at DESC").fetchall()
+        documents = []
+        for row in rows:
+            try:
+                state = decode_editing_state(row["state_json"], row["document_id"])
+                self._normalize_sessions(state)
+                if state.get("closed_by_operation"):
+                    continue
+                if not (state.get("owner") or state.get("sessions") or state.get("admin_blocked_users")):
+                    continue
+                sessions = list((state.get("sessions") or {}).values())
+                documents.append({
+                    "document_id": row["document_id"], "name": (state.get("aliases") or [state.get("original_name") or row["document_id"]])[-1],
+                    "owner": state.get("owner"), "session_count": len(sessions),
+                    "last_seen_at": max((s.get("last_seen_at", 0) for s in sessions), default=None),
+                    "autosaved_at": (state.get("autosave") or {}).get("updated_at"),
+                    "revision": int(state.get("revision") or 1), "workspace_kind": state.get("workspace_kind"),
+                    "pending_operation": self._has_pending_operation(state),
+                    "blocked_users": [{"id": key, "name": value.get("name") or key}
+                                      for key, value in (state.get("admin_blocked_users") or {}).items()],
+                    "lock_version": self._admin_lock_version(state),
+                })
+            except EditingStateQuarantinedError:
+                report_quarantined_state(row["document_id"])
+                documents.append({"document_id": row["document_id"], "name": row["document_id"],
+                                  "quarantined": True, "code": "editing_state_quarantined"})
+        return documents
+
+    def admin_change_access(self, document_id, actor, reason, expected_version, *, restore_user=None):
+        if not can_administer(actor):
+            raise PermissionError("Acesso reservado ao administrador.")
+        if not isinstance(reason, str) or not 3 <= len(reason.strip()) <= 400:
+            raise ValueError("Indique um motivo entre 3 e 400 caracteres.")
+        audit = {"actor_email": actor.email.strip().casefold(),
+                 "action": "restore_sheet_access" if restore_user else "release_sheet",
+                 "target": document_id, "reason": reason.strip(), "details": {}}
+        lock_id = hashlib.sha256(document_id.encode("utf-8")).hexdigest()
+        try:
+            with file_mutex(self.root / "operation-locks" / lock_id):
+                with self._state_transaction(document_id, audit=audit, must_exist=True) as state:
+                    if not expected_version or not secrets.compare_digest(expected_version, self._admin_lock_version(state)):
+                        raise RevisionConflictError(self._public_snapshot(state))
+                    if state.get("closed_by_operation"):
+                        raise EditingStateError("A folha já foi finalizada ou cancelada.")
+                    self._assert_no_pending_operation(state)
+                    blocked = state.setdefault("admin_blocked_users", {})
+                    if restore_user:
+                        if restore_user not in blocked:
+                            raise ValueError("Este utilizador não está bloqueado nesta folha.")
+                        blocked.pop(restore_user)
+                        audit["details"] = {"restored_user": restore_user}
+                    else:
+                        owners = {s["owner_id"]: s.get("owner_name") for s in state.get("sessions", {}).values()}
+                        if state.get("owner"):
+                            owners[state["owner"]["owner_id"]] = state["owner"].get("owner_name")
+                        for owner_id, name in owners.items():
+                            blocked[owner_id] = {"name": name, "at": time.time()}
+                        audit["details"] = {"released_sessions": len(state.get("sessions") or {}), "previous_owner": state.get("owner")}
+                        state["sessions"] = {}
+                        state["owner"] = None
+                        state["lease"] = None
+                        state["revision"] = int(state.get("revision") or 1) + 1
+                        state["etag"] = self._etag(state)
+                    return {"document_id": document_id, "revision": state["revision"], **audit["details"]}
+        except FileMutexBusy as exc:
+            raise OperationInProgressError("Existe uma gravação em curso. Aguarde antes de libertar a folha.") from exc
 
     def save_autosave(
         self,
@@ -302,16 +434,30 @@ class EditingStateService:
         base_revision: int,
         idempotency_key: str,
         document: dict[str, Any],
+        source_resolution: str | None = None,
+        path: Path | None = None,
     ) -> dict[str, Any]:
         now = time.time()
-        with self._state_transaction(document_id) as state:
+        with self._state_transaction(document_id, path=path) as state:
             self._assert_session(state, identity, client_id, lease_token, now)
+            # Autosave only changes SQLite recovery, never the bundle covered
+            # by the publication journal. Keep accepting text while it resumes.
+            self._assert_no_pending_operation(state, allow_publication=True)
             existing = state.get("autosave") or {}
-            if existing.get("idempotency_key") == idempotency_key:
+            if existing.get("idempotency_key") == idempotency_key and not state.get('source_conflict'):
                 return self._public_snapshot(
                     state, now=now, include_token=True, session_token=lease_token
                 )
-            self._assert_revision(state, base_revision, now)
+            self._assert_revision(state, base_revision, now, source_resolution=source_resolution)
+            if state.get('source_conflict'):
+                # Only an explicit choice against this exact conflict can retire
+                # the old recovery. Keep it available for later diagnosis.
+                state['previous_source_recovery'] = state.get('autosave')
+                journal = state.pop('publication_journal', None)
+                if journal:
+                    state.setdefault('publication_refusals', {})[journal['publication_id']] = time.time()
+                    state['previous_publication_journal'] = journal
+                state['source_conflict'] = None
             state["revision"] = int(state.get("revision") or 1) + 1
             state["autosave"] = {
                 "document": document,
@@ -335,15 +481,17 @@ class EditingStateService:
         base_revision: int,
         idempotency_key: str,
         document: dict[str, Any] | None,
+        path: Path | None = None,
     ) -> dict[str, Any]:
         """Best-effort autosave followed by browser-session cleanup."""
         now = time.time()
-        with self._state_transaction(document_id) as state:
+        with self._state_transaction(document_id, path=path) as state:
             self._assert_session(state, identity, client_id, lease_token, now)
             autosaved = False
             revision_conflict = False
 
-            if document is not None:
+            if (document is not None and not self._has_pending_operation(state)
+                    and not state.get('source_conflict')):
                 existing = state.get("autosave") or {}
                 if existing.get("idempotency_key") == idempotency_key:
                     autosaved = True
@@ -381,6 +529,7 @@ class EditingStateService:
         now = time.time()
         with self._state_transaction(document_id) as state:
             self._assert_session(state, identity, client_id, lease_token, now)
+            self._assert_no_pending_operation(state)
             self._assert_revision(state, base_revision, now)
             state["autosave"] = None
             state["revision"] = int(state.get("revision") or 1) + 1
@@ -399,6 +548,7 @@ class EditingStateService:
         client_id: str,
         lease_token: str,
         base_revision: int,
+        recovery_owner: dict | None = None,
     ) -> dict[str, Any]:
         now = time.time()
         with self._state_transaction(document_id) as state:
@@ -416,8 +566,24 @@ class EditingStateService:
                     raise OperationInProgressError("A operação já está em curso.")
 
             self._assert_session(state, identity, client_id, lease_token, now)
+            self._assert_no_pending_operation(state, except_key=idempotency_key)
+            if state.get("closed_by_operation"):
+                raise EditingStateError("Esta folha já foi finalizada ou cancelada.")
             self._assert_revision(state, base_revision, now)
             operation = dict(existing or {})
+            if not existing:
+                # Snapshot the authenticated initiator, never form fields or the
+                # current lease owner at display time. Retries keep this author;
+                # old receipts without a name remain explicitly unattributed.
+                operation["activity"] = {
+                    "actor_name": identity.display_name,
+                    "sheet_name": state.get("original_name") or next(iter(state.get("aliases") or []), ""),
+                }
+            context = dict(operation.get("context") or {})
+            if recovery_owner is not None:
+                # The receipt must be attributable from the first durable claim,
+                # including process death before any subsequent context write.
+                context.setdefault("recovery_owner", dict(recovery_owner))
             operation.update({
                 "kind": kind,
                 "status": "pending",
@@ -425,7 +591,7 @@ class EditingStateService:
                 "created_at": operation.get("created_at") or now,
                 "updated_at": now,
                 "base_revision": base_revision,
-                "context": dict(operation.get("context") or {}),
+                "context": context,
             })
             operations[idempotency_key] = operation
             return {"status": "started", "operation": dict(operation)}
@@ -434,6 +600,68 @@ class EditingStateService:
         with self._state_transaction(document_id) as state:
             operation = (state.get("operations") or {}).get(idempotency_key)
             return dict(operation) if operation else None
+
+    def recover_operation(self, document_id: str, idempotency_key: str, owner: dict) -> dict | None:
+        """Read an owned receipt even after retirement; never create/refresh state."""
+        def read_owned():
+            with self.repository._connect() as connection:
+                row = connection.execute('SELECT state_json FROM editing_states WHERE document_id=?',
+                                         (document_id,)).fetchone()
+            if row is None:
+                return None
+            state = decode_editing_state(row['state_json'], document_id)
+            operation = state.get('operations', {}).get(idempotency_key)
+            if (not operation or operation.get('kind') not in {'send', 'draft'} or not owner
+                    or operation.get('context', {}).get('recovery_owner') != owner):
+                return None
+            return operation
+        operation = read_owned()
+        if operation is None:
+            return None
+        interrupted = False
+        if operation['status'] == 'pending':
+            lock_id = hashlib.sha256(document_id.encode('utf-8')).hexdigest()
+            try:
+                with file_mutex(self.root / 'operation-locks' / lock_id):
+                    # Age alone cannot distinguish a slow writer from a dead
+                    # process. Re-read under the same OS lock as every commit.
+                    operation = read_owned()
+                    if operation is None:
+                        return None
+                    interrupted = operation['status'] == 'pending'
+            except FileMutexBusy:
+                pass
+        # Only workflow routing metadata crosses this read boundary. No document,
+        # path, lease, signatures, recipients or private observations are exposed.
+        allowed = {'success', 'document_id', 'revision', 'etag', 'email_status',
+                   'graph_job_id', 'publication_status', 'maintenance_bundle_url'}
+        if operation['kind'] == 'draft':
+            allowed.update({'file', 'created_copy'})
+        response = operation.get('response') or {}
+        result = {key: value for key, value in response.items() if key in allowed}
+        if operation['kind'] == 'draft' and operation.get('context', {}).get('draft_copy_unavailable'):
+            result['code'] = 'draft_copy_unavailable'
+        return {'kind': operation['kind'], 'status': 'interrupted' if interrupted else operation['status'],
+                'result': result}
+
+    def finalizations_to_retire(self):
+        with self.repository._connect() as connection:
+            rows = connection.execute("SELECT document_id, state_json FROM editing_states").fetchall()
+        for row in rows:
+            try:
+                state = decode_editing_state(row["state_json"], row["document_id"])
+            except EditingStateQuarantinedError:
+                report_quarantined_state(row["document_id"])
+                continue
+            for key, operation in state.get("operations", {}).items():
+                context = operation.get("context") or {}
+                # Legacy cancellations already moved their source and have no
+                # ownership marker. Do not schedule unresolvable cleanup on
+                # every list request; recovery here belongs to the new format.
+                if operation.get("kind") == "cancel" and not context.get("source_fingerprint"):
+                    continue
+                if operation.get("kind") in {"send", "cancel"} and operation.get("status") == "complete" and context.get("source_path") and not context.get("source_retired"):
+                    yield str(row["document_id"]), key, context
 
     def update_operation_context(
         self,
@@ -448,12 +676,27 @@ class EditingStateService:
             operation.setdefault("context", {}).update(context)
             operation["updated_at"] = time.time()
 
-    def fail_operation(self, document_id: str, idempotency_key: str, message: str) -> None:
+    def fail_operation(
+        self, document_id: str, idempotency_key: str, message: str,
+        *, partial_draft_path: Path | None = None, draft_copy_unavailable: bool = False,
+    ) -> None:
         with self._state_transaction(document_id) as state:
             operation = (state.setdefault("operations", {})).get(idempotency_key)
-            if not operation:
+            if not operation or operation.get("status") != "pending":
                 return
+            if partial_draft_path is not None:
+                if (operation.get("kind") != "draft"
+                        or self.resolve_document_id(partial_draft_path) != document_id):
+                    raise EditingStateError("A escrita parcial não pertence a este rascunho.")
+                # The caller still owns the document/bundle operation guards.
+                # Excel may already have changed when a later sidecar fails.
+                # Account for our own write before clearing pending, otherwise
+                # the next read treats it as external and deletes the autosave.
+                # A later external fingerprint change still invalidates normally.
+                state["fingerprint"] = self._fingerprint(partial_draft_path)
             operation["status"] = "failed"
+            if draft_copy_unavailable and operation.get("kind") == "draft":
+                operation.setdefault("context", {})["draft_copy_unavailable"] = True
             operation["error"] = message
             operation["updated_at"] = time.time()
 
@@ -468,6 +711,13 @@ class EditingStateService:
         result_editing: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self._state_transaction(document_id) as state:
+            operation = state.setdefault("operations", {}).get(idempotency_key)
+            if operation is None or operation.get("status") not in {"pending", "complete"}:
+                raise EditingStateError("Operação não está ativa para conclusão.")
+            if operation.get("status") == "complete":
+                return dict(operation["response"])
+            self._assert_no_pending_operation(state, except_key=idempotency_key)
+            self._assert_revision(state, int(operation["base_revision"]), time.time())
             state["revision"] = int(state.get("revision") or 1) + 1
             state["autosave"] = None
             if path is not None:
@@ -501,6 +751,8 @@ class EditingStateService:
                 "response": result,
                 "updated_at": time.time(),
             })
+            if operation.get("kind") in {"send", "cancel"}:
+                state["closed_by_operation"] = idempotency_key
             self._prune_operations(state)
             return result
 
@@ -510,25 +762,113 @@ class EditingStateService:
         document_id: str,
         *,
         path: Path | None = None,
+        audit: dict[str, Any] | None = None, must_exist: bool = False,
     ) -> Iterator[dict[str, Any]]:
-        legacy_path = self._state_path(document_id)
-        with self.repository.transaction(
-            document_id,
-            lambda: self._read_state(legacy_path, document_id),
-        ) as state:
-            self._normalize_state(state)
-            if path is not None:
-                self._sync_fingerprint(state, path)
-            yield state
+        try:
+            # This short local-phase lock also covers readers without an
+            # operation/bundle mutex. It is acquired BEFORE opening SQLite.
+            with self._publication_guard(document_id):
+                if path is not None:
+                    # Detection is durable even when the subsequent client write
+                    # is refused. Keep this lock across both SQL transactions.
+                    with self.repository.transaction(
+                        document_id, lambda: self._new_state(document_id),
+                        must_exist=must_exist, validator=validate_editing_state,
+                    ) as state:
+                        self._normalize_state(state)
+                        self._sync_fingerprint(state, path)
+                with self.repository.transaction(
+                    document_id, lambda: self._new_state(document_id),
+                    audit=audit, must_exist=must_exist, validator=validate_editing_state,
+                ) as state:
+                    self._normalize_state(state)
+                    yield state
+        except FileMutexBusy as exc:
+            raise OperationInProgressError('A publicação está a ser confirmada. Aguarde e tente novamente.') from exc
 
-    def _read_state(self, path: Path, document_id: str) -> dict[str, Any]:
-        if path.exists():
+    def _publication_mutex(self, document_id):
+        return self.root / 'publication-locks' / hashlib.sha256(document_id.encode()).hexdigest()
+
+    @contextmanager
+    def _publication_guard(self, document_id):
+        deadline = time.monotonic() + self.repository.busy_timeout_ms / 1000
+        while True:
+            guard = file_mutex(self._publication_mutex(document_id))
             try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(payload, dict):
-                    return payload
-            except (OSError, json.JSONDecodeError):
-                pass
+                guard.__enter__()
+                break
+            except FileMutexBusy:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+        try:
+            yield
+        finally:
+            guard.__exit__(None, None, None)
+
+    def publish_own_metadata(self, path, *, publication_id, files, apply):
+        """Journal one confirmed local transition; no Microsoft calls in locks.
+
+        The queue persists its remote checkpoint first. A crash between these
+        two commits can therefore repeat only this local phase, preserving the
+        editing revision, emitted etag, autosave and old operation receipts.
+        """
+        document_id = self.resolve_document_id(path)
+        operation_lock = self.root / 'operation-locks' / hashlib.sha256(document_id.encode()).hexdigest()
+        with file_mutex(operation_lock), bundle_guard(path.parent), self._publication_guard(document_id):
+            def transaction():
+                return self.repository.transaction(document_id, lambda: self._new_state(document_id),
+                    must_exist=True, validator=validate_editing_state)
+            with self.repository._connect() as connection:
+                exists = connection.execute('SELECT 1 FROM editing_states WHERE document_id=?', (document_id,)).fetchone()
+            if exists is None:
+                # No old editing state or recovery exists. A first session is
+                # excluded by the same local-phase mutex until copying ends.
+                apply()
+                return
+            with transaction() as state:
+                self._normalize_state(state)
+                if publication_id in state.get('publication_refusals', {}):
+                    raise RevisionConflictError(self._public_snapshot(state))
+                if self._has_pending_operation(state) or state.get('closed_by_operation'):
+                    raise OperationInProgressError('A operação da folha ainda não permite confirmar a publicação.')
+                journal = state.get('publication_journal')
+                if journal:
+                    if journal['publication_id'] != publication_id:
+                        raise OperationInProgressError('Existe outra publicação local por confirmar.')
+                    position = journal_position(path, journal)
+                    if position == 'diverged':
+                        raise RevisionConflictError(self._public_snapshot(state))
+                else:
+                    fingerprint = self._fingerprint(path)
+                    if state.get('source_conflict') or (state.get('fingerprint') and state['fingerprint'] != fingerprint):
+                        # Do not acknowledge an unknown earlier mutation.
+                        raise RevisionConflictError(self._public_snapshot(state))
+                    if not state['fingerprint']:
+                        state['fingerprint'] = fingerprint
+                    changes = {}
+                    for name, proof in files.items():
+                        before = file_evidence(path.parent / name)
+                        if before != proof and (before is None or before['mtime_ns'] < proof['mtime_ns']):
+                            changes[name] = {'before': before, 'after': proof}
+                    journal = {'version': 1, 'publication_id': publication_id,
+                        'source_name': path.name, 'before_fingerprint': fingerprint,
+                        'content': content_evidence(path), 'files': changes}
+                    if changes:
+                        state['publication_journal'] = journal
+            # The journal is committed before the first replacement.
+            apply()
+            with transaction() as state:
+                journal = state.get('publication_journal')
+                if journal:
+                    if (journal['publication_id'] != publication_id
+                            or journal_position(path, journal) != 'after'
+                            or state['fingerprint'] != journal['before_fingerprint']):
+                        raise RevisionConflictError(self._public_snapshot(state))
+                    state['fingerprint'] = self._fingerprint(path)
+                    state.pop('publication_journal', None)
+
+    def _new_state(self, document_id: str) -> dict[str, Any]:
         return {
             "version": STATE_VERSION,
             "document_id": document_id,
@@ -546,6 +886,25 @@ class EditingStateService:
         }
 
     def _sync_fingerprint(self, state: dict[str, Any], path: Path) -> None:
+        journal = state.get('publication_journal')
+        if journal:
+            position = journal_position(path, journal)
+            if position == 'after' and state['fingerprint'] == journal['before_fingerprint']:
+                state['fingerprint'] = self._fingerprint(path)
+                state.pop('publication_journal', None)
+            else:
+                # A reader never clears recovery during a partial local phase.
+                # Only the queue may finish copying its frozen metadata.
+                if position == 'diverged':
+                    fingerprint = self._fingerprint(path)
+                    if not state.get('source_conflict') or state['fingerprint'] != fingerprint:
+                        state['source_conflict'] = {'token': secrets.token_urlsafe(24), 'detected_at': time.time()}
+                        state['revision'] += 1
+                        state['fingerprint'] = fingerprint
+                        state['etag'] = self._etag(state)
+                return
+        if self._has_pending_operation(state):
+            return
         fingerprint = self._fingerprint(path)
         previous = str(state.get("fingerprint") or "")
         if previous and fingerprint and previous != fingerprint:
@@ -553,7 +912,9 @@ class EditingStateService:
                 state["source_changed_at"] = time.time()
             else:
                 state["revision"] = int(state.get("revision") or 1) + 1
-                state["autosave"] = None
+                if state.get('autosave') is not None or state.get('source_conflict'):
+                    state['source_conflict'] = {'token': secrets.token_urlsafe(24), 'detected_at': time.time()}
+                state['source_changed_at'] = time.time()
                 state["etag"] = self._etag(state)
         state["fingerprint"] = fingerprint
         state.setdefault("aliases", [])
@@ -571,14 +932,59 @@ class EditingStateService:
         now: float,
     ) -> dict[str, Any]:
         self._normalize_sessions(state, now)
+        if identity.id in (state.get("admin_blocked_users") or {}):
+            raise EditingSessionRevokedError()
         session = (state.get("sessions") or {}).get(lease_token)
         if not session or not self._session_matches(session, identity, client_id, lease_token):
             raise LeaseRequiredError(self._public_snapshot(state, now=now))
         return session
 
-    def _assert_revision(self, state: dict[str, Any], base_revision: int, now: float) -> None:
-        if int(base_revision) != int(state.get("revision") or 1):
+    def _assert_revision(self, state: dict[str, Any], base_revision: int, now: float,
+                         *, source_resolution: str | None = None) -> None:
+        conflict = state.get('source_conflict')
+        if (int(base_revision) != int(state.get("revision") or 1)
+                or (conflict and source_resolution != conflict['token'])):
             raise RevisionConflictError(self._public_snapshot(state, now=now))
+
+    @staticmethod
+    def _has_pending_operation(state: dict[str, Any], except_key: str = "") -> bool:
+        return any(
+            key != except_key and operation.get("status") == "pending"
+            for key, operation in state.get("operations", {}).items()
+        )
+
+    def _assert_no_pending_operation(self, state: dict[str, Any], except_key: str = "", *, allow_publication=False) -> None:
+        if self._has_pending_operation(state, except_key) or (state.get('publication_journal') and not allow_publication):
+            raise OperationInProgressError("Outra operação sobre esta folha está em curso.")
+
+    @contextmanager
+    def operation_guard(self, document_id: str, identity: EditorIdentity, *,
+                        allow_foreign_owner: bool = False, path: Path | None = None):
+        lock_id = hashlib.sha256(document_id.encode("utf-8")).hexdigest()
+        try:
+            with file_mutex(self.root / "operation-locks" / lock_id):
+                # Holding the OS lock proves a previous endpoint is no longer
+                # writing, even if its process died before updating SQLite.
+                with self._state_transaction(document_id) as state:
+                    if identity.id in (state.get("admin_blocked_users") or {}):
+                        raise EditingSessionRevokedError()
+                    owner = state.get("owner") or {}
+                    if owner.get("owner_id") not in {None, identity.id} and not allow_foreign_owner:
+                        raise LeaseConflictError(self._public_snapshot(state))
+                    for operation in state.get("operations", {}).values():
+                        if operation.get("status") == "pending":
+                            if operation.get("kind") == "draft" and state.get("workspace_kind") == "draft":
+                                if path is None or self.resolve_document_id(path) != document_id:
+                                    raise OperationInProgressError("Reabra o rascunho para recuperar a gravação interrompida.")
+                                # A dead draft writer may have changed Excel but
+                                # not its sidecars. As in fail_operation, account
+                                # for that write before clearing pending; otherwise
+                                # acquire_lease would discard the server autosave.
+                                state["fingerprint"] = self._fingerprint(path)
+                            operation.update(status="failed", error="Operação interrompida; pode ser recuperada.")
+                yield
+        except FileMutexBusy as exc:
+            raise OperationInProgressError("Outra operação sobre esta folha está em curso.") from exc
 
     @staticmethod
     def _session_matches(
@@ -678,28 +1084,13 @@ class EditingStateService:
             "server_document": autosave.get("document"),
             "autosaved_at": autosave.get("updated_at"),
             "source_changed_at": state.get("source_changed_at"),
+            "source_conflict": state.get('source_conflict'),
+            "publication_pending": bool(state.get('publication_journal')),
         }
-
-    def _state_path(self, document_id: str) -> Path:
-        safe = hashlib.sha256(document_id.encode("utf-8")).hexdigest()
-        return self.root / f"{safe}.json"
 
     @staticmethod
     def _fingerprint(path: Path) -> str:
-        parts: list[str] = []
-        related = [
-            path,
-            path.with_name(f"{path.stem}__documento.json"),
-            path.with_name(f"{path.stem}__assinatura_cliente.png"),
-            path.with_name(f"{path.name}.graph.json"),
-        ]
-        for item in related:
-            try:
-                stat = item.stat()
-                parts.append(f"{item.name}:{stat.st_mtime_ns}:{stat.st_size}")
-            except FileNotFoundError:
-                parts.append(f"{item.name}:missing")
-        return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+        return legacy_fingerprint(path)
 
     @staticmethod
     def _etag(state: dict[str, Any]) -> str:

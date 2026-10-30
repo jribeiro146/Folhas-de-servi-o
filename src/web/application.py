@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import base64
 import datetime as dt
+import hashlib
 import json
 import logging
 import os
@@ -11,12 +11,19 @@ import re
 import secrets
 import time
 import uuid
+from functools import wraps
+from contextlib import ExitStack, nullcontext
 from pathlib import Path
 
 from flask import Flask, g, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 
 from src.config import (
     APP_DATA_DIR,
+    GRAPH_CACHE_DIR,
+    LOG_DIR,
+    EXCEL_ACTIVAS_DIR,
+    EXCEL_ARQUIVADAS_DIR,
+    EXCEL_CANCELADAS_DIR,
     AUTH_PROVIDER,
     GRAPH_QUEUE_IN_WEB,
     GRAPH_SHAREPOINT_HOSTNAME,
@@ -30,6 +37,8 @@ from src.config import (
 )
 from src.document_schema import (
     DOCUMENT_REQUIRED_FIELDS,
+    TECHNICIAN_REQUIRED_FIELDS,
+    SIGNATURE_REQUIRED_FIELDS,
     EQUIPMENT_OPTIONS,
     SERVICE_TYPE_OPTIONS,
     TECHNICIAN_OPTIONS,
@@ -43,24 +52,42 @@ from src.document_schema import (
     strip_signature_payload,
 )
 from src.field_map import FIELD_MAP, FIELDS_BY_GROUP
+from src.services.file_diagnostics import diagnostic, file_fields, lookup_fields
 from src.logging_config import (
     bind_request_context,
     log_event,
+    redact_diagnostic_text,
     reset_request_context,
 )
 from src.services.archive_service import ArchiveService
+from src.services.finalization_service import FinalizationService
+from src import maintenance_schema as maintenance
+from src.services.maintenance_artifact_service import build_maintenance_bundle, render_maintenance_document
+from src.services.maintenance_access import can_access_maintenance, can_edit_foreign_maintenance_draft
+from src.services.maintenance_private_service import MaintenancePrivateService
+from src.services.document_style_service import load_document_assets
+from src.services.runtime_safety import runtime_mode
+from src.services.runtime_admission import resolve_runtime, admit_contract
+from src.services.runtime_contract import ContractError
+from src.services.sqlite_storage_format import preflight_stores
+from src.services.local_changes import bundle_guard, mark_dirty
+from src.services.file_mutex import FileMutexBusy
 from src.services.document_artifact_service import DocumentArtifactService
 from src.services.document_data_service import DocumentDataService
 from src.services.editing_state_service import (
+    EditingSessionRevokedError,
     EditingStateError,
+    EditingStateQuarantinedError,
     EditingSessionMetadataError,
     EditingStateService,
+    DraftCopyUnavailableError,
     EditorIdentity,
     LeaseConflictError,
     LeaseRequiredError,
     OperationInProgressError,
     RevisionConflictError,
 )
+from src.services.editing_state_format import EditingStateWriteInvalidError
 from src.services.excel_service import ExcelService, ExcelValidationError
 from src.services.file_service import FileService
 from src.services.graph_mail_service import (
@@ -69,10 +96,16 @@ from src.services.graph_mail_service import (
     GraphMailService,
 )
 from src.services.graph_storage_service import GraphConflictError, GraphStorageError, GraphStorageService
+from src.services.provider_waits import ProviderWaitError
 from src.services.graph_sync_coordinator import GraphRefreshCoordinator
 from src.services.graph_sync_queue import GraphSyncQueue
+from src.services.admin_access import can_administer
+from src.services.graph_job_visibility import can_read_job, microsoft_job_owner, normalize_job_owner, public_job_status
+from src.services.diagnostic_views import OAUTH_ERRORS, safe_provider_failure, safe_queue_summary, safe_refresh_status, safe_service_status
 from src.services.local_pdf_service import LocalPdfService
-from src.services.microsoft_auth_service import MicrosoftAuthError, MicrosoftAuthService
+from src.services.microsoft_auth_service import (
+    DOMAIN_NOT_ALLOWED_CODE, DOMAIN_NOT_ALLOWED_MESSAGE, MicrosoftAuthError, MicrosoftAuthService,
+)
 from src.services.photo_attachment_service import PhotoAttachmentError, PhotoAttachmentService
 from src.services.signature_service import CLIENT_SIGNATURE_LABEL, SignatureService
 from src.services.teams_notification_service import (
@@ -101,8 +134,18 @@ QUIET_HTTP_ENDPOINTS = {
 }
 
 
+_LOCAL_SECRET = secrets.token_hex(32)
+
+
 def _load_secret_key() -> str:
-    return os.environ.get("FS_SECRET_KEY", "dev-local-secret")
+    configured = os.environ.get("FS_SECRET_KEY", "").strip()
+    if configured and len(configured) >= 32 and configured != "dev-local-secret":
+        return configured
+    if runtime_mode() == "production" or AUTH_ENABLED:
+        raise ValueError("FS_SECRET_KEY deve conter pelo menos 32 caracteres aleatórios.")
+    if configured:
+        raise ValueError("FS_SECRET_KEY configurada é demasiado curta.")
+    return _LOCAL_SECRET
 
 
 def create_app(
@@ -117,12 +160,84 @@ def create_app(
     local_pdf_service: LocalPdfService | None = None,
     teams_notification_service: TeamsNotificationService | None = None,
     work_folder_service: WorkFolderService | None = None,
+    test_editor_identity: EditorIdentity | None = None,
+    release_root: Path | None = None,
+    runtime_contract=None,
+) -> Flask:
+    """Validate and hold state admission throughout service construction."""
+    info, contract = resolve_runtime(
+        APP_DATA_DIR, release_root=release_root, runtime_contract=runtime_contract,
+        storage_paths=(GRAPH_CACHE_DIR, LOG_DIR, EXCEL_ACTIVAS_DIR, EXCEL_ARQUIVADAS_DIR, EXCEL_CANCELADAS_DIR),
+    )
+    with admit_contract(contract):
+        preflight_stores(APP_DATA_DIR)
+        return _create_app(
+            file_service=file_service,
+            archive_service=archive_service,
+            graph_service=graph_service,
+            mail_service=mail_service,
+            microsoft_auth_service=microsoft_auth_service,
+            editing_state_service=editing_state_service,
+            graph_refresh_coordinator=graph_refresh_coordinator,
+            graph_sync_queue=graph_sync_queue,
+            local_pdf_service=local_pdf_service,
+            teams_notification_service=teams_notification_service,
+            work_folder_service=work_folder_service,
+            test_editor_identity=test_editor_identity,
+            release_info=info, runtime_contract=contract,
+        )
+
+
+def _create_app(
+    file_service: FileService | None = None,
+    archive_service: ArchiveService | None = None,
+    graph_service: GraphStorageService | None = None,
+    mail_service: GraphMailService | None = None,
+    microsoft_auth_service: MicrosoftAuthService | None = None,
+    editing_state_service: EditingStateService | None = None,
+    graph_refresh_coordinator: GraphRefreshCoordinator | None = None,
+    graph_sync_queue: GraphSyncQueue | None = None,
+    local_pdf_service: LocalPdfService | None = None,
+    teams_notification_service: TeamsNotificationService | None = None,
+    work_folder_service: WorkFolderService | None = None,
+    test_editor_identity: EditorIdentity | None = None,
+    *, release_info: dict, runtime_contract,
 ) -> Flask:
     """Cria a aplicação Flask com dependências injetáveis para testes."""
     app = Flask(__name__, template_folder="templates", static_folder="static")
-    app.config["ASSET_VERSION"] = dt.datetime.now().strftime("%Y%m%d%H%M%S")
+    app.config["RELEASE_INFO"] = release_info
+    app.config["RUNTIME_CONTRACT"] = runtime_contract
+    app.config["ASSET_VERSION"] = app.config["RELEASE_INFO"]["source_sha256"][:16]
+    app.config["SYNTHETIC_TEST_VERSION"] = runtime_mode() == "test" and os.environ.get("FS_TEST_SYNTHETIC") == "true"
+    # Demo only: no operational queues or transports may be attached to this feature.
+    app.config["MAINTENANCE_DEMO"] = app.config["SYNTHETIC_TEST_VERSION"] and STORAGE_BACKEND == "local" and not any((MAIL_ENABLED, TEAMS_NOTIFICATIONS_ENABLED, GRAPH_QUEUE_IN_WEB, graph_service, mail_service, graph_sync_queue, teams_notification_service))
+    app.config["MAINTENANCE_ENABLED"] = app.config["MAINTENANCE_DEMO"] or (
+        runtime_mode() == "production"
+        and AUTH_ENABLED
+        and STORAGE_BACKEND == "graph"
+        and os.environ.get("FS_MAINTENANCE_ENABLED", "true").strip().casefold() == "true"
+    )
+    if test_editor_identity is not None and not (
+        app.config["MAINTENANCE_DEMO"] and not AUTH_ENABLED and ACTIVE_AUTH_PROVIDER == "none"
+    ):
+        raise ValueError("O técnico simulado só pode ser usado na demo local isolada, sem autenticação ou integrações reais.")
     app.secret_key = _load_secret_key()
+    if runtime_mode() != "production":
+        # Browsers share cookies between localhost ports. Separate development
+        # instances use different signing keys and must not replace each other's
+        # session (which also owns the draft's editing lease).
+        session_namespace = hashlib.sha256(app.secret_key.encode("utf-8")).hexdigest()[:16]
+        app.config["SESSION_COOKIE_NAME"] = f"sensorpoint_fs_{session_namespace}"
+    @app.context_processor
+    def maintenance_context():
+        allowed = maintenance_access_allowed()
+        return {
+            "maintenance_definition": maintenance.DEFINITION if allowed else {},
+            "maintenance_enabled_for_user": allowed,
+        }
+
     app.config.update(
+        SESSION_COOKIE_SECURE=runtime_mode() == "production",
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
         MAX_CONTENT_LENGTH=64 * 1024 * 1024,
@@ -152,11 +267,16 @@ def create_app(
     )
 
     editing_state_service = editing_state_service or EditingStateService()
+    private_maintenance = MaintenancePrivateService(APP_DATA_DIR / "sadi")
+    finalization_service = FinalizationService(archive_service, APP_DATA_DIR / "finalizing")
+    cancellation_service = FinalizationService(archive_service, APP_DATA_DIR / "canceling",
+                                                destination_root=EXCEL_CANCELADAS_DIR)
     graph_refresh_coordinator = graph_refresh_coordinator or (
         GraphRefreshCoordinator(
             graph_service,
             file_service.directory,
             on_complete=file_service.invalidate_cache,
+            runtime_contract=runtime_contract,
         )
         if graph_service is not None else None
     )
@@ -168,9 +288,13 @@ def create_app(
             local_pdf_service=local_pdf_service,
             teams_notification_service=teams_notification_service,
             auto_start=GRAPH_QUEUE_IN_WEB,
+            runtime_contract=runtime_contract,
+            editing_state_service=editing_state_service,
         )
         if graph_service is not None or mail_service is not None else None
     )
+    if graph_sync_queue is not None:
+        graph_sync_queue.editing_state_service = editing_state_service
 
     @app.before_request
     def begin_request_logging():
@@ -188,8 +312,37 @@ def create_app(
         )
         g.request_id = request_id
 
+    @app.before_request
+    def admit_runtime_operation():
+        guard = admit_contract(runtime_contract)
+        try:
+            guard.__enter__()
+        except ContractError as exc:
+            response = jsonify({"success": False, "error": redact_diagnostic_text(exc), "code": exc.code})
+            response.status_code = 503
+            response.headers["Retry-After"] = "2"
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        g.runtime_guard = guard
+
+    @app.teardown_request
+    def release_runtime_operation(_error):
+        guard = g.pop("runtime_guard", None)
+        if guard is not None:
+            guard.__exit__(None, None, None)
+
+    @app.before_request
+    def require_requested_asset_version():
+        if request.endpoint in {"static", "manifest"} and "v" in request.args:
+            if request.args.getlist("v") != [app.config["ASSET_VERSION"]]:
+                response = app.response_class("Esta versão do recurso já não está disponível no servidor.",
+                                              status=409, mimetype="text/plain")
+                response.headers["Cache-Control"] = "no-store"
+                return response
+
     @app.after_request
     def complete_request_logging(response):
+        response.headers["X-App-Version"] = app.config["RELEASE_INFO"]["source_sha256"]
         request_id = str(g.get("request_id") or "")
         if request_id:
             response.headers["X-Request-ID"] = request_id
@@ -208,6 +361,21 @@ def create_app(
                 )
             else:
                 level = logging.DEBUG if endpoint in QUIET_HTTP_ENDPOINTS else logging.INFO
+            rejection = {}
+            if status_code >= 400:
+                name = (request.view_args or {}).get("name")
+                if name:
+                    rejection.update(file_fields(name))
+                payload = response.get_json(silent=True) if response.is_json else None
+                payload = payload if isinstance(payload, dict) else {}
+                code = g.get("response_error_code") or payload.get("code") or payload.get("error_code")
+                for field in ("missing_fields", "invalid_fields"):
+                    if isinstance(payload.get(field), list):
+                        rejection[field + "_count"] = len(payload[field])
+                        if payload[field] and not code:
+                            code = field
+                if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,64}", code):
+                    rejection["error_code"] = code
             log_event(
                 app.logger,
                 level,
@@ -216,6 +384,7 @@ def create_app(
                 endpoint=endpoint,
                 status_code=status_code,
                 duration_ms=duration_ms,
+                **rejection,
             )
         return response
 
@@ -225,12 +394,14 @@ def create_app(
 
     @app.after_request
     def apply_cache_headers(response):
-        if request.path.startswith(("/api/", "/work-folder/")) or request.path in {
+        if request.endpoint not in {"static", "manifest"} or request.path.startswith(("/api/", "/work-folder/")) or request.path in {
             "/",
             "/login",
             "/service-worker.js",
             "/static/js/field-app.js",
             "/static/js/mail-job-monitor.js",
+            "/static/js/mail-followup.js",
+            "/static/js/commit-recovery.js",
             "/static/js/document-editor.js",
             "/static/js/editing-coordinator.js",
             "/static/css/auth.css",
@@ -244,12 +415,60 @@ def create_app(
             response.headers["Expires"] = "0"
         return response
 
-    def json_error(message: str, status: int = 400):
-        return jsonify({"success": False, "error": message}), status
+    def json_error(message: str, status: int = 400, *, code: str | None = None):
+        g.response_error_code = code or "request_rejected"
+        return jsonify({"success": False, "error": redact_diagnostic_text(message)}), status
+
+    def retire_committed_source(document_id, operation_id, context):
+        source = Path(str(context.get("source_path") or ""))
+        archived = Path(str(context.get("archived_path") or context.get("canceled_path") or ""))
+        if not file_service._contained(source) or not finalization_service.owns(archived, f"{document_id}:{operation_id}"):
+            return
+        if source.exists() and context.get("source_fingerprint") != editing_state_service._fingerprint(source):
+            return
+        finalization_service.retire_source(source)
+        if file_service.get_file_by_name(source.stem) is None:
+            editing_state_service.update_operation_context(document_id, operation_id, source_retired=True)
+        file_service.invalidate_cache(source)
+
+    def recover_committed_finalizations():
+        if request.endpoint not in {"index", "get_files", "bootstrap_file_editor", "get_file_data"}:
+            return
+        for document_id, operation_id, context in editing_state_service.finalizations_to_retire():
+            try:
+                with editing_state_service.operation_guard(document_id, current_editor_identity()):
+                    source = Path(context["source_path"])
+                    with bundle_guard(source.parent):
+                        retire_committed_source(document_id, operation_id, context)
+            except (OSError, EditingStateError, FileMutexBusy):
+                continue
 
     @app.errorhandler(413)
     def request_too_large(_error):
         return json_error("O pedido excede o limite máximo permitido.", 413)
+
+    @app.errorhandler(500)
+    def unexpected_api_failure(error):
+        # Failures in guards can occur outside a route's own handler.
+        # Keep the API contract and diagnostic reference; the browser must still
+        # consult the operation receipt before deciding whether a write finished.
+        if request.path.startswith("/api/"):
+            return diagnostic_failure("operation_failed", 500)
+        return error
+
+    @app.errorhandler(FileMutexBusy)
+    def shared_state_busy(_error):
+        response = jsonify({"success": False, "code": "temporarily_busy",
+                            "error": "Atualização em curso. Tente novamente dentro de momentos."})
+        response.status_code = 503
+        response.headers["Retry-After"] = "2"
+        return response
+
+    @app.errorhandler(ProviderWaitError)
+    def provider_waiting(error):
+        return jsonify(success=False, code='provider_review' if error.pause['suspended'] else 'provider_wait',
+                       error=str(error), provider_retry_at=error.retry_not_before,
+                       provider_suspended=error.pause['suspended']), 503
 
     def current_editor_identity() -> EditorIdentity:
         current_user = g.get("current_user")
@@ -259,6 +478,11 @@ def create_app(
                 display_name=str(current_user.display_name),
             )
 
+        # The isolated, single-person demo may inject one fictional technician
+        # across browsers. Normal anonymous and authenticated ownership is unchanged.
+        if test_editor_identity is not None:
+            return test_editor_identity
+
         anonymous_id = str(session.get("anonymous_editor_id") or "")
         if not anonymous_id:
             anonymous_id = secrets.token_urlsafe(18)
@@ -266,7 +490,57 @@ def create_app(
             session.permanent = True
         return EditorIdentity(id=f"local:{anonymous_id}", display_name="Técnico local")
 
+    def current_job_owner():
+        if ACTIVE_AUTH_PROVIDER == "microsoft":
+            return microsoft_job_owner(g.get("current_user"))
+        # Local/demo jobs belong to the existing signed editing session too.
+        return normalize_job_owner({"provider": "local", "id": current_editor_identity().id})
+
+    def mail_monitor_scope():
+        owner = current_job_owner()
+        if owner is None:
+            return None
+        nonce = session.get("mail_monitor_session")
+        if not isinstance(nonce, str) or len(nonce) != 64:
+            nonce = session["mail_monitor_session"] = secrets.token_hex(32)
+        # Opaque UI scope only, never authorization. Login/logout clears the
+        # signed session; including the principal also fences account changes.
+        return hashlib.sha256((nonce + json.dumps(owner, sort_keys=True)).encode()).hexdigest()
+
+    @app.after_request
+    def bind_sent_job_monitor_scope(response):
+        # A page may predate a login in another tab. Bind the new reference to
+        # the session that actually made this POST, not to its old HTML scope.
+        if request.endpoint == "save_and_send" and 200 <= response.status_code < 300 and response.is_json:
+            payload = response.get_json(silent=True)
+            if isinstance(payload, dict) and payload.get("success") and payload.get("email_status") == "pending":
+                scope = mail_monitor_scope()
+                if scope is not None:
+                    response.headers["X-Mail-Monitor-Scope"] = scope
+        return response
+
+    def enqueue_owned_job(kind, payload, *, job_id):
+        # Ownership is server metadata. Never accept a document's supplied owner.
+        return graph_sync_queue.enqueue(kind, {**payload, "_owner": current_job_owner()}, job_id=job_id)
+
+    def operational_admin_allowed():
+        return AUTH_ENABLED and ACTIVE_AUTH_PROVIDER == "microsoft" and can_administer(g.get("current_user"))
+
+    def diagnostic_failure(code, status, error=None):
+        g.response_error_code = code
+        message = ("Diagnóstico reservado ao administrador." if status == 403 else
+                   "Não foi possível concluir o pedido. Contacte o administrador com a referência indicada.")
+        message += " Referência: " + g.get("request_id", "indisponível") + "."
+        if status >= 500:
+            log_event(app.logger, logging.ERROR, "Pedido interrompido; consultar o código e a referência.",
+                      event=code, **(safe_provider_failure(error) if error is not None else {}))
+        return jsonify(success=False, error=message, code=code, reference=g.get("request_id")), status
+
     def editing_error_response(error: Exception):
+        if isinstance(error, EditingStateQuarantinedError):
+            return jsonify({"success": False, "error": redact_diagnostic_text(error), "code": "editing_state_quarantined"}), 423
+        if isinstance(error, EditingStateWriteInvalidError):
+            return json_error(str(error), 409, code="editing_state_write_invalid")
         if isinstance(error, EditingSessionMetadataError):
             log_event(
                 app.logger,
@@ -277,37 +551,41 @@ def create_app(
             )
             return jsonify({
                 "success": False,
-                "error": str(error),
+                "error": redact_diagnostic_text(error),
                 "code": "editing_session_required",
             }), 409
+        if isinstance(error, EditingSessionRevokedError):
+            return jsonify({"success": False, "error": redact_diagnostic_text(error), "code": "lease_revoked"}), 423
         if isinstance(error, LeaseConflictError):
             return jsonify({
                 "success": False,
-                "error": str(error),
+                "error": redact_diagnostic_text(error),
                 "code": "lease_conflict",
                 "editing": error.snapshot,
             }), 423
         if isinstance(error, LeaseRequiredError):
             return jsonify({
                 "success": False,
-                "error": str(error),
+                "error": redact_diagnostic_text(error),
                 "code": "lease_required",
                 "editing": error.snapshot,
             }), 423
         if isinstance(error, RevisionConflictError):
             return jsonify({
                 "success": False,
-                "error": str(error),
+                "error": redact_diagnostic_text(error),
                 "code": "revision_conflict",
                 "editing": error.snapshot,
             }), 409
         if isinstance(error, OperationInProgressError):
             return jsonify({
                 "success": False,
-                "error": str(error),
+                "error": redact_diagnostic_text(error),
                 "code": "operation_in_progress",
             }), 409
-        return json_error(str(error), 400)
+        return json_error(str(error), 400, code="editing_state_invalid")
+
+    app.register_error_handler(EditingStateQuarantinedError, editing_error_response)
 
     def extract_edit_metadata(
         payload: dict[str, object],
@@ -316,17 +594,60 @@ def create_app(
     ) -> dict[str, object]:
         raw = payload.pop("_edit", {})
         metadata = dict(raw) if isinstance(raw, dict) else {}
+        # Optional keys historically used null/empty as "generate on the server".
+        if not require_idempotency and metadata.get("idempotency_key") in (None, ""):
+            metadata.pop("idempotency_key", None)
+        # These are opaque identities, not display text. Trimming can make the
+        # operation mutex protect a different document from the eventual write.
+        invalid = [key for key in ("document_id", "client_id", "lease_token", "idempotency_key")
+                   if key in metadata and (not isinstance(metadata[key], str)
+                                           or not metadata[key] or metadata[key] != metadata[key].strip())]
         required = ["document_id", "client_id", "lease_token", "base_revision"]
         missing = [key for key in required if not str(metadata.get(key) or "").strip()]
-        if require_idempotency and not str(metadata.get("idempotency_key") or "").strip():
+        if (require_idempotency or "idempotency_key" in metadata) and not metadata.get("idempotency_key"):
             missing.append("idempotency_key")
-        if missing:
-            raise EditingSessionMetadataError(missing)
+        if missing or invalid:
+            raise EditingSessionMetadataError(list(dict.fromkeys(missing + invalid)))
         try:
             metadata["base_revision"] = int(metadata["base_revision"])
         except (TypeError, ValueError) as exc:
             raise EditingStateError("Revisão base inválida.") from exc
         return metadata
+
+    def exclusive_operation(view):
+        @wraps(view)
+        def guarded(*args, **kwargs):
+            payload = request.get_json(silent=True) if request.is_json else None
+            if payload is None:
+                try:
+                    payload = json.loads(request.form.get("document") or "{}")
+                except (TypeError, ValueError):
+                    payload = {}
+            try:
+                supplied_scope = request.headers.get("X-Mail-Monitor-Scope")
+                if supplied_scope is not None and supplied_scope != mail_monitor_scope():
+                    return jsonify(success=False, code="mail_monitor_session_changed",
+                                   error="A sessão de acompanhamento mudou. Atualize a página."), 403
+                # Validate before acquiring a mutex or opening a state transaction.
+                # A copy keeps the JSON/multipart body intact for the view, which
+                # applies the same validation and uses the identical opaque ID.
+                metadata = extract_edit_metadata(dict(payload) if isinstance(payload, dict) else {},
+                                                 require_idempotency=True)
+                document_id = metadata["document_id"]
+                path = file_service.get_file_by_name(str(kwargs.get("name") or ""))
+                with editing_state_service.operation_guard(
+                    document_id, current_editor_identity(),
+                    allow_foreign_owner=can_edit_foreign_sadi_draft(path),
+                    path=path,
+                ):
+                    guard = bundle_guard(path.parent) if path and path.parent.name == path.stem else nullcontext()
+                    with guard:
+                        return view(*args, **kwargs)
+            except FileMutexBusy:
+                return editing_error_response(OperationInProgressError("A folha está a ser sincronizada. Tente novamente."))
+            except EditingStateError as exc:
+                return editing_error_response(exc)
+        return guarded
 
     def resolve_editing_document_id(path: Path, client_id: str) -> str:
         if file_service.is_draft_file(path):
@@ -356,6 +677,10 @@ def create_app(
     def microsoft_redirect_uri() -> str:
         return MICROSOFT_AUTH_REDIRECT_URI or url_for("microsoft_auth_callback", _external=True)
 
+    def login_failure(code, message="Não foi possível iniciar sessão Microsoft. Tente novamente ou contacte o administrador."):
+        # Provider descriptions and exception messages are untrusted response data.
+        return redirect(url_for("login", error=message, code=code, reference=g.get("request_id")))
+
     def friendly_graph_login_error(error: GraphStorageError) -> str:
         detail = str(error)
         if "AADSTS7000215" in detail or "invalid_client" in detail:
@@ -364,7 +689,7 @@ def create_app(
                 "Verifique se o GRAPH_CLIENT_SECRET contém o Secret Value do Entra ID, "
                 "não o Secret ID."
             )
-        return f"Microsoft Graph indisponível: {detail}"
+        return "Microsoft Graph temporariamente indisponível. Tente novamente ou contacte o administrador."
 
     def set_current_user() -> None:
         if ACTIVE_AUTH_PROVIDER == "microsoft":
@@ -375,6 +700,68 @@ def create_app(
             return
 
         g.current_user = None
+
+    def maintenance_access_allowed() -> bool:
+        if not app.config["MAINTENANCE_ENABLED"]:
+            return False
+        if app.config["MAINTENANCE_DEMO"] and not AUTH_ENABLED:
+            return True
+        return can_access_maintenance(g.get("current_user"))
+
+    def can_edit_foreign_sadi_draft(path: Path | None) -> bool:
+        """Preserve the existing cross-owner exception separately from checklist access."""
+        if not path or not maintenance_access_allowed() or not file_service.is_draft_file(path):
+            return False
+        if not (app.config["MAINTENANCE_DEMO"] and not AUTH_ENABLED) and not can_edit_foreign_maintenance_draft(g.get("current_user")):
+            return False
+        return maintenance.applicable(DocumentDataService(path).read())
+
+    def trusted_maintenance(path: Path) -> list[dict]:
+        if not app.config["MAINTENANCE_ENABLED"]:
+            return []
+        snapshot = editing_state_service.snapshot(path)
+        autosaved = snapshot.get("server_document")
+        if isinstance(autosaved, dict) and "maintenance_checklists" in autosaved:
+            return autosaved["maintenance_checklists"]
+        if not app.config["MAINTENANCE_DEMO"]:
+            document_id = editing_state_service.resolve_document_id(path)
+            return private_maintenance.read(document_id)
+        return DocumentDataService(path).read().get("maintenance_checklists") or []
+
+    def normalize_document_for_write(payload, path: Path):
+        document = normalize_document_for_file(payload, path)
+        # Older tabs without the SADI editor omit the field or serialize [].
+        # An explicit API clear requires its marker; an empty UI/recovery
+        # state is not intent to delete. The marker is not authorization.
+        checklists_supplied = isinstance(payload, dict) and isinstance(payload.get("maintenance_checklists"), list)
+        legacy_empty = (checklists_supplied and payload["maintenance_checklists"] == []
+                        and payload.get("_maintenance_clear") is not True)
+        if app.config["MAINTENANCE_ENABLED"] and (not maintenance_access_allowed() or not checklists_supplied or legacy_empty):
+            document["maintenance_checklists"] = maintenance.normalize_sites(trusted_maintenance(path))
+            maintenance.clear_invalid_signatures(document, app.secret_key)
+        return document
+
+    def public_document(document: dict) -> dict:
+        if runtime_mode() == "production":
+            return {key: value for key, value in document.items() if key != "maintenance_checklists"}
+        return document
+
+    def hide_maintenance(value):
+        if isinstance(value, list):
+            return [hide_maintenance(item) for item in value]
+        if isinstance(value, dict):
+            return {key: hide_maintenance(item) for key, item in value.items()
+                    if key not in {"maintenance_checklists", "maintenance_bundle_url"}}
+        return value
+
+    @app.after_request
+    def redact_maintenance_json(response):
+        if response.direct_passthrough or not response.is_json or maintenance_access_allowed():
+            return response
+        body = response.get_json(silent=True)
+        if isinstance(body, (dict, list)):
+            response.set_data(json.dumps(hide_maintenance(body), ensure_ascii=False))
+        return response
 
     @app.before_request
     def require_login():
@@ -402,6 +789,8 @@ def create_app(
 
         return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
 
+    app.before_request(recover_committed_finalizations)
+
     @app.route("/login", methods=["GET", "POST"])
     def login():
         if not AUTH_ENABLED:
@@ -414,7 +803,9 @@ def create_app(
             return render_template(
                 "login.html",
                 auth_provider="microsoft",
-                error=request.args.get("error"),
+                error=redact_diagnostic_text(request.args.get("error")) if request.args.get("error") else None,
+                diagnostic_reference=(request.args.get("reference") if
+                    re.fullmatch(r"[A-Za-z0-9._:-]{1,64}", request.args.get("reference", "")) else None),
                 next_url=safe_next_url(request.args.get("next")),
                 asset_version=app.config["ASSET_VERSION"],
             )
@@ -435,9 +826,9 @@ def create_app(
                     logging.ERROR,
                     "Pré-validação Graph do login Microsoft falhou.",
                     event="auth_graph_preflight_failed",
-                    exc_info=True,
+                    **safe_provider_failure(exc),
                 )
-                return redirect(url_for("login", error=friendly_graph_login_error(exc)))
+                return login_failure("auth_graph_preflight_failed", friendly_graph_login_error(exc))
 
         state = secrets.token_urlsafe(32)
         nonce = secrets.token_urlsafe(32)
@@ -457,9 +848,9 @@ def create_app(
                 logging.ERROR,
                 "Não foi possível construir o pedido de login Microsoft.",
                 event="auth_start_failed",
-                error_type=type(exc).__name__,
+                **safe_provider_failure(exc),
             )
-            return redirect(url_for("login", error=str(exc)))
+            return login_failure("auth_start_failed")
 
         return redirect(authorization_url)
 
@@ -475,9 +866,12 @@ def create_app(
                 logging.WARNING,
                 "O fornecedor Microsoft recusou o login.",
                 event="auth_provider_rejected",
-                provider_error_code=request.args.get("error"),
+                provider_error_code=request.args.get("error") if request.args.get("error") in OAUTH_ERRORS else "unrecognized_provider_error",
             )
-            return redirect(url_for("login", error=error))
+            session.pop("microsoft_auth_state", None)
+            session.pop("microsoft_auth_nonce", None)
+            session.pop("microsoft_auth_next", None)
+            return login_failure("auth_provider_rejected")
 
         state = request.args.get("state")
         code = request.args.get("code")
@@ -492,7 +886,7 @@ def create_app(
                 "Callback Microsoft sem estado de sessão válido.",
                 event="auth_callback_invalid_state",
             )
-            return redirect(url_for("login", error="Sessão Microsoft inválida. Tente novamente."))
+            return login_failure("auth_callback_invalid_state", "Sessão Microsoft inválida. Tente novamente.")
 
         try:
             user = microsoft_auth_service.authenticate_code(
@@ -506,9 +900,12 @@ def create_app(
                 logging.ERROR,
                 "Autenticação Microsoft falhou.",
                 event="auth_callback_failed",
-                error_type=type(exc).__name__,
+                auth_error_code=exc.code,
+                **safe_provider_failure(exc),
             )
-            return redirect(url_for("login", error=str(exc)))
+            if exc.code == DOMAIN_NOT_ALLOWED_CODE:
+                return login_failure(DOMAIN_NOT_ALLOWED_CODE, DOMAIN_NOT_ALLOWED_MESSAGE)
+            return login_failure("auth_callback_failed")
 
         session.clear()
         session.permanent = True
@@ -613,15 +1010,143 @@ def create_app(
         canonical_number = FileService.service_number_from_name(file_name)
         if canonical_number:
             document["service_number"] = canonical_number
+        if app.config["MAINTENANCE_ENABLED"]:
+            maintenance.clear_invalid_signatures(document, app.secret_key)
         return document
+
+    @app.route("/api/file/<name>/maintenance/validate", methods=["POST"])
+    def validate_maintenance(name):
+        if not maintenance_access_allowed():
+            return json_error("Checklist não disponível.", 404)
+        path = file_service.get_file_by_name(name)
+        if not path or not file_service.is_draft_file(path):
+            return json_error("Crie primeiro um rascunho.", 409)
+        received = request.get_json(silent=True) or {}
+        document = normalize_document_for_write(received.get("document"), path)
+        # Recovered browser drafts need the same HMAC normalization as a save,
+        # without overwriting either persisted version or accepting old ink.
+        return jsonify(success=True, maintenance_checklists=document["maintenance_checklists"],
+                       errors=maintenance.document_errors(document, app.secret_key),
+                       sites=[{"id": site["id"], "errors": maintenance.site_errors(site),
+                               "waived": {role: maintenance.signature_waived(site, role)
+                                          for role in ("technician", "customer")},
+                               "signed": {role: maintenance.signature_valid(app.secret_key, document, site, role)
+                                          for role in ("technician", "customer")}}
+                              for site in document["maintenance_checklists"]])
+
+    @app.route("/api/file/<name>/maintenance/sign", methods=["POST"])
+    def sign_maintenance(name):
+        if not maintenance_access_allowed():
+            return json_error("Checklist não disponível.", 404)
+        path = file_service.get_file_by_name(name)
+        if not path or not file_service.is_draft_file(path):
+            return json_error("Crie primeiro um rascunho.", 409)
+        received = request.get_json(silent=True) or {}
+        try:
+            metadata = extract_edit_metadata(received)
+            document_id = validate_document_identity(path, metadata)
+            editing_state_service.renew_lease(document_id, current_editor_identity(),
+                                            str(metadata["client_id"]), str(metadata["lease_token"]))
+            document = normalize_document_for_file(received.get("document"), path)
+            if not maintenance.applicable(document):
+                raise ValueError("Selecione Manutenção e SADI.")
+            matches = [site for site in document["maintenance_checklists"] if site["id"] == received.get("site_id")]
+            if len(matches) != 1:
+                raise ValueError("Local inválido ou repetido.")
+            site = matches[0]
+            signature = maintenance.make_signature(app.secret_key, document, site, received.get("role"),
+                                                   received.get("name"), received.get("date"), received.get("image"))
+            return jsonify(success=True, signature=signature)
+        except EditingStateError as exc:
+            return editing_error_response(exc)
+        except ValueError as exc:
+            return json_error(str(exc), 400)
+
+    def demo_bundle(bundle):
+        from src.services import archive_service as archive_module
+        root = archive_module.EXCEL_ARQUIVADAS_DIR.resolve()
+        directory = (root / bundle).resolve()
+        if not maintenance_access_allowed() or directory.parent != root:
+            return None, []
+        manifest = directory / "maintenance-manifest.json"
+        if not manifest.is_file():
+            return None, []
+        entries = json.loads(manifest.read_text(encoding="utf-8"))
+        if not entries or any(Path(entry["name"]).name != entry["name"] or not entry["name"].endswith(".pdf") or not (directory / entry["name"]).is_file() for entry in entries):
+            return None, []
+        # Existing demo manifests listed the service sheet first, without delivery metadata.
+        for index, entry in enumerate(entries):
+            entry.setdefault("delivery", "customer_email" if index == 0 else "archive_only")
+        return directory, entries
+
+    @app.route("/demo/maintenance/<bundle>")
+    def maintenance_bundle_page(bundle):
+        directory, entries = demo_bundle(bundle)
+        if directory is None:
+            return json_error("Conjunto de demonstração não encontrado.", 404)
+        return render_template("maintenance_bundle.html", bundle=bundle, entries=entries)
+
+    @app.route("/demo/maintenance/<bundle>/pdf/<filename>")
+    def maintenance_bundle_pdf(bundle, filename):
+        directory, entries = demo_bundle(bundle)
+        if directory is None or filename not in {entry["name"] for entry in entries}:
+            return json_error("PDF não encontrado.", 404)
+        return send_from_directory(directory, filename, as_attachment=request.args.get("download") == "1")
+
+    @app.route("/demo/maintenance/<bundle>/simulate", methods=["POST"])
+    def maintenance_bundle_simulate(bundle):
+        directory, entries = demo_bundle(bundle)
+        if directory is None:
+            return json_error("Conjunto incompleto ou inexistente.", 404)
+        attachments = [entry["name"] for entry in entries if entry.get("delivery") == "customer_email"]
+        stored_only = [entry["name"] for entry in entries if entry.get("delivery") == "archive_only"]
+        return jsonify(success=True, simulated=True, attachments=attachments, stored_only=stored_only,
+                       message="Simulação concluída: a folha de serviço seria enviada ao cliente; "
+                               "as checklists ficam guardadas na pasta do serviço. Nenhuma comunicação foi enviada.")
+
+    def private_bundle(key):
+        if not maintenance_access_allowed() or app.config["MAINTENANCE_DEMO"]:
+            return None, [], None
+        try:
+            metadata, entries, directory = private_maintenance.bundle(key)
+            archived_name = str(metadata["archived_name"])
+            if (Path(archived_name).name != archived_name
+                    or Path(archived_name).suffix.lower() not in {".xlsx", ".xlsm"}):
+                return None, [], None
+            from src.services import archive_service as archive_module
+            archived = archive_module.EXCEL_ARQUIVADAS_DIR / Path(archived_name).stem / archived_name
+            if not finalization_service.owns(archived, str(metadata["operation_id"])):
+                return None, [], None
+            return directory, entries, archived_name
+        except (OSError, KeyError, ValueError, TypeError):
+            return None, [], None
+
+    @app.route("/maintenance/bundles/<key>")
+    def private_maintenance_bundle_page(key):
+        directory, entries, archived_name = private_bundle(key)
+        if directory is None:
+            return json_error("Conjunto SADI não encontrado.", 404)
+        return render_template("maintenance_private_bundle.html", key=key, entries=entries,
+                               archived_name=archived_name)
+
+    @app.route("/maintenance/bundles/<key>/pdf/<filename>")
+    def private_maintenance_bundle_pdf(key, filename):
+        directory, entries, _ = private_bundle(key)
+        if directory is None or filename not in {entry["name"] for entry in entries}:
+            return json_error("PDF não encontrado.", 404)
+        return send_from_directory(directory, filename, as_attachment=request.args.get("download") == "1")
 
     def load_editor_state(path):
         excel_form_data = serialize_payload(ExcelService(path).read_link_as_form_data())
+        extra_data = DocumentDataService(path).read()
+        if app.config["MAINTENANCE_ENABLED"] and not app.config["MAINTENANCE_DEMO"]:
+            extra_data = dict(extra_data)
+            extra_data["maintenance_checklists"] = trusted_maintenance(path)
         document_data = serialize_payload(
             normalize_document_for_file(
                 document_from_excel_and_extra(
                     excel_form_data,
-                    DocumentDataService(path).read(),
+                    extra_data,
                 ),
                 path,
             )
@@ -643,16 +1168,7 @@ def create_app(
     def schedule_graph_refresh(*, force: bool = False) -> dict[str, object] | None:
         if graph_refresh_coordinator is None:
             return None
-        return graph_refresh_coordinator.request_refresh(force=force)
-
-    def load_document_assets() -> tuple[str, str]:
-        static_root = Path(app.static_folder)
-        css_path = static_root / "css" / "service-document.css"
-        logo_path = static_root / "img" / "sensorpoint-logo.png"
-
-        embedded_styles = css_path.read_text(encoding="utf-8")
-        logo_src = f"data:image/png;base64,{base64.b64encode(logo_path.read_bytes()).decode('ascii')}"
-        return embedded_styles, logo_src
+        return safe_refresh_status(graph_refresh_coordinator.request_refresh(force=force))
 
     def build_document_html(
         *,
@@ -663,7 +1179,7 @@ def create_app(
     ) -> str:
         document_data = normalize_document_for_file(payload, file_name)
         responsible_technician = get_primary_technician_name(document_data)
-        embedded_styles, logo_src = load_document_assets()
+        embedded_styles, logo_src = load_document_assets(app.static_folder, page_context=f"FS {document_data['service_number']}")
         return render_template(
             "service_document.html",
             file_name=file_name,
@@ -716,7 +1232,11 @@ def create_app(
             equipment_options=EQUIPMENT_OPTIONS,
             technician_options=TECHNICIAN_OPTIONS,
             document_required_fields=DOCUMENT_REQUIRED_FIELDS,
+            technician_required_fields=TECHNICIAN_REQUIRED_FIELDS,
+            signature_required_fields=SIGNATURE_REQUIRED_FIELDS,
             mail_enabled=mail_service is not None,
+            mail_monitor_scope=mail_monitor_scope(),
+            graph_enabled=graph_service is not None,
             mail_test_recipient=(
                 mail_service.config.test_recipient if mail_service is not None else ""
             ),
@@ -826,97 +1346,76 @@ def create_app(
 
     @app.route("/service-worker.js")
     def service_worker():
-        return send_from_directory(app.static_folder, "service-worker.js")
+        template = (Path(app.static_folder) / "service-worker.js").read_text(encoding="utf-8")
+        source = template.replace("__SENSORPOINT_RELEASE_SHA256__", app.config["RELEASE_INFO"]["source_sha256"])
+        return app.response_class(source, mimetype="application/javascript")
 
     @app.route("/api/files")
     def get_files():
-        if request.args.get("refresh") in {"1", "true", "yes"}:
-            schedule_graph_refresh(force=True)
-        files_data = [serialize_file_entry(entry) for entry in file_service.list_valid_files()]
+        refresh_mode = request.args.get("refresh")
+        requested_refresh = None
+        if refresh_mode != "0":
+            requested_refresh = schedule_graph_refresh(force=refresh_mode in {"1", "true", "yes"})
+        entries = file_service.list_valid_files()
+        files_data = [serialize_file_entry(entry) for entry in entries]
         return jsonify({
             "success": True,
             "files": files_data,
-            "refresh": graph_refresh_coordinator.status() if graph_refresh_coordinator else None,
+            "html": render_template("partials/active_file_list.html", files=entries),
+            "requested_refresh_id": (requested_refresh or {}).get("refresh_id"),
+            "requested_refresh_sequence": (requested_refresh or {}).get("refresh_sequence"),
+            "requested_refresh_generation": (requested_refresh or {}).get("generation_id"),
+            "refresh": safe_refresh_status(graph_refresh_coordinator.status()) if graph_refresh_coordinator else None,
         })
 
     @app.route("/api/graph/status")
     def graph_status():
-        if graph_service is None:
-            return jsonify({
-                "success": True,
-                "backend": STORAGE_BACKEND,
-                "graph_enabled": False,
-                "refresh": None,
-                "outbox": graph_sync_queue.summary() if graph_sync_queue else None,
-                "mail": mail_service.status() if mail_service else {"enabled": False},
-                "teams": (
-                    teams_notification_service.status()
-                    if teams_notification_service else {"enabled": False}
-                ),
-            })
-
-        status = graph_service.status()
-        return jsonify({
+        status = {
             "success": True,
             "backend": STORAGE_BACKEND,
-            "graph_enabled": True,
-            "graph": status,
-            "refresh": graph_refresh_coordinator.status() if graph_refresh_coordinator else None,
-            "outbox": graph_sync_queue.summary() if graph_sync_queue else None,
-            "mail": mail_service.status() if mail_service else {"enabled": False},
-            "teams": (
-                teams_notification_service.status()
-                if teams_notification_service else {"enabled": False}
-            ),
-        })
+            "graph_enabled": graph_service is not None,
+            "refresh": safe_refresh_status(graph_refresh_coordinator.status()) if graph_refresh_coordinator else None,
+        }
+        if operational_admin_allowed():
+            status.update(
+                graph=safe_service_status(graph_service.status()) if graph_service else None,
+                outbox=safe_queue_summary(graph_sync_queue.summary()) if graph_sync_queue else None,
+                mail=safe_service_status(mail_service.status()) if mail_service else {"enabled": False},
+                teams=safe_service_status(teams_notification_service.status()) if teams_notification_service else {"enabled": False},
+            )
+        return jsonify(status)
 
     @app.route("/api/graph/test")
     def graph_test():
+        if not operational_admin_allowed():
+            return diagnostic_failure("diagnostic_access_denied", 403)
         if graph_service is None:
             return json_error("Backend Graph não está ativo.", 400)
 
         try:
+            graph_service.test_connection()
             return jsonify({
                 "success": True,
-                "graph": graph_service.test_connection(),
+                "graph": {"authenticated": True},
             })
         except GraphStorageError as exc:
-            log_event(
-                app.logger,
-                logging.ERROR,
-                "Diagnóstico Graph falhou.",
-                event="graph_diagnostic_failed",
-                exc_info=True,
-            )
-            return json_error(str(exc), 502)
+            return diagnostic_failure("graph_diagnostic_failed", 502, exc)
 
     @app.route("/api/mail/test")
     def mail_test():
+        if not operational_admin_allowed():
+            return diagnostic_failure("diagnostic_access_denied", 403)
         if mail_service is None:
             return json_error("O envio de e-mail não está ativo.", 400)
         try:
             return jsonify({
                 "success": True,
-                "mail": mail_service.test_connection(),
+                "mail": safe_service_status(mail_service.test_connection()),
             })
         except GraphMailConfigurationError as exc:
-            log_event(
-                app.logger,
-                logging.ERROR,
-                "Diagnóstico de e-mail encontrou configuração inválida.",
-                event="mail_diagnostic_configuration_failed",
-                error_type=type(exc).__name__,
-            )
-            return json_error(str(exc), 503)
+            return diagnostic_failure("mail_diagnostic_configuration_failed", 503, exc)
         except GraphMailError as exc:
-            log_event(
-                app.logger,
-                logging.ERROR,
-                "Diagnóstico de e-mail falhou.",
-                event="mail_diagnostic_failed",
-                exc_info=True,
-            )
-            return json_error(str(exc), 502)
+            return diagnostic_failure("mail_diagnostic_failed", 502, exc)
 
     @app.route("/api/graph/sync", methods=["POST"])
     def graph_sync():
@@ -925,44 +1424,84 @@ def create_app(
         status = schedule_graph_refresh(force=True)
         return jsonify({"success": True, "refresh": status}), 202
 
+    @app.get("/api/graph/monitor-context")
+    def mail_monitor_context():
+        scope = mail_monitor_scope()
+        if scope is None:
+            return json_error("Sessão indisponível para acompanhamento.", 403)
+        return jsonify(success=True, scope=scope)
+
     @app.route("/api/graph/jobs/<job_id>")
     def graph_job_status(job_id: str):
+        supplied_scope = request.headers.get("X-Mail-Monitor-Scope")
+        if supplied_scope is not None:
+            expected_scope = mail_monitor_scope()
+            if (not re.fullmatch(r"[a-f0-9]{64}", supplied_scope) or not expected_scope
+                    or not secrets.compare_digest(supplied_scope, expected_scope)):
+                return json_error("A sessão de acompanhamento mudou. Atualize a página.", 403,
+                                  code="mail_monitor_session_changed")
         if graph_sync_queue is None:
             return json_error("Backend Graph não está ativo.", 400)
         job = graph_sync_queue.status(job_id)
         if job is None:
             return json_error("Operação de sincronização não encontrada.", 404)
-        return jsonify({"success": True, "job": job})
+        administrator = operational_admin_allowed()
+        if not can_read_job(job, current_job_owner(), administrator=administrator):
+            return json_error("Não tem autorização para consultar este trabalho.", 403, code="job_access_denied")
+        inspect_pause = getattr(graph_sync_queue, 'provider_pause_for_job', None)
+        pause = inspect_pause(job['kind'], job.get('payload') or {}, job.get('result') or {}) if callable(inspect_pause) else None
+        return jsonify({"success": True, "job": public_job_status(job, provider_pause=pause)})
 
-    @app.route("/api/graph/jobs/<job_id>/retry", methods=["POST"])
-    def retry_graph_job(job_id: str):
-        if graph_sync_queue is None:
-            return json_error("A fila de operações não está ativa.", 400)
-        try:
-            job = graph_sync_queue.retry(job_id)
-        except KeyError:
-            return json_error("Operação de sincronização não encontrada.", 404)
-        except ValueError as exc:
-            return json_error(str(exc), 409)
-        return jsonify({"success": True, "job": job}), 202
+    @app.get("/api/editing/operations/<document_id>/<idempotency_key>")
+    def recover_editing_operation(document_id: str, idempotency_key: str):
+        supplied_scope = request.headers.get("X-Mail-Monitor-Scope", "")
+        expected_scope = mail_monitor_scope()
+        if (not re.fullmatch(r"[a-f0-9]{64}", supplied_scope) or not expected_scope
+                or not secrets.compare_digest(supplied_scope, expected_scope)):
+            return jsonify(success=False, code="mail_monitor_session_changed",
+                           error="A sessão de acompanhamento mudou. Atualize a página."), 403
+        if not all(re.fullmatch(r"[A-Za-z0-9:_-]{1,240}", value)
+                   for value in (document_id, idempotency_key)):
+            return json_error("Referência de operação inválida.", 400)
+        operation = editing_state_service.recover_operation(document_id, idempotency_key, current_job_owner())
+        if operation is None:
+            return json_error("Operação não encontrada para esta sessão.", 404)
+        return jsonify(success=True, operation=operation)
 
     @app.route("/api/file/<name>/bootstrap")
     def bootstrap_file_editor(name: str):
         path = file_service.get_file_by_name(name)
         if not path:
+            refresh = graph_refresh_coordinator.status() if graph_refresh_coordinator else {}
+            diagnostic("editor_file_not_found", level=logging.WARNING,
+                       **lookup_fields(file_service, name),
+                       refresh_in_progress=refresh.get("in_progress"),
+                       last_refresh_started_at=refresh.get("last_started_at"),
+                       last_refresh_completed_at=refresh.get("last_completed_at"),
+                       last_refresh_had_error=bool(refresh.get("last_error")))
             return json_error("Ficheiro não encontrado", 404)
         client_id = str(request.args.get("client_id") or "").strip()
         if not client_id:
             return json_error("Identificador da sessão de edição em falta.", 400)
         try:
             form_data, source_document, signatures = load_editor_state(path)
+            diagnostic("editor_file_loaded", **file_fields(name))
             identity = current_editor_identity()
-            if file_service.is_draft_file(path):
-                editing = editing_state_service.acquire_lease(path, identity, client_id)
-            else:
-                editing = editing_state_service.acquire_private_workspace(
-                    path, identity, client_id
-                )
+            # Bootstrap already acquires a session. Enter the normal write
+            # guard first so an abandoned pending commit cannot block autosave
+            # after recovery; a live writer still refuses this acquisition.
+            document_id = resolve_editing_document_id(path, client_id)
+            with editing_state_service.operation_guard(document_id, identity,
+                    allow_foreign_owner=can_edit_foreign_sadi_draft(path), path=path):
+                if file_service.is_draft_file(path):
+                    editing = editing_state_service.acquire_lease(
+                        path, identity, client_id,
+                        allow_foreign_owner=can_edit_foreign_sadi_draft(path),
+                    )
+                else:
+                    editing = editing_state_service.acquire_private_workspace(
+                        path, identity, client_id
+                    )
             server_document = editing.get("server_document")
             if isinstance(server_document, dict):
                 server_document = normalize_document_for_file(server_document, path)
@@ -984,7 +1523,7 @@ def create_app(
             return jsonify({
                 "success": False,
                 "editable": False,
-                "error": str(exc),
+                "error": redact_diagnostic_text(exc),
                 "code": "lease_conflict",
                 "file": name,
                 "is_draft": True,
@@ -998,7 +1537,7 @@ def create_app(
         except EditingStateError as exc:
             return editing_error_response(exc)
         except ExcelValidationError as exc:
-            return json_error(str(exc), 400)
+            return json_error(str(exc), 400, code="document_invalid")
         except Exception as exc:
             log_event(
                 app.logger,
@@ -1007,7 +1546,7 @@ def create_app(
                 event="editor_bootstrap_failed",
                 exc_info=True,
             )
-            return json_error(str(exc), 500)
+            return diagnostic_failure("operation_failed", 500)
 
     @app.route("/api/file/<name>")
     def get_file_data(name: str):
@@ -1041,7 +1580,9 @@ def create_app(
                 "editing": editing,
             })
         except ExcelValidationError as exc:
-            return json_error(str(exc), 400)
+            return json_error(str(exc), 400, code="document_invalid")
+        except EditingStateError as exc:
+            return editing_error_response(exc)
         except Exception as exc:
             log_event(
                 app.logger,
@@ -1050,7 +1591,7 @@ def create_app(
                 event="file_read_failed",
                 exc_info=True,
             )
-            return json_error(str(exc), 500)
+            return diagnostic_failure("operation_failed", 500)
     @app.route("/api/file/<name>/photos/<photo_id>")
     def get_file_photo(name: str, photo_id: str):
         path = file_service.get_file_by_name(name)
@@ -1078,7 +1619,10 @@ def create_app(
         try:
             identity = current_editor_identity()
             if file_service.is_draft_file(path):
-                editing = editing_state_service.acquire_lease(path, identity, client_id)
+                editing = editing_state_service.acquire_lease(
+                    path, identity, client_id,
+                    allow_foreign_owner=can_edit_foreign_sadi_draft(path),
+                )
             else:
                 editing = editing_state_service.acquire_private_workspace(
                     path,
@@ -1142,7 +1686,7 @@ def create_app(
             metadata = extract_edit_metadata(data)
             document_id = validate_document_identity(path, metadata)
             document = (
-                strip_signature_payload(normalize_document_for_file(document_payload, path))
+                strip_signature_payload(normalize_document_for_write(document_payload, path))
                 if isinstance(document_payload, dict)
                 else None
             )
@@ -1156,6 +1700,7 @@ def create_app(
                     metadata.get("idempotency_key") or secrets.token_urlsafe(18)
                 ),
                 document=document,
+                path=path,
             )
             return jsonify({"success": True, **result})
         except EditingStateError as exc:
@@ -1175,7 +1720,7 @@ def create_app(
             document_id = validate_document_identity(path, metadata)
             idempotency_key = str(metadata.get("idempotency_key") or secrets.token_urlsafe(18))
             document = strip_signature_payload(
-                normalize_document_for_file(document_payload, path)
+                normalize_document_for_write(document_payload, path)
             )
             editing = editing_state_service.save_autosave(
                 document_id=document_id,
@@ -1185,6 +1730,8 @@ def create_app(
                 base_revision=int(metadata["base_revision"]),
                 idempotency_key=idempotency_key,
                 document=document,
+                source_resolution=data.get('source_resolution'),
+                path=path,
             )
             return jsonify({
                 "success": True,
@@ -1225,12 +1772,41 @@ def create_app(
             return json_error("Sem dados", 400)
 
         try:
+            selected_site = None
+            document = normalize_document_for_file(payload, path)
+            if "_maintenance_site_id" in payload:
+                if not maintenance_access_allowed():
+                    return json_error("Checklist não disponível.", 404)
+                if not file_service.is_draft_file(path):
+                    return json_error("Crie primeiro um rascunho.", 409)
+                if not maintenance.applicable(document):
+                    return json_error("Selecione Manutenção e SADI.", 400)
+                sites = [site for site in document["maintenance_checklists"]
+                         if site["id"] == payload["_maintenance_site_id"]]
+                if len(sites) != 1:
+                    return json_error("Selecione um local válido para pré-visualizar a checklist.", 400)
+                selected_site = sites[0]
+                if payload.get("_auto_print"):
+                    return jsonify(success=True, html=render_maintenance_document(
+                        document, selected_site, draft_preview=True, auto_print=True))
             html = build_document_html(
                 file_name=name,
                 path=path,
                 payload=payload,
                 auto_print=bool(payload.get("_auto_print")),
             )
+            if (not payload.get("_auto_print") and maintenance_access_allowed()
+                    and file_service.is_draft_file(path) and maintenance.applicable(document)):
+                documents = [{"id": "service", "label": "Folha de serviço", "html": html}]
+                selected = "service"
+                for index, site in enumerate(document["maintenance_checklists"]):
+                    key = f"sadi-{index}"
+                    documents.append({"id": key, "label": f"SADI — {site['location'] or f'Local {index + 1}'}",
+                                      "html": render_maintenance_document(document, site, draft_preview=True)})
+                    if site is selected_site:
+                        selected = key
+                html = render_template("document_preview.html",
+                                       preview={"documents": documents, "selected": selected})
             return jsonify({"success": True, "html": html})
         except Exception as exc:
             log_event(
@@ -1240,9 +1816,10 @@ def create_app(
                 event="document_preview_failed",
                 exc_info=True,
             )
-            return json_error(str(exc), 500)
+            return diagnostic_failure("operation_failed", 500)
 
     @app.route("/api/file/<name>/draft", methods=["POST"])
+    @exclusive_operation
     def save_draft(name: str):
         path = file_service.get_file_by_name(name)
         if not path:
@@ -1250,6 +1827,8 @@ def create_app(
 
         document_id = ""
         idempotency_key = ""
+        partial_draft_path = None
+        copy_guards = ExitStack()
         try:
             received, photo_uploads, removed_photo_ids = parse_commit_request()
             prepared_photos = PhotoAttachmentService.prepare_uploads(photo_uploads)
@@ -1269,6 +1848,7 @@ def create_app(
                 client_id=str(metadata["client_id"]),
                 lease_token=str(metadata["lease_token"]),
                 base_revision=int(metadata["base_revision"]),
+                recovery_owner=current_job_owner(),
             )
             if claim["status"] == "replay":
                 return jsonify(claim["operation"]["response"])
@@ -1277,6 +1857,17 @@ def create_app(
             draft_path = Path(str(context.get("draft_path") or path))
             created_copy = bool(context.get("created_copy"))
             created_this_attempt = False
+
+            if context.get("draft_path") and created_copy:
+                # A partial copy can have been retired from another page. Its
+                # old key must not trap this private workspace in repeated 500s.
+                current_copy = file_service.get_file_by_name(draft_path.stem)
+                copy_id = editing_state_service.resolve_document_id(draft_path)
+                if (not draft_path.is_file() or not file_service.is_draft_file(draft_path)
+                        or not draft_path.resolve().is_relative_to(file_service.directory.resolve())
+                        or current_copy is None or current_copy.resolve() != draft_path.resolve()
+                        or (context.get("draft_document_id") and context["draft_document_id"] != copy_id)):
+                    raise DraftCopyUnavailableError()
 
             if not context.get("draft_path") and not file_service.is_draft_file(path):
                 draft_path = file_service.create_draft_copy(
@@ -1290,20 +1881,40 @@ def create_app(
                     idempotency_key,
                     draft_path=str(draft_path),
                     created_copy=created_copy,
+                    draft_document_id=editing_state_service.resolve_document_id(draft_path),
                 )
 
-            document_data = normalize_document_for_file(data, draft_path)
+            if created_copy:
+                try:
+                    copy_guards.enter_context(editing_state_service.draft_copy_guard(
+                        draft_path, document_id, idempotency_key, fresh=created_this_attempt,
+                        expected_fingerprint=context.get("draft_copy_fingerprint")))
+                except FileMutexBusy as exc:
+                    raise OperationInProgressError("A cópia está a ser utilizada. Volte a consultar antes de guardar.") from exc
+
+            document_data = normalize_document_for_write(data, draft_path)
             if document_data.get("client_not_present"):
                 data[CLIENT_SIGNATURE_LABEL] = ""
             excel_form_data = document_to_excel_form(document_data)
             signature_service = SignatureService(draft_path)
             resolved_signatures = signature_service.resolve_from_form_data(data)
+            if graph_service is not None:
+                mark_dirty(draft_path.parent)
+            # A new copy does not mutate the original private workspace. For an
+            # existing draft, retain its autosave if a later bundle write fails.
+            if draft_path == path:
+                partial_draft_path = draft_path
             ExcelService(draft_path).write_link_from_form(
                 excel_form_data,
                 signatures=resolved_signatures,
                 trusted_service_number=str(document_data.get("service_number") or ""),
             )
-            DocumentDataService(draft_path).write(strip_signature_payload(document_data))
+            DocumentDataService(draft_path).write(strip_signature_payload(public_document(document_data)))
+            if app.config["MAINTENANCE_ENABLED"] and not app.config["MAINTENANCE_DEMO"] and maintenance_access_allowed():
+                private_maintenance.write(
+                    editing_state_service.resolve_document_id(draft_path),
+                    document_data["maintenance_checklists"],
+                )
             signature_service.save_from_form_data(data)
             PhotoAttachmentService(draft_path).apply(
                 prepared_photos,
@@ -1324,7 +1935,7 @@ def create_app(
             graph_uploaded_files = []
             graph_sync_job = None
             if graph_service is not None and graph_sync_queue is not None:
-                graph_sync_job = graph_sync_queue.enqueue(
+                graph_sync_job = enqueue_owned_job(
                     "upload_active",
                     {
                         "draft_path": str(draft_path),
@@ -1332,7 +1943,7 @@ def create_app(
                     },
                     job_id=f"draft:{document_id}:{idempotency_key}",
                 )
-            file_service.invalidate_cache()
+            file_service.invalidate_cache(draft_path)
             result = editing_state_service.commit_operation(
                 document_id=document_id,
                 idempotency_key=idempotency_key,
@@ -1366,28 +1977,42 @@ def create_app(
                 publication_queued=graph_sync_job is not None,
             )
             return jsonify(result)
+        except ProviderWaitError as exc:
+            if document_id and idempotency_key:
+                editing_state_service.fail_operation(document_id, idempotency_key, str(exc),
+                                                    partial_draft_path=partial_draft_path)
+            return provider_waiting(exc)
+        except DraftCopyUnavailableError:
+            editing_state_service.fail_operation(document_id, idempotency_key,
+                "A cópia parcial já não pertence exclusivamente a esta operação.", draft_copy_unavailable=True)
+            return jsonify(success=False, code="draft_copy_unavailable",
+                error="A cópia anterior foi alterada ou encerrada. Guarde novamente para criar um rascunho com estas alterações."), 409
         except PhotoAttachmentError as exc:
             if document_id and idempotency_key:
-                editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
-            return json_error(str(exc), 400)
+                editing_state_service.fail_operation(document_id, idempotency_key, str(exc),
+                                                    partial_draft_path=partial_draft_path)
+            return json_error(str(exc), 400, code="attachments_invalid")
         except EditingStateError as exc:
             return editing_error_response(exc)
         except GraphConflictError as exc:
             if document_id and idempotency_key:
-                editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
+                editing_state_service.fail_operation(document_id, idempotency_key, str(exc),
+                                                    partial_draft_path=partial_draft_path)
             return jsonify({
                 "success": False,
-                "error": str(exc),
+                "error": redact_diagnostic_text(exc),
                 "code": "graph_conflict",
                 "editing": editing_state_service.snapshot_document(document_id) if document_id else None,
             }), 409
         except ExcelValidationError as exc:
             if document_id and idempotency_key:
-                editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
-            return json_error(str(exc), 400)
+                editing_state_service.fail_operation(document_id, idempotency_key, str(exc),
+                                                    partial_draft_path=partial_draft_path)
+            return json_error(str(exc), 400, code="document_invalid")
         except Exception as exc:
             if document_id and idempotency_key:
-                editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
+                editing_state_service.fail_operation(document_id, idempotency_key, str(exc),
+                                                    partial_draft_path=partial_draft_path)
             log_event(
                 app.logger,
                 logging.ERROR,
@@ -1396,9 +2021,13 @@ def create_app(
                 document_id=document_id or None,
                 exc_info=True,
             )
-            return json_error(str(exc), 500)
+            return diagnostic_failure("operation_failed", 500)
+
+        finally:
+            copy_guards.close()
 
     @app.route("/api/file/<name>/send", methods=["POST"])
+    @exclusive_operation
     def save_and_send(name: str):
         document_id = ""
         idempotency_key = ""
@@ -1413,6 +2042,17 @@ def create_app(
                 return jsonify(existing_operation["response"])
 
             operation_context = dict((existing_operation or {}).get("context") or {})
+            prepared_photos = PhotoAttachmentService.prepare_uploads(photo_uploads)
+            request_digest = hashlib.sha256(json.dumps({
+                "document": document_payload,
+                # Prepared names contain SHA256(bytes), not the upload's name.
+                "photos": sorted(photo.filename for photo in prepared_photos),
+                "removed_photos": sorted(set(removed_photo_ids)),
+            }, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+            if operation_context.get("prepared_document"):
+                if operation_context.get("request_digest") != request_digest:
+                    return jsonify({"success": False, "code": "operation_payload_changed",
+                        "error": "A folha foi alterada depois desta tentativa. Volte a finalizar para guardar o conteúdo atual numa nova operação."}), 409
             path = file_service.get_file_by_name(name)
             archived_value = str(operation_context.get("archived_path") or "")
             archived_path = Path(archived_value) if archived_value else None
@@ -1429,14 +2069,41 @@ def create_app(
             if path is not None:
                 validate_document_identity(path, metadata)
 
+            if path is not None and graph_service is not None and graph_sync_queue is not None:
+                publication = graph_sync_queue.unfinished_upload(path)
+                if publication:
+                    failed = publication["status"] == "failed" and not publication["will_retry"]
+                    local_pending = (publication.get('result') or {}).get('phase') == 'publication_local_pending'
+                    return jsonify({"success": False,
+                        "code": "publication_failed" if failed else "publication_pending",
+                        "graph_job_id": publication["id"],
+                        "error": (
+                            "O rascunho está guardado. A confirmação local da publicação requer revisão no painel de administração."
+                            if failed and local_pending and not publication.get('publication_refused_by_owner') else
+                            "O rascunho está guardado no servidor, mas a publicação no SharePoint falhou. "
+                            "Guarde novamente o rascunho para repetir a publicação antes de finalizar."
+                            if failed else
+                            "A publicação do rascunho ainda não terminou. Aguarde a sincronização antes de finalizar."
+                        )}), 409
+
             internal_observations = pop_internal_observations(document_payload)
-            document_data = normalize_document_for_file(
+            document_data = normalize_document_for_write(
                 document_payload,
                 archived_path or path or name,
             )
             service_number = str(document_data.get("service_number") or name)
             missing_fields = document_missing_required_fields(document_data)
             invalid_fields = document_invalid_fields(document_data)
+            # During the trial (João, 23/10/2026), checklist completeness is
+            # independent of permission to send the service sheet. Validation
+            # still controls whether a final SADI PDF bundle can be produced.
+            checklist_complete = (
+                app.config["MAINTENANCE_ENABLED"]
+                and maintenance.applicable(document_data)
+                and not maintenance.document_errors(document_data, app.secret_key)
+            )
+            if not app.config["MAINTENANCE_ENABLED"] and document_data.get("maintenance_checklists"):
+                return json_error("A finalização de checklists está disponível apenas na demo isolada.", 409)
             mail_payload = None
             teams_payload = None
             customer_email = str(document_data.get("customer_email") or "").strip()
@@ -1451,7 +2118,6 @@ def create_app(
             if document_data.get("client_not_present"):
                 document_payload[CLIENT_SIGNATURE_LABEL] = ""
             validation_path = archived_path or path
-            prepared_photos = PhotoAttachmentService.prepare_uploads(photo_uploads)
             PhotoAttachmentService(validation_path).validate_changes(
                 prepared_photos,
                 removed_photo_ids,
@@ -1500,14 +2166,14 @@ def create_app(
                 except GraphMailConfigurationError as exc:
                     return json_error(str(exc), 503)
                 except GraphMailError as exc:
-                    return json_error(str(exc), 400)
+                    return json_error(str(exc), 400, code="mail_validation_failed")
 
                 try:
                     mail_service.test_connection()
                 except GraphMailConfigurationError as exc:
-                    return json_error(str(exc), 503)
+                    return diagnostic_failure("mail_preflight_configuration_failed", 503, exc)
                 except GraphMailError as exc:
-                    return json_error(str(exc), 502)
+                    return diagnostic_failure("mail_preflight_failed", 502, exc)
 
                 if teams_notification_service is not None:
                     try:
@@ -1525,6 +2191,7 @@ def create_app(
                 document_id=document_id,
                 kind="send",
                 idempotency_key=idempotency_key,
+                recovery_owner=current_job_owner(),
                 identity=current_editor_identity(),
                 client_id=str(metadata["client_id"]),
                 lease_token=str(metadata["lease_token"]),
@@ -1533,20 +2200,61 @@ def create_app(
             if claim["status"] == "replay":
                 return jsonify(claim["operation"]["response"])
             operation_context = dict(claim["operation"].get("context") or {})
+            editing_state_service.update_operation_context(
+                document_id, idempotency_key, request_digest=request_digest)
+            private_bundle_key = str(operation_context.get("private_bundle_key") or "")
 
             source_path = Path(str(operation_context.get("source_path") or path))
-            photo_target_path = archived_path or source_path
-            PhotoAttachmentService(photo_target_path).apply(
-                prepared_photos,
-                removed_photo_ids,
-            )
             graph_active_etag = str(operation_context.get("graph_active_etag") or "") or None
             graph_active_source_name = str(operation_context.get("graph_active_source_name") or "")
             if archived_path is None:
                 if graph_service is not None:
                     graph_active_source_name = graph_service.active_source_name(source_path)
                     graph_active_etag = graph_service.active_source_etag(source_path)
-                archived_path = archive_service.archive(source_path)
+                    if not graph_active_etag:
+                        raise GraphConflictError("O rascunho ainda não tem uma versão confirmada no SharePoint. Publique-o antes de finalizar.")
+                staged_path, target_path = finalization_service.prepare(source_path, f"{document_id}:{idempotency_key}")
+                try:
+                    PhotoAttachmentService(staged_path).apply(prepared_photos, removed_photo_ids)
+                    ExcelService(staged_path).write_link_from_form(
+                        document_to_excel_form(document_data), signatures=resolved_signatures,
+                        final=True, trusted_service_number=service_number,
+                    )
+                    DocumentDataService(staged_path).write(strip_signature_payload(public_document(document_data)))
+                    SignatureService(staged_path).save_from_form_data(document_payload)
+                    write_internal_observations(staged_path, internal_observations)
+                    DocumentArtifactService(staged_path).write_html(build_document_html(
+                        file_name=staged_path.stem, path=staged_path, payload=document_payload, auto_print=False,
+                    ))
+                    if checklist_complete:
+                        renderer = local_pdf_service or LocalPdfService()
+                        if app.config["MAINTENANCE_DEMO"]:
+                            build_maintenance_bundle(staged_path, document_data, renderer)
+                        else:
+                            private_bundle_key = private_maintenance.publish_bundle(
+                                staged_path, document_data, renderer, document_id,
+                                f"{document_id}:{idempotency_key}", target_path.name,
+                            )
+                    if (app.config["MAINTENANCE_ENABLED"] and not app.config["MAINTENANCE_DEMO"]
+                            and (document_data["maintenance_checklists"] or private_maintenance.read(document_id))):
+                        # Finalization can happen without a preceding draft save.
+                        # Retain unfinished/private data before retiring the source;
+                        # unprivileged input was replaced by trusted server data above.
+                        # An explicit clear replaces existing data, but a sheet that
+                        # never used SADI must not depend on writing its private folder.
+                        private_maintenance.write(document_id, document_data["maintenance_checklists"])
+                    editing_state_service.update_operation_context(
+                        document_id, idempotency_key, source_path=str(source_path),
+                        archived_path=str(target_path), prepared_document=document_payload,
+                        prepared_mail=mail_payload, prepared_teams=teams_payload,
+                        source_fingerprint=editing_state_service._fingerprint(source_path),
+                        graph_active_etag=graph_active_etag,
+                        graph_active_source_name=graph_active_source_name,
+                        private_bundle_key=private_bundle_key,
+                    )
+                    archived_path = finalization_service.publish(staged_path, target_path, f"{document_id}:{idempotency_key}")
+                finally:
+                    finalization_service.discard(staged_path)
                 editing_state_service.update_operation_context(
                     document_id,
                     idempotency_key,
@@ -1555,32 +2263,20 @@ def create_app(
                     graph_active_etag=graph_active_etag,
                     graph_active_source_name=graph_active_source_name,
                 )
-
-            excel_form_data = document_to_excel_form(document_data)
-            ExcelService(archived_path).write_link_from_form(
-                excel_form_data,
-                signatures=resolved_signatures,
-                final=True,
-                trusted_service_number=service_number,
-            )
-            DocumentDataService(archived_path).write(strip_signature_payload(document_data))
-            SignatureService(archived_path).save_from_form_data(document_payload)
-            internal_observations_path = write_internal_observations(
-                archived_path,
-                internal_observations,
-            )
-            document_html = build_document_html(
-                file_name=archived_path.stem,
-                path=archived_path,
-                payload=document_payload,
-                auto_print=False,
-            )
-            DocumentArtifactService(archived_path).write_html(document_html)
+            else:
+                mail_payload = operation_context.get("prepared_mail", mail_payload)
+                teams_payload = operation_context.get("prepared_teams", teams_payload)
+            internal_observations_path = archived_path.with_name(f"{archived_path.stem}__observacoes_internas.txt")
+            if not internal_observations_path.exists():
+                internal_observations_path = None
+            commit_guard = {"database": str(editing_state_service.repository.database_path.resolve()),
+                "document_id": document_id, "operation_id": idempotency_key}
             graph_uploaded_files = []
             graph_removed_active = False
             graph_sync_job = None
             if graph_service is not None and graph_sync_queue is not None:
                 graph_job_payload = {
+                    "_commit_guard": commit_guard,
                     "archived_path": str(archived_path),
                     "source_path": str(source_path),
                     "source_name": graph_active_source_name,
@@ -1590,15 +2286,16 @@ def create_app(
                     graph_job_payload["mail"] = mail_payload
                 if teams_payload is not None:
                     graph_job_payload["teams"] = teams_payload
-                graph_sync_job = graph_sync_queue.enqueue(
+                graph_sync_job = enqueue_owned_job(
                     "archive_and_remove",
                     graph_job_payload,
                     job_id=f"send:{document_id}:{idempotency_key}",
                 )
             elif mail_payload is not None and graph_sync_queue is not None:
-                graph_sync_job = graph_sync_queue.enqueue(
+                graph_sync_job = enqueue_owned_job(
                     "archive_and_mail_local",
                     {
+                        "_commit_guard": commit_guard,
                         "archived_path": str(archived_path),
                         "mail": mail_payload,
                         "teams": teams_payload,
@@ -1606,7 +2303,7 @@ def create_app(
                     job_id=f"send:{document_id}:{idempotency_key}",
                 )
 
-            file_service.invalidate_cache()
+            file_service.invalidate_cache(source_path)
             result = editing_state_service.commit_operation(
                 document_id=document_id,
                 idempotency_key=idempotency_key,
@@ -1635,6 +2332,15 @@ def create_app(
                         )
                     ),
                     "archived_excel": archived_path.name,
+                    "maintenance_bundle_url": (
+                        (
+                            url_for("maintenance_bundle_page", bundle=archived_path.parent.name)
+                            if app.config["MAINTENANCE_DEMO"] else
+                            url_for("private_maintenance_bundle_page", key=private_bundle_key)
+                        )
+                        if maintenance_access_allowed() and checklist_complete
+                        and (app.config["MAINTENANCE_DEMO"] or private_bundle_key) else None
+                    ),
                     "internal_observations": (
                         internal_observations_path.name if internal_observations_path else None
                     ),
@@ -1655,6 +2361,11 @@ def create_app(
                     ),
                 },
             )
+            context = editing_state_service.operation(document_id, idempotency_key)["context"]
+            try:
+                retire_committed_source(document_id, idempotency_key, context)
+            except OSError:
+                app.logger.exception("Arquivo completo; limpeza da origem será recuperada na próxima abertura.")
             log_event(
                 app.logger,
                 logging.INFO,
@@ -1666,10 +2377,14 @@ def create_app(
                 teams_queued=teams_payload is not None,
             )
             return jsonify(result)
+        except ProviderWaitError as exc:
+            if document_id and idempotency_key:
+                editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
+            return provider_waiting(exc)
         except PhotoAttachmentError as exc:
             if document_id and idempotency_key:
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
-            return json_error(str(exc), 400)
+            return json_error(str(exc), 400, code="attachments_invalid")
         except EditingStateError as exc:
             return editing_error_response(exc)
         except GraphConflictError as exc:
@@ -1677,14 +2392,14 @@ def create_app(
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
             return jsonify({
                 "success": False,
-                "error": str(exc),
+                "error": redact_diagnostic_text(exc),
                 "code": "graph_conflict",
                 "editing": editing_state_service.snapshot_document(document_id) if document_id else None,
             }), 409
         except ExcelValidationError as exc:
             if document_id and idempotency_key:
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
-            return json_error(str(exc), 400)
+            return json_error(str(exc), 400, code="document_invalid")
         except Exception as exc:
             if document_id and idempotency_key:
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
@@ -1696,9 +2411,10 @@ def create_app(
                 document_id=document_id or None,
                 exc_info=True,
             )
-            return json_error(str(exc), 500)
+            return diagnostic_failure("operation_failed", 500)
 
     @app.route("/api/file/<name>/cancel", methods=["POST"])
+    @exclusive_operation
     def cancel_file(name: str):
         received = request.get_json(silent=True) or {}
         document_id = ""
@@ -1728,6 +2444,8 @@ def create_app(
             if path is not None:
                 validate_document_identity(path, metadata)
 
+            if path is not None and graph_sync_queue is not None and graph_sync_queue.has_unfinished_upload(path):
+                raise GraphConflictError("A publicação do rascunho ainda não terminou; resolva-a antes de cancelar.")
             claim = editing_state_service.claim_operation(
                 document_id=document_id,
                 kind="cancel",
@@ -1741,30 +2459,35 @@ def create_app(
                 return jsonify(claim["operation"]["response"])
             context = dict(claim["operation"].get("context") or {})
             source_path = Path(str(context.get("source_path") or path))
-            graph_active_etag = str(context.get("graph_active_etag") or "") or None
-            graph_active_source_name = str(context.get("graph_active_source_name") or "")
+            remote_cancellation = context.get("remote_cancellation")
             if canceled_path is None:
                 if graph_service is not None:
-                    graph_active_source_name = graph_service.active_source_name(source_path)
-                    graph_active_etag = graph_service.active_source_etag(source_path)
-                canceled_path = archive_service.cancel(source_path)
-                editing_state_service.update_operation_context(
-                    document_id,
-                    idempotency_key,
-                    source_path=str(source_path),
-                    canceled_path=str(canceled_path),
-                    graph_active_etag=graph_active_etag,
-                    graph_active_source_name=graph_active_source_name,
-                )
+                    from src.services.graph_cancellation import prepare_cancellation
+                    remote_cancellation = prepare_cancellation(graph_service, source_path, f"{document_id}:{idempotency_key}")
+                staged, target = cancellation_service.prepare(source_path, f"{document_id}:{idempotency_key}")
+                try:
+                    # Persist target and identity BEFORE publishing. The source
+                    # survives until the editing commit, so either crash is recoverable.
+                    editing_state_service.update_operation_context(
+                        document_id, idempotency_key, source_path=str(source_path), canceled_path=str(target),
+                        source_fingerprint=editing_state_service._fingerprint(source_path),
+                        remote_cancellation=remote_cancellation,
+                    )
+                    canceled_path = cancellation_service.publish(staged, target, f"{document_id}:{idempotency_key}")
+                finally:
+                    cancellation_service.discard(staged)
+            elif not cancellation_service.owns(canceled_path, f"{document_id}:{idempotency_key}"):
+                raise EditingStateError("A cópia cancelada não tem confirmação de propriedade; requer recuperação.")
             graph_removed_active = False
             graph_sync_job = None
             if graph_service is not None and graph_sync_queue is not None:
-                graph_sync_job = graph_sync_queue.enqueue(
+                graph_sync_job = enqueue_owned_job(
                     "remove_active",
                     {
+                        "_commit_guard": {"database": str(editing_state_service.repository.database_path.resolve()),
+                                          "document_id": document_id, "operation_id": idempotency_key},
+                        "cancellation": remote_cancellation,
                         "source_path": str(source_path),
-                        "expected_etag": graph_active_etag,
-                        "source_name": graph_active_source_name,
                     },
                     job_id=f"cancel:{document_id}:{idempotency_key}",
                 )
@@ -1788,6 +2511,11 @@ def create_app(
                     ),
                 },
             )
+            try:
+                retire_committed_source(document_id, idempotency_key,
+                    editing_state_service.operation(document_id, idempotency_key)["context"])
+            except OSError:
+                app.logger.exception("Cancelamento completo; limpeza da origem será recuperada na próxima abertura.")
             log_event(
                 app.logger,
                 logging.INFO,
@@ -1797,6 +2525,10 @@ def create_app(
                 publication_queued=graph_sync_job is not None,
             )
             return jsonify(result)
+        except ProviderWaitError as exc:
+            if document_id and idempotency_key:
+                editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
+            return provider_waiting(exc)
         except EditingStateError as exc:
             return editing_error_response(exc)
         except GraphConflictError as exc:
@@ -1804,7 +2536,7 @@ def create_app(
                 editing_state_service.fail_operation(document_id, idempotency_key, str(exc))
             return jsonify({
                 "success": False,
-                "error": str(exc),
+                "error": redact_diagnostic_text(exc),
                 "code": "graph_conflict",
                 "editing": editing_state_service.snapshot_document(document_id) if document_id else None,
             }), 409
@@ -1819,8 +2551,11 @@ def create_app(
                 document_id=document_id or None,
                 exc_info=True,
             )
-            return json_error(str(exc), 500)
+            return diagnostic_failure("operation_failed", 500)
 
+    from src.web.admin import register_admin
+    register_admin(app, editing_state_service, graph_sync_queue, graph_refresh_coordinator,
+                   lambda: AUTH_ENABLED and ACTIVE_AUTH_PROVIDER == "microsoft")
     return app
 
 

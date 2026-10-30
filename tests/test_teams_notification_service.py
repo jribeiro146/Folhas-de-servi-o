@@ -57,7 +57,9 @@ def test_teams_notification_posts_an_adaptive_card(monkeypatch):
         captured["payload"] = json.loads(req.data.decode("utf-8"))
         return FakeResponse()
 
-    monkeypatch.setattr(teams_module.request, "urlopen", fake_urlopen)
+    service = TeamsNotificationService(
+        TeamsNotificationConfig(webhook_url="https://example.test/teams-workflow"), transport=fake_urlopen,
+    )
 
     result = service.send_prepared(prepared, operation_id="teams:send:FS-123")
 
@@ -86,15 +88,15 @@ def test_queue_notifies_teams_in_a_separate_job_after_mail(tmp_path):
             pdf_path.write_bytes(b"%PDF-1.7\nqueue")
             return pdf_path
 
-    class FakeMail:
-        @staticmethod
-        def send_prepared(prepared, attachment_path, *, operation_id):
+    from tests.fixed_mail_fake import FixedMailFake
+    class FakeMail(FixedMailFake):
+        def send_delivery(self, delivery, *, request_id=None):
             events.append("mail")
-            return {"accepted": True, "to": prepared["to"]}
+            return {"accepted": True, "to": self.message(delivery)["toRecipients"][0]["emailAddress"]["address"]}
 
-    class FakeTeams:
+    class FakeTeams(TeamsNotificationService):
         @staticmethod
-        def send_prepared(prepared, *, operation_id):
+        def send_prepared(prepared, *, operation_id, request_id=None):
             events.append("teams")
             return {
                 "accepted": True,
@@ -106,7 +108,8 @@ def test_queue_notifies_teams_in_a_separate_job_after_mail(tmp_path):
         tmp_path / "mail-and-teams.sqlite3",
         mail_service=FakeMail(),
         local_pdf_service=FakeLocalPdf(),
-        teams_notification_service=FakeTeams(),
+        teams_notification_service=FakeTeams(
+            TeamsNotificationConfig("https://example.invalid/teams"), transport=lambda *a, **kw: None),
     )
     parent = queue.enqueue(
         "archive_and_mail_local",

@@ -63,6 +63,7 @@ const startEditingCoordinator = () => {
 
     let editing = {};
     let sessionToken = "";
+    let revoked = false;
     let dirty = false;
     let hydrating = false;
     let readOnly = true;
@@ -72,7 +73,7 @@ const startEditingCoordinator = () => {
     let serverSaveTimer = null;
     let retryTimer = null;
     let retryAttempt = 0;
-    let autosaveInFlight = false;
+    let autosaveInFlight = null;
     let autosaveQueued = false;
     let pendingAutosave = null;
     let pendingPanelAction = null;
@@ -81,13 +82,26 @@ const startEditingCoordinator = () => {
     let sourcePhotos = [];
     let otherTabActive = false;
     let resumeConflictPending = false;
+    let initialConflictPending = false;
     let resumePromise = null;
+    let initializing = false;
+    let reinitializeRequested = false;
+    let initialRecoveryPending = false;
+    let recoveryRequiresReload = false;
+    let resumeSnapshot = null;
+    let tabClaimPending = false;
     const operationKeys = new Map();
+    let commitPending = false;
+    let operationPreparation = null;
 
     const showToast = (message, variant = "info") => editor.showToast?.(message, variant);
 
     const setAutosaveStatus = (message, state = "idle") => {
         if (!autosaveStatus) return;
+        if (revoked) {
+            message = "Acesso de edição retirado pelo administrador";
+            state = "conflict";
+        }
         autosaveStatus.hidden = false;
         autosaveStatus.textContent = message;
         autosaveStatus.dataset.state = state;
@@ -105,6 +119,7 @@ const startEditingCoordinator = () => {
     };
 
     const setCommitActionsEnabled = (enabled) => {
+        enabled = enabled && !revoked && !initialRecoveryPending && !resumeSnapshot && !operationPreparation;
         const draftButton = document.getElementById("btn-save-draft");
         const sendButton = document.getElementById("btn-save-send");
         const cancelButton = document.getElementById("btn-cancel-file");
@@ -114,7 +129,7 @@ const startEditingCoordinator = () => {
     };
 
     const setFormReadOnly = (value, ownerName = "") => {
-        readOnly = Boolean(value);
+        readOnly = revoked || initialRecoveryPending || initialConflictPending || Boolean(resumeSnapshot) || Boolean(value);
         form.classList.toggle("is-readonly", readOnly);
         form.querySelectorAll("input, select, textarea, button").forEach((control) => {
             if (!control.dataset.editingInitialDisabled) {
@@ -125,7 +140,13 @@ const startEditingCoordinator = () => {
         editor.renderAttachments?.();
         if (lockBanner) lockBanner.hidden = !readOnly;
         if (retryButton) retryButton.hidden = true;
-        if (readOnly) {
+        if (revoked) {
+            if (lockTitle) lockTitle.textContent = "Edição encerrada pelo administrador";
+            if (lockMessage) lockMessage.textContent = "Mantenha esta página aberta se tiver alterações por guardar. Peça a reposição do acesso antes de voltar a editar.";
+        } else if (initialConflictPending && !otherTabActive) {
+            if (lockTitle) lockTitle.textContent = "Escolha a versão a manter";
+            if (lockMessage) lockMessage.textContent = "As duas versões estão preservadas. Use «Usar servidor» ou «Usar este dispositivo» para continuar.";
+        } else if (readOnly) {
             if (lockTitle) lockTitle.textContent = "Rascunho em modo de consulta";
             if (lockMessage) {
                 const owner = ownerName || editing.owner?.owner_name || "outro técnico";
@@ -205,7 +226,11 @@ const startEditingCoordinator = () => {
     };
 
     const persistLocalRecovery = async ({ announce = false, force = false } = {}) => {
-        if ((!dirty && !force) || !editing.document_id) return null;
+        // All tabs share this record. A read-only observer must never replace
+        // the active editor's newer recovery, including on pagehide.
+        // The initial conflict preview shows the server version. Until an
+        // explicit choice, never replace the original local recovery with it.
+        if (initialConflictPending || otherTabActive || (!dirty && !force) || !editing.document_id) return null;
         try {
             const record = {
                 key: recoveryKey(),
@@ -213,7 +238,10 @@ const startEditingCoordinator = () => {
                 documentId: editing.document_id,
                 fileName: activeFileName,
                 clientId,
-                baseRevision: Number(editing.revision || 1),
+                baseRevision: Number(resumeSnapshot?.revision || editing.revision || 1),
+                // A fresh bootstrap revision is not consent to replace it.
+                // Keep the unresolved choice through reload/OS tab eviction.
+                conflict: resumeConflictPending,
                 payload: editor.collectFormData(),
                 updatedAt: Date.now(),
                 expiresAt: Date.now() + recoveryMaxAgeMs,
@@ -251,6 +279,16 @@ const startEditingCoordinator = () => {
         const value = { ...(payload || {}) };
         delete value["Assinatura Cliente"];
         delete value["Assinatura Técnico"];
+        // Bootstrap may omit empty private checklists and normalize an empty
+        // material list to a blank row. Compare their meaning without changing
+        // the original recovery or hiding real/unknown material fields.
+        if (value.maintenance_checklists === undefined) value.maintenance_checklists = [];
+        if (Array.isArray(value.materials)) {
+            value.materials = value.materials.filter(row => !(
+                row && Object.keys(row).length === 3
+                && row.qty === "" && row.ref === "" && row.description === ""
+            ));
+        }
         const sort = (item) => {
             if (Array.isArray(item)) return item.map(sort);
             if (item && typeof item === "object") {
@@ -275,8 +313,12 @@ const startEditingCoordinator = () => {
     const hasActiveSession = () => Boolean(
         initialized
         && !readOnly
+        && !revoked
         && !otherTabActive
         && !resumeConflictPending
+        && !commitPending
+        && !initialRecoveryPending
+        && !resumeSnapshot
         && editing.document_id
         && clientId
         && sessionToken
@@ -293,6 +335,10 @@ const startEditingCoordinator = () => {
                 "A sessão de edição ainda não está pronta. Aguarde alguns segundos e tente novamente."
             );
         }
+        const pending = ["send", "draft"].includes(kind) ? window.SensorpointCommitRecovery?.read(activeFileName) : null;
+        if (pending?.kind === kind && pending.documentId === editing.document_id) {
+            operationKeys.set(kind, pending.operationId);
+        }
         if (!operationKeys.has(kind)) operationKeys.set(kind, makeId());
         return editMetadata(operationKeys.get(kind));
     };
@@ -306,7 +352,10 @@ const startEditingCoordinator = () => {
     };
 
     const showConflictPanel = (localRecord, remotePayload, title = "Existem duas versões da folha") => {
-        pendingPanelAction = { kind: "conflict", localRecord, remotePayload };
+        pendingPanelAction = { kind: "conflict", localRecord, remotePayload,
+            sourceToken: editing.source_conflict?.token || null, sourceReady: Boolean(remotePayload) };
+        if (ignoreRecoveryButton) ignoreRecoveryButton.disabled = false;
+        if (restoreRecoveryButton) restoreRecoveryButton.disabled = false;
         recoveryPanel?.classList.add("is-conflict");
         if (recoveryPanel) recoveryPanel.hidden = false;
         if (recoveryEyebrow) recoveryEyebrow.textContent = "Conflito protegido";
@@ -315,11 +364,63 @@ const startEditingCoordinator = () => {
         if (recoveryTimestamp) recoveryTimestamp.textContent = "A cópia deste dispositivo continua guardada.";
         if (ignoreRecoveryButton) ignoreRecoveryButton.textContent = "Usar servidor";
         if (restoreRecoveryButton) restoreRecoveryButton.textContent = "Usar este dispositivo";
+        if (pendingPanelAction.sourceToken) {
+            if (ignoreRecoveryButton) ignoreRecoveryButton.textContent = "Usar versão atual da folha";
+            if (restoreRecoveryButton) restoreRecoveryButton.textContent = "Continuar este rascunho";
+            if (recoveryTimestamp) recoveryTimestamp.textContent = "O rascunho recuperável foi preservado.";
+        }
+    };
+
+    const loadSourceConflict = async (action) => {
+        if (action.loadingSource || revoked || pendingPanelAction !== action) return;
+        action.loadingSource = true;
+        if (ignoreRecoveryButton) ignoreRecoveryButton.disabled = true;
+        if (restoreRecoveryButton) restoreRecoveryButton.disabled = true;
+        try {
+            // This read deliberately bypasses resumeEditingSession's conflict
+            // guard. It never chooses a version or submits an autosave.
+            const result = await loadBootstrap();
+            if (revoked || otherTabActive || pendingPanelAction !== action) return;
+            editing = { ...editing, ...result.editing };
+            sessionToken = result.editing?.lease?.token || sessionToken;
+            sourceSignatures = result.signatures || {};
+            sourcePhotos = result.photos || [];
+            serverPayload = result.editing?.server_document || result.document || null;
+            showConflictPanel({ ...action.localRecord, payload: editor.collectFormData(),
+                baseRevision: Number(editing.revision || 1), updatedAt: Date.now() },
+                editing.source_conflict ? result.source_document : result.document,
+                "Confirme a versão a continuar");
+            await persistLocalRecovery({ force: true });
+        } catch (error) {
+            if (revoked || pendingPanelAction !== action) return;
+            if (recoveryMessage) recoveryMessage.textContent = "Não foi possível obter a versão atual. O rascunho continua preservado.";
+            if (ignoreRecoveryButton) {
+                ignoreRecoveryButton.textContent = "Voltar a obter versões";
+                ignoreRecoveryButton.disabled = false;
+            }
+        } finally {
+            action.loadingSource = false;
+        }
     };
 
     const handleConflict = (result) => {
+        if (revoked) return true;
+        if (result?.code === "lease_revoked") {
+            if (dirty) persistLocalRecovery({ force: true });
+            revoked = true;
+            sessionToken = "";
+            window.clearTimeout(serverSaveTimer);
+            window.clearTimeout(retryTimer);
+            hideRecoveryPanel();
+            setFormReadOnly(true);
+            setCommitActionsEnabled(false);
+            setAutosaveStatus("Acesso de edição retirado pelo administrador", "conflict");
+            return true;
+        }
         if (["editing_session_required", "lease_required"].includes(result?.code)) {
-            editing = { ...editing, ...(result.editing || {}) };
+            // The form still belongs to its old revision until resume checks
+            // the newly acquired server state for conflicting edits.
+            editing = { ...editing, ...(result.editing || {}), revision:editing.revision };
             sessionToken = "";
             syncCommitActions();
             resumeEditingSession();
@@ -338,7 +439,9 @@ const startEditingCoordinator = () => {
         syncCommitActions();
         persistLocalRecovery({ force: true });
         setAutosaveStatus("Conflito — escolha a versão a manter", "conflict");
-        showConflictPanel(localRecord, serverPayload, "A folha foi alterada noutra sessão");
+        showConflictPanel(localRecord, editing.source_conflict ? null : serverPayload,
+            "A folha foi alterada noutra sessão");
+        if (editing.source_conflict) loadSourceConflict(pendingPanelAction);
         return true;
     };
 
@@ -350,6 +453,9 @@ const startEditingCoordinator = () => {
     };
 
     const runAutosave = async ({ keepalive = false } = {}) => {
+        // No timer, network return or lifecycle callback may choose a version
+        // for the user while the conflict panel is awaiting their decision.
+        if (commitPending || operationPreparation || resumeConflictPending) return false;
         if (autosaveInFlight) {
             autosaveQueued = true;
             return false;
@@ -362,7 +468,9 @@ const startEditingCoordinator = () => {
             return false;
         }
 
-        autosaveInFlight = true;
+        let finishAutosave;
+        let confirmed = false;
+        autosaveInFlight = new Promise(resolve => { finishAutosave = resolve; });
         autosaveQueued = false;
         const payload = editor.collectFormData();
         const serialized = JSON.stringify(payload);
@@ -389,7 +497,14 @@ const startEditingCoordinator = () => {
                 keepalive,
             });
             const result = await response.json();
+            // A successful reply may predate the revocation received by heartbeat.
+            if (revoked) return false;
             if (!response.ok || !result.success) {
+                // These explicit refusals confirm that this autosave did not
+                // write. Resolving the conflict must use the current revision
+                // and a new key; unknown/network failures retain the old key.
+                if (["revision_conflict", "graph_conflict"].includes(result.code)
+                        && pendingAutosave?.key === requestState.key) pendingAutosave = null;
                 if (handleConflict(result)) return false;
                 if ([401, 423].includes(response.status)) {
                     setFormReadOnly(true, result.editing?.owner?.owner_name);
@@ -405,8 +520,10 @@ const startEditingCoordinator = () => {
             setCommitActionsEnabled(true);
             if (pendingAutosave?.key === requestState.key) pendingAutosave = null;
 
+            const unchanged = JSON.stringify(editor.collectFormData()) === requestState.serialized;
+            editor.reconcileSignatures?.(payload, serverPayload);
             const currentPayload = editor.collectFormData();
-            if (JSON.stringify(currentPayload) === requestState.serialized) {
+            if (unchanged) {
                 const attachmentsPending = Boolean(editor.hasPendingPhotoChanges?.());
                 dirty = attachmentsPending;
                 window.clearTimeout(localSaveTimer);
@@ -430,8 +547,10 @@ const startEditingCoordinator = () => {
                 await persistLocalRecovery();
                 autosaveQueued = true;
             }
+            confirmed = true;
             return true;
         } catch (error) {
+            if (revoked) return false;
             await persistLocalRecovery({ force: true });
             setCommitActionsEnabled(false);
             setAutosaveStatus(
@@ -443,8 +562,9 @@ const startEditingCoordinator = () => {
             scheduleRetry();
             return false;
         } finally {
-            autosaveInFlight = false;
-            if (autosaveQueued && dirty && !readOnly) {
+            autosaveInFlight = null;
+            finishAutosave(confirmed);
+            if (!operationPreparation && autosaveQueued && dirty && !readOnly) {
                 autosaveQueued = false;
                 window.clearTimeout(serverSaveTimer);
                 serverSaveTimer = window.setTimeout(() => runAutosave(), 100);
@@ -466,6 +586,10 @@ const startEditingCoordinator = () => {
         if (event?.target?.closest?.("#photos-section")) return;
         if (hydrating || readOnly || !initialized) return;
         dirty = true;
+        if (pendingPanelAction?.sourceToken) {
+            pendingPanelAction.localRecord = { ...pendingPanelAction.localRecord,
+                payload: editor.collectFormData(), updatedAt: Date.now() };
+        }
         setAutosaveStatus("A guardar neste dispositivo…", "saving");
         schedulePersistence();
     };
@@ -499,6 +623,11 @@ const startEditingCoordinator = () => {
     };
 
     const resumeEditingSession = async () => {
+        if (revoked || recoveryRequiresReload) return false;
+        if (initialRecoveryPending) {
+            await initialize();
+            return hasActiveSession();
+        }
         if (hasActiveSession()) return true;
         if (
             !initialized
@@ -508,17 +637,39 @@ const startEditingCoordinator = () => {
         ) return false;
         if (resumePromise) return resumePromise;
 
-        const previousRevision = Number(editing.revision || 1);
-        const localPayload = editor.collectFormData();
+        window.clearTimeout(localSaveTimer);
+        window.clearTimeout(serverSaveTimer);
+        window.clearTimeout(retryTimer);
+        // A retry must use the latest suspended form, not an older IndexedDB
+        // record. Keep its original revision until the conflict check succeeds.
+        resumeSnapshot ||= {payload:editor.collectFormData(), revision:Number(editing.revision || 1)};
+        const previousRevision = resumeSnapshot.revision;
+        // Verification can restore missing checklists. Keep the suspended
+        // snapshot unchanged until resume succeeds, so a blocked retry checks
+        // the latest server data again instead of reusing an earlier response.
+        const localPayload = { ...resumeSnapshot.payload };
         setFormReadOnly(true);
+        editor.setVerificationPending?.(true);
         setCommitActionsEnabled(false);
         setAutosaveStatus("A retomar a sessão de edição…", "saving");
 
         resumePromise = (async () => {
             try {
                 const result = await loadBootstrap();
+                if (revoked) return false;
                 const resumedEditing = { ...(result.editing || {}) };
-                const remotePayload = result.document || result.source_document || {};
+                editing = { ...editing, ...resumedEditing, revision:previousRevision };
+                sessionToken = resumedEditing.lease?.token || "";
+                serverPayload = resumedEditing.server_document || result.document || result.source_document || {};
+                if (!sessionToken || !editing.document_id) throw new Error("Não foi possível retomar a sessão de edição.");
+                const verifiedLocal = editor.verifyRecovery ? await editor.verifyRecovery(localPayload) : localPayload;
+                if (revoked) return false;
+                const rejectedSignatures = editor.reconcileSignatures?.(localPayload, verifiedLocal);
+                // Keep the conflict choice and future autosaves free of rejected
+                // proofs, while retaining all edits made before suspension.
+                localPayload.maintenance_checklists = verifiedLocal.maintenance_checklists;
+                const remotePayload = resumedEditing.source_conflict
+                    ? result.source_document || {} : result.document || result.source_document || {};
                 const revisionChanged = Number(resumedEditing.revision || 1) !== previousRevision;
                 const contentChanged = comparablePayload(remotePayload) !== comparablePayload(localPayload);
 
@@ -527,16 +678,28 @@ const startEditingCoordinator = () => {
                 serverPayload = resumedEditing.server_document || remotePayload;
                 sourceSignatures = result.signatures || sourceSignatures;
                 sourcePhotos = result.photos || sourcePhotos;
-
-                if (!sessionToken || !editing.document_id) {
-                    throw new Error("Não foi possível retomar a sessão de edição.");
+                await checkOtherTab();
+                if (revoked) return false;
+                // Another tab may have started editing while this one could
+                // not verify its recovery. Never enable two editors on retry.
+                if (otherTabActive) return false;
+                const restoredMaintenance = !resumeSnapshot.payload.maintenance_checklists?.length
+                    && Boolean(verifiedLocal.maintenance_checklists?.length);
+                if (restoredMaintenance) {
+                    // The comparison above includes the recovered sites. Make
+                    // the visible form match it before granting editing rights
+                    // or saving; otherwise the next new site could replace them.
+                    editor.applyMaintenanceRecovery(verifiedLocal);
                 }
-
-                setFormReadOnly(false);
-                if (revisionChanged && contentChanged) {
+                if (rejectedSignatures || restoredMaintenance) await persistLocalRecovery({ force:true });
+                if (revoked || otherTabActive) return false;
+                editor.setVerificationPending?.(false);
+                if (resumedEditing.source_conflict || (revisionChanged && contentChanged)) {
                     resumeConflictPending = true;
                     dirty = true;
                     await persistLocalRecovery({ force: true });
+                    resumeSnapshot = null;
+                    setFormReadOnly(false);
                     showConflictPanel(
                         {
                             payload: localPayload,
@@ -552,22 +715,25 @@ const startEditingCoordinator = () => {
                 }
 
                 resumeConflictPending = false;
+                resumeSnapshot = null;
+                setFormReadOnly(false);
                 syncCommitActions();
                 setAutosaveStatus("Sessão de edição retomada", "saved");
                 if (dirty) await runAutosave();
                 return hasActiveSession();
             } catch (error) {
+                if (revoked) return false;
                 const result = error.result || {};
-                editing = { ...editing, ...(result.editing || {}) };
-                sessionToken = "";
-                if (error.status === 423) {
-                    setFormReadOnly(true, result.editing?.owner?.owner_name);
-                    setAutosaveStatus("Modo de consulta — rascunho aberto noutra sessão", "conflict");
-                } else {
-                    setFormReadOnly(false);
-                    setAutosaveStatus("Não foi possível retomar a sessão — tente novamente", "offline");
-                }
+                if (result.code === "lease_revoked") { handleConflict(result); return false; }
+                editing = { ...editing, ...(result.editing || {}), revision:previousRevision };
+                if (error.status === 423) sessionToken = "";
+                // Preserve both the acquired reservation and the unmodified
+                // form. No autosave/close may publish it before verification.
+                setFormReadOnly(true, result.editing?.owner?.owner_name);
                 setCommitActionsEnabled(false);
+                showVerificationRetry(error.status === 423
+                    ? `A reserva pertence a ${editing.owner?.owner_name || "outro técnico"}. O formulário mais recente continua nesta página; volte a tentar quando a outra sessão terminar.`
+                    : "O formulário mais recente continua nesta página. Volte a tentar antes de editar.");
                 showToast(error.message, "error");
                 return false;
             } finally {
@@ -578,29 +744,119 @@ const startEditingCoordinator = () => {
         return resumePromise;
     };
 
+    const showVerificationRetry = (message) => {
+        setAutosaveStatus("Recuperação por confirmar — apenas consulta; volte a tentar", "offline");
+        if (lockTitle) lockTitle.textContent = "Não foi possível confirmar a recuperação";
+        if (lockMessage) lockMessage.textContent = recoveryRequiresReload
+            ? "A sessão mudou. Recarregue para retomar; as alterações deste dispositivo continuam guardadas."
+            : message;
+        if (retryButton) { retryButton.hidden = false; retryButton.disabled = false; retryButton.textContent = recoveryRequiresReload ? "Recarregar" : "Voltar a tentar"; }
+    };
+
+    const checkOtherTab = async () => {
+        if (!selectedFileIsDraft || !tabChannel) return;
+        // A previous active message may outlive its tab (including a missed
+        // closing event). Only replies to this fresh probe may block retry.
+        otherTabActive = false;
+        tabClaimPending = true;
+        try {
+            tabChannel.postMessage({type:"hello", fileName:activeFileName, userId:editorUser.id, instanceId:tabInstanceId});
+            await new Promise(resolve => window.setTimeout(resolve, 100));
+        } finally { tabClaimPending = false; }
+    };
+
+    const resolvePendingCommit = async () => {
+        const recovery = window.SensorpointCommitRecovery;
+        const operation = await recovery?.lookup(activeFileName);
+        if (!operation) return false;
+        if (operation.status === "pending") {
+            throw new Error("A gravação ainda está por confirmar. Volte a consultar; nenhum envio será repetido.");
+        }
+        if (["failed", "interrupted"].includes(operation.status)) {
+            // A confirmed failed attempt may have an old prepared archive. The
+            // next explicit save must capture the current form under a new key.
+            // Draft retries rewrite the current form into the already recorded
+            // copy. Keep its key across reloads; a fresh key would create a second
+            // copy. Send retries need a new immutable archive instead.
+            if (operation.kind === "send" || operation.result?.code === "draft_copy_unavailable") {
+                operationKeys.delete(operation.kind);
+                recovery.clear(activeFileName);
+            }
+            if (operation.status === "interrupted" && initialized && !initializing) {
+                // GET only proves that the writer stopped; bootstrap must retire
+                // its pending state before autosave can resume. Preserve this
+                // page's latest form and use the existing verified-resume path,
+                // including its conflict, offline and other-tab protections.
+                resumeSnapshot ||= {payload:editor.collectFormData(), revision:Number(editing.revision || 1)};
+                sessionToken = "";
+                commitPending = false;
+                setFormReadOnly(true);
+                setCommitActionsEnabled(false);
+                await persistLocalRecovery({ force:true });
+                showVerificationRetry("O formulário mais recente continua nesta página. Volte a tentar antes de editar.");
+                await resumeEditingSession();
+            }
+            return false;
+        }
+        if (operation.status !== "complete") return false;
+        if (operation.result?.success !== true) throw new Error("Conclusão da gravação inválida.");
+        // A receipt, not another POST, is the authority after response loss.
+        // Do not reopen the retired file or revive its local autosave.
+        commitPending = true;
+        dirty = false;
+        sessionToken = "";
+        window.clearTimeout(serverSaveTimer);
+        window.clearTimeout(retryTimer);
+        await deleteRecovery(`${editorUser.id}:${operation.record.documentId}`).catch(() => {});
+        await editor.resumeCompletedCommit(operation.result, operation.kind, operation.record.scope);
+        recovery.clear(activeFileName);
+        return true;
+    };
+
     const initialize = async () => {
+        if (initializing || revoked) return;
+        initializing = true;
+        initialized = false;
+        let bootstrapResult = null;
         setBooting(true);
         setFormReadOnly(true);
         setAutosaveStatus("A abrir a área de trabalho…", "saving");
-        const localRecoveryPromise = readLatestRecoveryForFile().catch(() => null);
+        let recoveryReadError = null;
+        let localRecoveryPromise;
+        const getLocalRecovery = () => localRecoveryPromise ||= readLatestRecoveryForFile().catch(error => {
+            recoveryReadError = error;
+            return null;
+        });
         try {
+            if (await resolvePendingCommit()) return;
             const result = await loadBootstrap();
-            const localRecovery = await localRecoveryPromise;
+            bootstrapResult = result;
+            // Keep the acquired reservation even when checking recovery fails,
+            // so heartbeat/close can account for it. It grants no editing rights
+            // until the recovery decision has completed successfully.
             editing = { ...(result.editing || {}) };
             sessionToken = result.editing?.lease?.token || "";
             serverPayload = result.editing?.server_document || result.document || null;
+            // Read the shared copy after probing the editor. A closing tab may
+            // have discarded it while bootstrap was still in progress.
+            await checkOtherTab();
+            if (revoked || reinitializeRequested) return;
+            let localRecovery = await getLocalRecovery();
+            // An observer must distinguish a discarded copy from an unreadable
+            // store before replacing the conflict it originally displayed.
+            if (initialConflictPending && recoveryReadError) throw recoveryReadError;
+            if (localRecovery?.payload && editor.verifyRecovery) {
+                localRecovery = {...localRecovery, payload:await editor.verifyRecovery(localRecovery.payload)};
+            }
+            if (revoked) return;
             sourceSignatures = result.signatures || {};
             sourcePhotos = result.photos || [];
-            if (selectedFileIsDraft && tabChannel) {
-                tabChannel.postMessage({
-                    type: "hello",
-                    fileName: activeFileName,
-                    userId: editorUser.id,
-                    instanceId: tabInstanceId,
-                });
-                await new Promise((resolve) => window.setTimeout(resolve, 100));
-            }
+            await checkOtherTab();
+            if (revoked || reinitializeRequested) return;
 
+            resumeConflictPending = false;
+            initialConflictPending = false;
+            hideRecoveryPanel();
 
             let initialPayload = result.document || result.source_document || {};
             let initialSignatures = sourceSignatures;
@@ -613,14 +869,15 @@ const startEditingCoordinator = () => {
                     if (payloadHasSignatures(localRecovery.payload)) {
                         initialPayload = localRecovery.payload;
                         initialSignatures = localRecovery.payload;
-                    } else {
+                    } else if (!otherTabActive) {
                         deleteRecovery(localRecovery.key).catch(() => {});
                     }
                 } else if (
-                    result.editing?.server_document
-                    && Number(localRecovery.baseRevision || 1) < Number(editing.revision || 1)
+                    localRecovery.conflict === true || (result.editing?.server_document
+                    && Number(localRecovery.baseRevision || 1) < Number(editing.revision || 1))
                 ) {
                     resumeConflictPending = true;
+                    initialConflictPending = true;
                     showConflictPanel(localRecovery, initialPayload);
                 } else {
                     initialPayload = localRecovery.payload;
@@ -629,13 +886,34 @@ const startEditingCoordinator = () => {
                 }
             }
 
+            if (editing.source_conflict) {
+                // Display the recovery, and persist edits to that recovery;
+                // the current source stays a separate, explicitly chosen version.
+                initialPayload = localRecovery?.payload || result.editing?.server_document || initialPayload;
+                initialSignatures = localRecovery?.payload || sourceSignatures;
+                resumeConflictPending = true;
+                initialConflictPending = false;
+                shouldSave = false;
+                showConflictPanel({ ...localRecovery, payload: initialPayload,
+                    baseRevision: Number(editing.revision || 1), updatedAt: Date.now() },
+                    result.source_document || {}, "Confirme a versão a continuar");
+            }
+
             applyPayload(initialPayload, initialSignatures, { shouldSave });
+            if (editing.source_conflict) {
+                dirty = true;
+                await persistLocalRecovery({ force: true });
+            }
+            if (localRecovery?.payload === initialPayload) await persistLocalRecovery({ force:true });
+            initialRecoveryPending = false;
             initialized = true;
             setFormReadOnly(otherTabActive, otherTabActive ? "outra aba deste técnico" : "");
             syncCommitActions();
             setBooting(false);
             if (otherTabActive) {
                 setAutosaveStatus("Modo de consulta — rascunho aberto noutra aba", "conflict");
+            } else if (resumeConflictPending) {
+                setAutosaveStatus("Conflito — escolha a versão a manter", "conflict");
             } else if (shouldSave) {
                 setAutosaveStatus("Alterações recuperadas — a guardar no servidor…", "saving");
                 schedulePersistence();
@@ -649,50 +927,150 @@ const startEditingCoordinator = () => {
             }
             pruneExpiredRecoveries().catch(() => {});
         } catch (error) {
-            const result = error.result || {};
+            if (revoked || reinitializeRequested) return;
+            recoveryRequiresReload = error.code === "mail_monitor_session_changed";
+            const result = bootstrapResult || error.result || {};
             editing = { ...editing, ...(result.editing || {}) };
-            const localRecovery = await localRecoveryPromise;
+            const localRecovery = await getLocalRecovery();
             if (result.document) {
                 sourcePhotos = result.photos || sourcePhotos;
                 applyPayload(result.document, result.signatures || {}, { shouldSave: false });
             } else if (localRecovery?.payload) {
-                applyPayload(localRecovery.payload, localRecovery.payload, { shouldSave: false });
+                const preview = editor.pendingRecovery ? editor.pendingRecovery(localRecovery.payload) : localRecovery.payload;
+                applyPayload(preview, preview, { shouldSave: false });
             }
+            initialRecoveryPending = true;
             initialized = true;
             setBooting(false);
+            if (handleConflict(result)) return;
             if (error.status === 423) {
                 setFormReadOnly(true, result.editing?.owner?.owner_name);
                 setAutosaveStatus("Modo de consulta — rascunho de outro técnico", "conflict");
             } else {
-                setFormReadOnly(false);
+                setFormReadOnly(true);
                 setCommitActionsEnabled(false);
-                setAutosaveStatus("Servidor indisponível — pode consultar a cópia local", "offline");
+                showVerificationRetry("A cópia original deste dispositivo continua guardada. Volte a tentar antes de editar.");
                 showToast(error.message, "error");
+            }
+        } finally {
+            initializing = false;
+            if (reinitializeRequested && !revoked) {
+                reinitializeRequested = false;
+                initialize();
             }
         }
     };
 
+    retryButton?.addEventListener("click", async () => {
+        if (revoked) return;
+        if (recoveryRequiresReload) {
+            await persistLocalRecovery({ force:true });
+            await leavePage(() => window.location.reload());
+            return;
+        }
+        if (initialRecoveryPending) await initialize();
+        else await resumeEditingSession();
+    });
+
+    const resolveSourceChoice = async (action, payload, signatures) => {
+        // This is invoked only by the two explicit choice buttons. Timers,
+        // reconnect and pagehide never carry the source-resolution token.
+        if (!action.sourceReady) {
+            await loadSourceConflict(action);
+            return false;
+        }
+        const serialized = JSON.stringify(payload);
+        if (!action.resolution || action.resolution.serialized !== serialized) {
+            action.resolution = { key: makeId(), serialized, baseRevision: Number(editing.revision || 1) };
+        }
+        const requestState = action.resolution;
+        setFormReadOnly(true);
+        if (ignoreRecoveryButton) ignoreRecoveryButton.disabled = true;
+        if (restoreRecoveryButton) restoreRecoveryButton.disabled = true;
+        try {
+            const response = await fetch(`/api/file/${encodeURIComponent(activeFileName)}/autosave`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ document: payload, source_resolution: action.sourceToken,
+                    _edit: { ...editMetadata(requestState.key), base_revision: requestState.baseRevision } }),
+            });
+            const result = await response.json();
+            if (revoked || otherTabActive || pendingPanelAction !== action) return false;
+            if (!response.ok || !result.success || result.editing?.source_conflict) {
+                if (!handleConflict(result)) showToast(result.error || "A escolha não foi confirmada. Volte a tentar.", "error");
+                return false;
+            }
+            editing = { ...editing, ...result.editing };
+            sessionToken = result.editing?.lease?.token || sessionToken;
+            serverPayload = result.editing?.server_document || payload;
+            pendingAutosave = null;
+            resumeConflictPending = false;
+            initialConflictPending = false;
+            applyPayload(payload, signatures);
+            hideRecoveryPanel();
+            await persistLocalRecovery({ force: true });
+            syncCommitActions();
+            setAutosaveStatus("Versão escolhida guardada no servidor", "saved");
+            return true;
+        } catch (error) {
+            showToast(error.message || "Não foi possível confirmar a escolha. O rascunho foi preservado.", "error");
+            return false;
+        } finally {
+            if (ignoreRecoveryButton) ignoreRecoveryButton.disabled = false;
+            if (restoreRecoveryButton) restoreRecoveryButton.disabled = false;
+            setFormReadOnly(otherTabActive || revoked || !sessionToken);
+            syncCommitActions();
+        }
+    };
+
     ignoreRecoveryButton?.addEventListener("click", async () => {
+        if (revoked || otherTabActive || initializing || initialRecoveryPending) return;
         const action = pendingPanelAction;
         if (!action) return hideRecoveryPanel();
+        if (action.sourceToken) {
+            await resolveSourceChoice(action, action.remotePayload, sourceSignatures);
+            return;
+        }
         if (action.kind === "conflict") {
+            // An explicit choice against the freshly loaded server revision
+            // supersedes the old autosave, including an unknown pre-resume one.
+            // Server revision/lease checks still reject any late stale writer.
+            pendingAutosave = null;
             if (action.remotePayload) applyPayload(action.remotePayload, sourceSignatures);
             dirty = false;
             resumeConflictPending = false;
+            initialConflictPending = false;
             await deleteRecovery(action.localRecord?.key).catch(() => {});
             hideRecoveryPanel();
+            setFormReadOnly(otherTabActive);
             syncCommitActions();
             setAutosaveStatus("Versão do servidor carregada", "saved");
         }
     });
 
     restoreRecoveryButton?.addEventListener("click", async () => {
+        if (revoked || otherTabActive || initializing || initialRecoveryPending) return;
         const action = pendingPanelAction;
         if (!action) return hideRecoveryPanel();
         if (action.kind === "conflict" && action.localRecord?.payload) {
+            let payload;
+            try {
+                payload = editor.verifyRecovery ? await editor.verifyRecovery(action.localRecord.payload) : action.localRecord.payload;
+            } catch (error) {
+                showToast(error.message, "error");
+                return; // Keep the conflict and original recovery for another attempt.
+            }
+            if (revoked || otherTabActive || initializing || initialRecoveryPending || pendingPanelAction !== action) return;
+            if (action.sourceToken) {
+                await resolveSourceChoice(action, payload, payload);
+                return;
+            }
+            pendingAutosave = null;
             resumeConflictPending = false;
-            applyPayload(action.localRecord.payload, action.localRecord.payload, { shouldSave: true });
+            initialConflictPending = false;
+            applyPayload(payload, payload, { shouldSave: true });
             hideRecoveryPanel();
+            setFormReadOnly(otherTabActive);
+            syncCommitActions();
             await persistLocalRecovery({ force: true });
             await runAutosave();
         }
@@ -710,12 +1088,13 @@ const startEditingCoordinator = () => {
     }, true);
 
     const releaseSession = async ({ background = false } = {}) => {
+        if (operationPreparation) operationPreparation.cancelled = true;
         if (!sessionToken || !editing.document_id) return;
         const token = sessionToken;
         sessionToken = "";
         setCommitActionsEnabled(false);
         const payload = JSON.stringify({
-            document: dirty ? {
+            document: dirty && !otherTabActive && !initialRecoveryPending && !resumeSnapshot && !operationPreparation && !commitPending && !resumeConflictPending ? {
                 ...editor.collectFormData(),
                 "Assinatura Cliente": "",
                 "Assinatura Técnico": "",
@@ -795,7 +1174,7 @@ const startEditingCoordinator = () => {
     window.addEventListener("pagehide", releaseOnPageExit);
     document.addEventListener("freeze", releaseOnPageExit);
     const resumeAfterPageRestore = () => {
-        if (initialized && !sessionToken && !otherTabActive) resumeEditingSession();
+        if (initialized && (!sessionToken || resumeSnapshot) && !otherTabActive) resumeEditingSession();
     };
     window.addEventListener("pageshow", resumeAfterPageRestore);
     document.addEventListener("resume", resumeAfterPageRestore);
@@ -808,7 +1187,7 @@ const startEditingCoordinator = () => {
     });
     window.addEventListener("online", async () => {
         retryAttempt = 0;
-        if (!sessionToken) await resumeEditingSession();
+        if (!sessionToken || resumeSnapshot) await resumeEditingSession();
         syncCommitActions();
         if (dirty && !readOnly && !otherTabActive) runAutosave();
     });
@@ -823,7 +1202,8 @@ const startEditingCoordinator = () => {
                 || message.userId !== editorUser.id
                 || message.instanceId === tabInstanceId
             ) return;
-            if (message.type === "hello" && sessionToken && !otherTabActive) {
+            const canClaim = tabClaimPending || (!initializing && !initialRecoveryPending && !resumeSnapshot);
+            if (message.type === "hello" && sessionToken && !otherTabActive && canClaim) {
                 tabChannel.postMessage({
                     type: "active",
                     fileName: activeFileName,
@@ -836,8 +1216,26 @@ const startEditingCoordinator = () => {
                 setFormReadOnly(true, "outra aba deste técnico");
                 setAutosaveStatus("Modo de consulta — rascunho aberto noutra aba", "conflict");
             }
-            if (message.type === "closing" && otherTabActive && sessionToken) {
+            // Failed bootstrap has no lease yet: restore its retry affordance,
+            // while keeping the unverified recovery read-only and untouched.
+            if (message.type === "closing" && otherTabActive && (initialRecoveryPending || sessionToken)) {
                 otherTabActive = false;
+                if (initializing || initialConflictPending) {
+                    // The editor may have resolved or replaced the shared copy.
+                    // Disable stale choices before any asynchronous refresh.
+                    initialRecoveryPending = true;
+                    hideRecoveryPanel();
+                    setFormReadOnly(true);
+                    if (initializing) reinitializeRequested = true;
+                    else initialize();
+                    return;
+                }
+                if (initialRecoveryPending) {
+                    setFormReadOnly(true);
+                    showVerificationRetry("A cópia original deste dispositivo continua guardada. Volte a tentar antes de editar.");
+                    return;
+                }
+                if (resumeSnapshot) { resumeEditingSession(); return; }
                 setFormReadOnly(false);
                 syncCommitActions();
                 setAutosaveStatus("Rascunho pronto — esta aba pode editar", "saved");
@@ -848,22 +1246,71 @@ const startEditingCoordinator = () => {
 
     window.__EDITING_COORDINATOR__ = {
         operationMetadata,
-        async prepareOperation(kind) {
-            if (!hasActiveSession()) {
-                const resumed = await resumeEditingSession();
-                if (!resumed) {
-                    throw new Error(
-                        "A sessão de edição ainda não está pronta. Aguarde alguns segundos e tente novamente."
-                    );
-                }
+        setCommitPending(value) {
+            commitPending = value;
+            operationPreparation = null;
+            syncCommitActions();
+            if (!value && dirty && hasActiveSession()) schedulePersistence();
+        },
+        async recoverPendingCommit() {
+            try { return await resolvePendingCommit(); }
+            catch (error) {
+                recoveryRequiresReload = error.code === "mail_monitor_session_changed";
+                initialRecoveryPending = true;
+                if (recoveryRequiresReload) sessionToken = "";
+                setFormReadOnly(true);
+                await persistLocalRecovery({ force:true });
+                showVerificationRetry("Volte a consultar a operação antes de editar; nenhum envio será repetido.");
+                throw error;
             }
-            return operationMetadata(kind);
+        },
+        async prepareOperation(kind) {
+            if (operationPreparation || commitPending) {
+                throw new Error("A sessão de edição ainda não está pronta. Já existe uma gravação em preparação.");
+            }
+            const preparation = { cancelled:false };
+            operationPreparation = preparation;
+            window.clearTimeout(serverSaveTimer);
+            window.clearTimeout(retryTimer);
+            syncCommitActions();
+            try {
+                // A mutation must capture the revision AFTER its own autosave
+                // has settled. Keep further autosaves paused until the caller
+                // begins the commit or releases preparation in its finally.
+                if (autosaveInFlight) {
+                    let timer;
+                    try {
+                        const confirmed = await Promise.race([autosaveInFlight, new Promise((_, reject) => {
+                            timer = window.setTimeout(() => reject(new Error("A gravação automática ainda está por confirmar. Aguarde e volte a tentar.")), 30000);
+                        })]);
+                        if (!confirmed) throw new Error("Não foi possível confirmar a gravação automática. Volte a tentar depois de guardar no servidor.");
+                    } finally { window.clearTimeout(timer); }
+                }
+                if (preparation.cancelled || operationPreparation !== preparation || pendingAutosave) {
+                    throw new Error("A gravação automática ou a sessão de edição ainda está por confirmar. Volte a tentar.");
+                }
+                if (!hasActiveSession()) {
+                    const resumed = await resumeEditingSession();
+                    if (!resumed || preparation.cancelled) {
+                        throw new Error("A sessão de edição ainda não está pronta. Aguarde alguns segundos e tente novamente.");
+                    }
+                }
+                return operationMetadata(kind);
+            } catch (error) {
+                if (operationPreparation === preparation) operationPreparation = null;
+                syncCommitActions();
+                if (dirty && hasActiveSession()) schedulePersistence();
+                throw error;
+            }
         },
         syncActionState: syncCommitActions,
         async markCommitted(result, kind) {
+            if (revoked) return;
             const committedKey = recoveryKey();
             editing = { ...editing, ...result };
             operationKeys.delete(kind);
+            commitPending = false;
+            operationPreparation = null;
             dirty = false;
             pendingAutosave = null;
             window.clearTimeout(localSaveTimer);
@@ -875,6 +1322,7 @@ const startEditingCoordinator = () => {
                 setAutosaveStatus("Alterações consolidadas", "saved");
             }
             resumeConflictPending = false;
+            initialConflictPending = false;
             if (["send", "cancel"].includes(kind) || result.created_copy) sessionToken = "";
             syncCommitActions();
         },
@@ -885,6 +1333,28 @@ const startEditingCoordinator = () => {
     };
 
     initialize();
+    let heartbeatInFlight = false;
+    const leaseHeartbeatTimer = window.setInterval(async () => {
+        if (heartbeatInFlight || commitPending || revoked || document.hidden || !navigator.onLine || !sessionToken || !editing.document_id) return;
+        const checkedToken = sessionToken;
+        const checkedDocument = editing.document_id;
+        heartbeatInFlight = true;
+        try {
+            const response = await fetch("/api/file/" + encodeURIComponent(activeFileName) + "/lease/heartbeat", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ document_id: checkedDocument, client_id: clientId, lease_token: checkedToken })
+            });
+            const result = await response.json();
+            if (sessionToken === checkedToken && editing.document_id === checkedDocument && !response.ok) {
+                handleConflict(result);
+            }
+        } catch (_) {
+            // Local recovery remains available while disconnected.
+        } finally {
+            heartbeatInFlight = false;
+        }
+    }, 15000);
+    leaseHeartbeatTimer?.unref?.();
     return true;
 };
 

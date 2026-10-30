@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="pt">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Documentos da manutenção</title>
+<style>
+body{font:16px/1.5 system-ui,sans-serif;background:#f4f8fc;color:#193247;margin:0}
+main{max-width:800px;margin:40px auto;padding:32px;background:white;border:1px solid #d5e2ef;border-radius:20px}
+a{color:#1b577c}li{padding:15px 0;border-bottom:1px solid #d5e2ef}
+li a{margin-right:20px}small{color:#526b7b}
+</style></head>
+<body><main><a href="/">← Voltar às folhas de serviço</a>
+<h1>Documentos da manutenção</h1>
+<p>A folha de serviço segue pelo fluxo habitual. As checklists SADI ficam nesta área privada da aplicação.</p>
+<ul>{% for entry in entries %}<li><strong>{{ entry.label }}</strong><br>
+<small>{{ 'Folha de serviço' if entry.delivery == 'customer_email' else 'Checklist reservada' }}</small><br>
+<a href="{{ url_for('private_maintenance_bundle_pdf',key=key,filename=entry.name) }}" target="_blank" rel="noopener">Consultar PDF</a>
+<a href="{{ url_for('private_maintenance_bundle_pdf',key=key,filename=entry.name,download=1) }}">Descarregar</a>
+</li>{% endfor %}</ul></main></body></html>

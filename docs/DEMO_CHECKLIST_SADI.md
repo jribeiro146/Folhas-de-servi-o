@@ -1,0 +1,71 @@
+# Demo de checklists SADI
+
+## Iniciar
+
+Executar `python -B tools/run_test_version.py --port 5017`. O lançador cria uma pasta temporária nova em cada execução, exclui o `.env` operacional, bloqueia ligações de saída e mantém email, Teams e workers desativados. A demo está disponível em `http://127.0.0.1:5017`.
+
+Abrir um rascunho (ou criar um a partir de uma folha fictícia), marcar **Manutenção** e **SADI** e abrir **Checklists de manutenção**. Os dados duram durante essa execução e podem ser guardados/reabertos no navegador; reiniciar o lançador inicia outro conjunto de dados fictícios.
+
+O lançador injeta um único **Técnico de teste** para a demo, permitindo retomar o mesmo rascunho no Chrome e no navegador da aplicação. Esta identidade simulada é recusada fora do ambiente sintético local sem autenticação e sem integrações reais. O controlo de revisões mantém-se ativo para impedir que duas sessões sobrescrevam alterações uma da outra. As sessões de instâncias locais diferentes usam cookies independentes.
+
+## Regra da fase de testes — 23/10/2026
+
+Por decisão explícita de João em 23/10/2026, **todos os utilizadores autenticados na aplicação têm acesso às checklists, que continuam opcionais**. A folha de Manutenção + SADI pode ser finalizada sem locais, com respostas em falta ou sem assinaturas válidas nas checklists. Mantêm-se as validações obrigatórias da própria folha, as reservas de edição, os conflitos e a confirmação da publicação do rascunho.
+
+Esta abertura abrange o formulário, preenchimento, assinaturas, pré-visualização e consulta/download dos conjuntos SADI finais pela app. Usa o login já existente, sem novos privilégios Microsoft ou configuração obrigatória. A administração mantém as suas regras. A autoria dos rascunhos também é preservada: o novo acesso não permite tomar o rascunho de outro técnico; a exceção preexistente para as duas contas de revisão SADI mantém-se separada do acesso geral.
+
+Na atualização, um separador ou cópia local antiga pode ainda não ter os dados SADI. Se uma gravação, autosave, fecho ou finalização omitir o campo das checklists ou enviar uma lista vazia sem intenção de limpeza, o servidor conserva os dados mais recentes que já guarda (autosave, quando presente, ou armazenamento privado). A limpeza integral explícita pelo contrato API exige `_maintenance_clear=true` juntamente com `maintenance_checklists=[]`; o marcador não concede autorização e não é conservado no documento normalizado. O formulário não emite este marcador apenas por estar vazio, incluindo ao recuperar uma cópia IndexedDB antiga. As assinaturas são novamente verificadas contra o conteúdo atual. Fechar/reabrir a aplicação depois de guardar permite carregar a nova interface. O contador mantém o limite anterior de um local após a criação; a limpeza integral com marcador é coberta por testes das APIs. Uma folha sem locais criados continua a poder ser finalizada.
+
+O preenchimento SADI é preservado: em produção fica na pasta privada `FS_APP_DATA_DIR/sadi`, associado ao mesmo documento; na demo fica no JSON arquivado. Não é enviado ao SharePoint nem por email em produção. O conjunto de PDFs finais SADI só é produzido quando **todas** as checklists aplicáveis estão completas e assinadas; caso contrário, a folha segue sem esse conjunto e sem ligação para PDFs inexistentes. Não se apresentam checklists incompletas como concluídas. A pré-visualização continua disponível às contas autorizadas.
+
+Antes de aplicar uma recuperação local de rascunho, o editor consulta o servidor também quando a cópia está vazia. Uma cópia antiga sem acesso SADI recupera o preenchimento preservado, que volta a aparecer no formulário; as restantes alterações locais são mantidas. A consulta não escreve os dados privados. A falha da consulta mantém a recuperação protegida até ser possível verificá-la.
+
+A conservação dos dados incompletos não cria uma nova página de edição após o arquivo. Para continuar o preenchimento na interface, manter a folha como rascunho. Falhas reais ao guardar dados ou gerar o conjunto completo continuam a preservar a origem e impedir uma conclusão enganadora. Não há nova configuração, permissão ou alteração de contas; a futura obrigatoriedade exige uma nova decisão e alteração revista, sem data de ativação automática.
+
+A confirmação normal de arquivo/envio informa as contas com acesso quando as checklists estão incompletas: não haverá PDFs SADI nem edição posterior na interface, podendo voltar atrás e guardar rascunho. Uma assinatura/fotografia ainda a guardar pede apenas que se aguarde. Folhas que nunca usaram checklists não criam um registo SADI vazio; uma limpeza explícita de dados existentes por conta autorizada é conservada, mesmo que desmarque SADI.
+
+## Fluxo
+
+- Indicar o número de locais e identificar cada edifício. O cliente e o número de serviço são comuns e vêm da folha de serviço.
+- Em cada local, indicar a existência e a quantidade de centrais convencionais, endereçáveis e repetidores. Os tipos podem coexistir.
+- A ordem das secções é fixa: **1. Sistema; 2. Centrais; 3. Repetidores; 4. Periféricos e ensaios**. A secção 4 é permanente e preenchida uma única vez por local, mesmo sem centrais ou repetidores ativos. Inclui oito verificações de estado geral, sete ensaios, observações e cobertura dos ensaios.
+- Preencher identificação e verificações de cada equipamento. Cada repetidor inclui **Marca, Modelo e Local do repetidor**; a localização é necessária para considerar a checklist completa e gerar o PDF final.
+- Respostas NC exigem justificação individual, mas não impedem a conclusão quando justificadas. NA é uma resposta explícita e não é pré-selecionada.
+- Periodicidades mensal, trimestral e semestral exigem percentagem ou áreas testadas uma vez por local, na secção 4.
+- Recolher as assinaturas do técnico e do cliente diretamente nos cartões de cada local, com primeiro e último nome, data e espaço para desenhar. O desenho é validado e guardado automaticamente quando os dados da assinatura estão preenchidos; o botão «Guardar assinatura» permite tentar novamente. Capturas incompletas ficam no rascunho, mas não contam como assinaturas nem entram no PDF. A opção «Cliente não presente na obra» dispensa apenas a assinatura do cliente e fica registada no PDF. A assinatura do técnico é sempre obrigatória na checklist. A opção é independente por local: a ausência marcada na folha de serviço não se aplica automaticamente à checklist. A identificação do técnico e o preenchimento são necessários para concluir a checklist, sem bloquear a folha nesta fase. É possível assinar com campos por preencher; **Verificar checklist** é informativo e as pendências impedem apenas a geração do conjunto de PDFs finais SADI nesta fase. O responsável SCIE é opcional. Alterar conteúdo assinado, incluindo uma exceção de assinatura, exige novas assinaturas.
+- Os botões **Pré-visualizar** e **Exportar PDF** no topo abrem uma janela com separadores para a folha de serviço e para todas as checklists locais. Começa no documento que estava selecionado no formulário, permitindo consultar os restantes sem voltar atrás. Usa as respostas atuais, incluindo alterações ainda por guardar, sem avisos de rascunho sobrepostos ao relatório. **Imprimir / Guardar este PDF** exporta o documento escolhido.
+- A checklist partilha o logótipo, cabeçalho, estilos de tabelas, tipografia e caixas de assinatura da folha de serviço. As tabelas identificam cliente, local, equipamento e número da folha, também nas continuações; os blocos seguem em sequência, sem páginas de separação vazias.
+- As orientações ao técnico (antes dos ensaios, simulação de alarme, cobertura e final da manutenção) aparecem apenas no formulário. O relatório e a sua pré-visualização mantêm os resultados, a cobertura registada e a legenda OK/NC/NA, sem essas instruções de preenchimento.
+- Guardar rascunho permite continuar mais tarde. Finalizar exige a folha completa. Se todas as checklists estiverem completas e assinadas, gera também um PDF por local, independentemente do número de centrais.
+- A página final disponibiliza consulta e download dos PDFs. A simulação do email ao cliente inclui apenas a folha de serviço; na demo, as checklists ficam guardadas na pasta do serviço. A simulação não envia mensagens.
+
+## Modelo e integridade
+
+`src/maintenance_schema.py` contém o catálogo versionado `sadi-2`, com os textos técnicos transcritos de `SADI.xlsx`, folha `b) SADI`, e a estrutura atualizada por local. Os identificadores das perguntas correspondem às células do modelo. A definição alimenta os formulários e PDFs; a validação definitiva ocorre no servidor.
+
+Rascunhos `sadi-1` são adaptados em memória ao abrir; a gravação usa a nova versão. Respostas iguais entre todas as centrais ativas são aproveitadas na secção comum; respostas ou coberturas diferentes ficam por preencher, sem escolher uma central arbitrariamente. Os registos originais, incluindo equipamentos inativos, ficam em `peripheral_history` e podem ser consultados no formulário. A mudança de versão exige novas assinaturas. Nada é sobrescrito no ficheiro ao consultar o rascunho.
+
+Na demo, `maintenance_checklists` é guardado no JSON associado à folha. Em produção, é guardado separadamente em `FS_APP_DATA_DIR/sadi`, sem entrar no arquivo Graph. As assinaturas PNG ficam embebidas no registo da checklist como referências `data:` com identificação, data e token HMAC do conteúdo assinado. O token inclui local, configuração, perguntas, dados comuns impressos, interveniente e imagem. Não permite reaproveitar a assinatura noutro local ou após uma alteração. É uma proteção de integridade da aplicação, não uma assinatura digital qualificada.
+
+Desativar um tipo preserva as respostas no rascunho, mas exclui os seus blocos da validação e do PDF. Reduzir quantidades exige selecionar e confirmar os elementos removidos. Os identificadores dos restantes elementos mantêm-se estáveis.
+
+Na demo, os PDFs e o manifesto são produzidos no staging da finalização. Em produção, o conjunto completo é produzido na pasta privada da app antes da publicação do arquivo; não é enviado ao SharePoint. Uma falha preserva o rascunho e a repetição é tratada pelo mecanismo de idempotência existente.
+
+## Demo e produção
+
+O lançador descrito no início continua restrito ao ambiente sintético local, sem serviços Graph, email, Teams ou filas injetados. Em produção, a checklist fica ativa por defeito com autenticação Microsoft e backend Graph; `FS_MAINTENANCE_ENABLED=false` permite desativá-la explicitamente. Todos os utilizadores autenticados têm acesso; os PDFs SADI são servidos exclusivamente pela app e exigem sessão válida. Os textos técnicos SADI estão em português. A exportação mantém o conteúdo do Excel, com paginação própria para suportar vários equipamentos; não reproduz a grelha Excel célula a célula. As [notas de versão históricas](RELEASE_NOTES_SADI_DEMO_2026-09-24.md) descrevem a entrega anterior; a regra atual de acesso e obrigatoriedade é a de 23/10/2026 acima.
+
+## Validação
+
+Na retoma de um separador antigo cuja lista SADI estava vazia, a verificação pode recuperar locais que já existem no servidor. Esses locais são aplicados à secção SADI visível e à recuperação local antes de permitir novas gravações. Esta recuperação automática atualiza apenas a secção SADI: não repovoa a folha de serviço nem reinicia fotografias por guardar ou assinaturas desenhadas nessa página. Uma divergência nos restantes campos continua a usar a escolha habitual entre a versão local e a do servidor. Se outra aba estiver a editar, a retoma espera e volta a consultar os dados mais recentes, conservando a cópia original suspensa. Uma falha de verificação mantém a edição bloqueada e permite tentar novamente.
+
+As regressões em `tests/js/sadi-recovery.test.cjs` cobrem a mesma revisão e uma revisão posterior, com e sem alterações locais, conservação dos locais depois de acrescentar outro, escolha de conflito, fotografias pendentes e uma segunda aba que grava enquanto a primeira aguarda. Executam o coordenador, verificador e adaptador de recuperação reais, com DOM, IndexedDB e transporte sintéticos; não representam uma suspensão real do sistema operativo.
+
+Testes Python em `tests/test_maintenance.py` e `tests/test_maintenance_access.py`, e JavaScript em `tests/js/maintenance-model.test.cjs`. Incluem assinatura ligada ao conteúdo, NC, cobertura, retomada do rascunho, três PDFs, falha de renderização, repetição sem duplicação, acesso privado em produção por todos os utilizadores autenticados, recusa de sessões anónimas e preservação da autoria dos rascunhos. `tests/test_optional_maintenance.py` e `tests/js/optional-maintenance.test.cjs` cobrem a regra opcional, conservação de dados, assinaturas inválidas, ausência de PDFs incompletos, repetição sem duplicação e manutenção das exigências da folha. Os testes usam dados fictícios e transportes bloqueados; nenhum envio real é necessário.
+
+Para repetir a geração real com Chromium: `python -B tools/verify_sadi_pdf_demo.py`. Este comando configura o isolamento antes de importar a aplicação, gera o cenário de dois edifícios, produz os três PDFs e imprime a localização temporária dos resultados. Requer as dependências de desenvolvimento e Edge/Chrome instalado. No Windows, executar num terminal normal se a restrição do ambiente de execução impedir o arranque do navegador.
+# Fotografias e observações finais
+
+Cada local tem fotografias (até 10, JPG/PNG/WebP, 10 MB por ficheiro de origem) e observações finais opcionais, depois dos periféricos e antes das assinaturas. As imagens são reduzidas no navegador até 1600 px e gravadas no JSON da checklist, com identificador estável e legenda opcional. O servidor verifica formato real, dimensões e tamanho antes de produzir o PDF final da checklist; imagens inválidas ficam assinaladas no rascunho e nunca são renderizadas. Fotografias e observações finais aparecem no PDF desse local e participam na invalidação das suas assinaturas. As fotografias internas da folha de serviço mantêm o comportamento existente.
+
+As caixas de observações e justificação começam numa linha larga e crescem com o texto.

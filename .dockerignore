@@ -16,4 +16,10 @@ data/
 .gitignore
 docs/
 README.md
-requirements.txt
+# requirements.txt is fingerprinted; tests are used only by the qa target.
+qa-output/
+*.zip
+*.sqlite*
+*.xlsx
+!tests/fixtures/test_sample.xlsx
+*.pdf

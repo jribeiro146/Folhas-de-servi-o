@@ -39,6 +39,9 @@
             {% if error %}
             <p class="auth-error" role="alert">{{ error }}</p>
             {% endif %}
+            {% if diagnostic_reference %}
+            <p class="auth-copy">Referência para o administrador: <code>{{ diagnostic_reference }}</code></p>
+            {% endif %}
 
             {% if auth_provider == "microsoft" %}
             <a class="btn btn-primary auth-submit auth-ms-button" href="{{ url_for('microsoft_auth_start', next=next_url) }}">

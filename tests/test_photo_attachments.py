@@ -201,7 +201,7 @@ def test_multipart_photos_stay_outside_report_and_follow_archive(photo_web_app):
             "customer_signer_name": "Maria Santos",
             "customer_signature_date": "2026-08-06",
             "intervention_report": "Relat\u00f3rio sem anexos incorporados",
-            "technician_records": [{"technician": "Jo\u00e3o Freire"}],
+            "technician_records": [{"technician": "Jo\u00e3o Freire", "start_time": "09:00", "end_time": "10:00", "date": "2026-08-06"}],
             "_edit": metadata(send_editing, "draft-tab"),
         },
     )
@@ -243,11 +243,12 @@ def test_invalid_photo_is_rejected_before_creating_draft(photo_web_app):
     assert list(active.iterdir()) == [active / "2026_7001.xlsx"]
 
 
-def test_graph_active_bundle_uploads_and_prunes_photo_subfolder(tmp_path, monkeypatch):
+def test_graph_active_bundle_uploads_and_preserves_unknown_remote_photos(tmp_path, monkeypatch):
     bundle = tmp_path / "draft"
     bundle.mkdir()
     excel = bundle / "draft.xlsx"
     excel.write_bytes(b"excel")
+    (bundle / ".graph_bundle.json").write_text('{"id": "bundle"}', encoding="utf-8")
     photo = PhotoAttachmentService.prepare_uploads([upload("obra.jpg", JPEG)])[0]
     PhotoAttachmentService(excel).apply([photo], [])
 
@@ -262,19 +263,23 @@ def test_graph_active_bundle_uploads_and_prunes_photo_subfolder(tmp_path, monkey
         service,
         "_get_item_by_path",
         lambda path: (
-            {"id": "photo-folder", "name": PHOTO_FOLDER_NAME}
+            {"id": "photo-folder", "name": PHOTO_FOLDER_NAME, "folder": {}}
             if path.endswith(f"/{PHOTO_FOLDER_NAME}")
-            else {"id": "bundle", "name": bundle.name}
+            else {"id": "bundle", "name": bundle.name, "folder": {}}
         ),
     )
     monkeypatch.setattr(
         service,
         "upload_file",
-        lambda local, remote, expected_etag=None: (
+        lambda local, remote, expected_etag=None, parent_item_id=None: (
             uploaded.append(remote)
             or {"id": local.name, "name": local.name, "eTag": "new"}
         ),
     )
+    def read_photo(method, path, **kwargs):
+        assert method == "GET" and path.endswith("/items/bundle:/" + PHOTO_FOLDER_NAME + ":")
+        return {"id": "photo-folder", "name": PHOTO_FOLDER_NAME, "folder": {}}
+    monkeypatch.setattr(service, "_graph_json", read_photo)
     monkeypatch.setattr(
         service,
         "_list_children",
@@ -293,7 +298,7 @@ def test_graph_active_bundle_uploads_and_prunes_photo_subfolder(tmp_path, monkey
 
     assert any(f"/{PHOTO_FOLDER_NAME}/fotografia_" in path for path in result)
     assert uploaded == result
-    assert deleted == ["stale"]
+    assert deleted == []
 
 
 def test_graph_download_restores_photo_subfolder(tmp_path, monkeypatch):
@@ -352,5 +357,9 @@ def test_graph_queue_keeps_nested_photo_metadata_paths(tmp_path):
     assert staged_metadata.read_text(encoding="utf-8") == '{"eTag":"old"}'
 
     staged_metadata.write_text('{"eTag":"new"}', encoding="utf-8")
-    queue._publish_staging_metadata(payload)
+    from src.services.publication_evidence import file_evidence
+    queue._publish_staging_metadata(payload, publication={
+        'publication_id': 'synthetic-confirmed-upload',
+        'publication_metadata': {staged_metadata.relative_to(staged_dir).as_posix(): file_evidence(staged_metadata)},
+    })
     assert original_metadata.read_text(encoding="utf-8") == '{"eTag":"new"}'

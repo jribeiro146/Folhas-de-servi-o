@@ -175,6 +175,22 @@
     }
 }
 
+.file-refresh-status {
+    margin: 0 16px 12px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #edf5ff;
+    color: #174b79;
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.file-refresh-status[data-state="warning"] {
+    background: #fff3db;
+    color: #704300;
+}
+
 @media (prefers-reduced-motion: reduce) {
     .autosave-status[data-state="saving"]::before {
         animation: none;

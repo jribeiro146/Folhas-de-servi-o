@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Administração · Sensorpoint</title>
+    <link rel="icon" href="{{ url_for('static', filename='img/pwa/icon-192.png', v=asset_version) }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css', v=asset_version) }}">
+    <script src="{{ url_for('static', filename='js/admin.js', v=asset_version) }}" defer></script>
+</head>
+<body data-admin-csrf="{{ admin_csrf }}">
+<a class="skip-link" href="#admin-content">Saltar para a gestão</a>
+<header class="app-header">
+    <div class="app-header-inner">
+        <div class="brand"><img src="{{ url_for('static', filename='img/sensorpoint-logo.png', v=asset_version) }}" alt="Sensorpoint" width="174" height="52"><span>Folhas de serviço</span></div>
+        <a class="back-link" href="{{ url_for('index') }}">← Voltar às folhas</a>
+    </div>
+</header>
+<main>
+    <div class="page-heading">
+        <div><p class="eyebrow">Gestão operacional</p><h1>Administração</h1><p class="page-description">Gerir acessos às folhas e acompanhar publicações e envios.</p></div>
+        <button id="admin-reload" type="button" class="secondary">Atualizar diagnóstico</button>
+    </div>
+    <p id="admin-status" class="status-line" role="status" aria-live="polite">A carregar…</p>
+    <div class="overview" aria-label="Resumo operacional">
+        <div class="metric"><span>Reservas registadas</span><strong id="admin-count-documents">—</strong><small>Folhas disponíveis para gestão</small></div>
+        <div class="metric"><span>Por processar</span><strong id="admin-count-pending">—</strong><small>Pendentes e em processamento</small></div>
+        <div class="metric"><span>Falhas na fila</span><strong id="admin-count-failed">—</strong><small>Consultar publicações e envios</small></div>
+        <div class="metric metric-worker"><span>Processamento da fila</span><strong id="admin-worker-state">A verificar</strong><small>Estado do processo independente</small></div>
+    </div>
+    <div id="admin-content" class="workspace">
+        <div class="tabs" role="tablist" aria-label="Áreas de administração">
+            <button id="admin-tab-documents" type="button" role="tab" aria-selected="true" aria-controls="admin-panel-documents">Folhas e acessos</button>
+            <button id="admin-tab-jobs" type="button" role="tab" aria-selected="false" aria-controls="admin-panel-jobs" tabindex="-1">Publicações e envios</button>
+            <button id="admin-tab-audit" type="button" role="tab" aria-selected="false" aria-controls="admin-panel-audit" tabindex="-1">Histórico</button>
+        </div>
+        <section id="admin-panel-documents" class="tab-panel" role="tabpanel" aria-labelledby="admin-tab-documents" tabindex="0">
+            <div class="section-heading"><div><h2>Reservas de edição</h2><p>Consulte quem tem a folha reservada e reponha o acesso quando necessário.</p></div></div>
+            <details class="guidance"><summary>O que acontece ao libertar uma folha?</summary><p>Libertar uma folha termina as suas sessões e impede a reentrada dos técnicos expulsos nessa folha até repor o acesso. As gravações guardadas são preservadas. Alterações ainda apenas no dispositivo não são transferidas pelo desbloqueio; peça ao técnico para as guardar antes de intervir.</p></details>
+            <div id="admin-documents" class="item-list"></div>
+        </section>
+        <section id="admin-panel-jobs" class="tab-panel" role="tabpanel" aria-labelledby="admin-tab-jobs" tabindex="0" hidden>
+            <div class="section-heading"><div><h2>Publicações e envios</h2><p>Últimas 100 operações por concluir. Os resultados incertos exigem reconciliação antes de repetir.</p></div></div>
+            <div id="admin-jobs" class="item-list"></div>
+            <section id="admin-provider-section" hidden>
+                <div class="section-heading"><div><h2>Esperas Microsoft</h2><p>Os prazos aplicam-se a todas as sessões. Uma revisão administrativa nunca antecipa uma espera válida.</p></div></div>
+                <div id="admin-provider-waits" class="item-list"></div>
+            </section>
+            <div class="lookup-box">
+                <h3>Procurar uma operação</h3><p>Consulte também operações concluídas, incluindo um e-mail aceite cujo aviso Teams ficou em falta.</p>
+                <form id="admin-reconciliation-lookup">
+                    <div class="field"><label for="admin-job-id">Identificador da operação</label><input id="admin-job-id" required maxlength="200" placeholder="Cole aqui o identificador" autocomplete="off"></div>
+                    <button type="submit" class="secondary">Consultar reconciliação</button>
+                </form>
+                <p id="admin-lookup-status" class="form-error" role="alert"></p>
+            </div>
+        </section>
+        <section id="admin-panel-audit" class="tab-panel" role="tabpanel" aria-labelledby="admin-tab-audit" tabindex="0" hidden>
+            <div class="section-heading"><div><h2>Atividade recente</h2><p>Quem pediu a operação, em que ficha e qual o resultado registado.</p></div></div>
+            <div class="activity-filters"><div class="field"><label for="admin-activity-kind">Mostrar</label><select id="admin-activity-kind"><option value="all">Toda a atividade das fichas</option><option value="send">Finalizações e envios</option><option value="draft">Rascunhos</option><option value="cancel">Cancelamentos</option></select></div><button id="admin-activity-reload" type="button" class="secondary">Atualizar histórico</button></div>
+            <p class="activity-note">O autor é a pessoa que iniciou o pedido. «E-mail aceite» confirma a aceitação pelo serviço de envio; não confirma a entrega ao destinatário. As horas são apresentadas no fuso horário deste dispositivo.</p>
+            <p id="admin-activity-status" class="status-line" role="status" aria-live="polite"></p>
+            <div id="admin-activity" class="item-list"></div>
+            <details class="guidance activity-scope"><summary>Que atividade fica disponível?</summary><p>Mostra os últimos 100 pedidos do tipo escolhido, ordenados pela hora do pedido: guardar rascunho, finalizar ou cancelar. Cada pedido aparece uma vez, com o seu estado mais recente. As gravações automáticas e os acessos à página não aparecem. Os registos dependem do histórico ainda conservado no servidor; não é um arquivo completo. Os registos antigos sem nome guardado indicam «Autor não registado».</p></details>
+            <div class="section-heading audit-heading"><div><h2>Intervenções administrativas</h2><p>Últimas 100 ações administrativas, com hora e motivo.</p></div></div>
+            <div id="admin-audit" class="item-list audit-list"></div>
+            <details class="guidance"><summary>Esperas automáticas Microsoft</summary><p>Últimos 100 prazos registados pelo sistema. As decisões humanas permanecem no histórico de intervenções.</p><div id="admin-provider-events" class="item-list audit-list"></div></details>
+        </section>
+    </div>
+    <details class="diagnostics">
+        <summary>Diagnóstico técnico e SharePoint<span>Estado dos serviços, versão e atualização da cache</span></summary>
+        <div class="diagnostic-grid">
+            <section><h2>SharePoint e fila</h2><p id="admin-graph" class="muted">A verificar…</p><p id="admin-queue-status" class="muted"></p><button id="admin-refresh" type="button" class="secondary" hidden>Pedir atualização do SharePoint</button></section>
+            <section><h2>Processo independente (worker)</h2><p class="muted">O site estar acessível não confirma o processamento da fila. Este sinal pertence ao processo separado.</p><div id="admin-worker"></div></section>
+        </div>
+    </details>
+</main>
+<dialog id="admin-confirm" aria-labelledby="admin-action-title">
+    <form id="admin-action-form">
+        <p class="eyebrow">Intervenção administrativa</p><h2 id="admin-action-title">Confirmar intervenção</h2><p id="admin-action-detail"></p>
+        <label for="admin-reason">Motivo obrigatório</label><textarea id="admin-reason" minlength="3" maxlength="400" required rows="3"></textarea>
+        <p class="field-hint">O motivo fica registado no histórico.</p><p id="admin-action-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button id="admin-cancel" type="button" class="secondary">Cancelar</button><button id="admin-submit" type="submit">Confirmar</button></div>
+    </form>
+</dialog>
+<dialog id="admin-reconciliation" aria-labelledby="admin-reconciliation-title">
+    <form id="admin-reconciliation-form">
+        <p class="eyebrow">Revisão de uma operação</p><h2 id="admin-reconciliation-title">Registar reconciliação</h2><p id="admin-reconciliation-detail" class="operation-reference"></p>
+        <div class="reconciliation-guide"><p>Uma aceitação comprovada encerra este envio, sem confirmar entrega ao destinatário. Uma recusa comprovada permite pedir repetição numa ação separada. Sem prova suficiente, mantenha «Indeterminado».</p><p>A ausência de uma mensagem no fornecedor não prova uma recusa. A recuperação Teams usa o e-mail já aceite e pode colocar apenas o aviso em fila.</p></div>
+        <div id="admin-reconciliation-history"></div>
+        <label for="admin-decision">Decisão</label><select id="admin-decision"><option id="admin-indeterminate" value="indeterminate">Indeterminado — manter bloqueio</option><option id="admin-accepted" value="accepted">Aceitação comprovada</option><option id="admin-rejected" value="rejected">Recusa comprovada</option><option id="admin-repair-teams" value="repair_teams">Recuperar apenas aviso Teams</option></select>
+        <label for="admin-evidence">Registo de evidência do fornecedor</label><input id="admin-evidence" type="file" accept="application/json,.json">
+        <p class="field-hint">Ficheiro JSON, até 64 KiB, no formato do procedimento de reconciliação. Confirme a origem, correlação e resultado no fornecedor antes de anexar.</p>
+        <label for="admin-reconciliation-reason">Motivo obrigatório</label><textarea id="admin-reconciliation-reason" required minlength="3" maxlength="400" rows="3"></textarea>
+        <p id="admin-reconciliation-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button id="admin-reconciliation-cancel" type="button" class="secondary">Cancelar</button><button id="admin-reconciliation-submit" type="submit">Registar decisão</button></div>
+    </form>
+</dialog>
+</body>
+</html>

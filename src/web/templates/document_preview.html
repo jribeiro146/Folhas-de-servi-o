@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="pt">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pré-visualização — Folha de serviço e checklists</title>
+    <style>
+        * { box-sizing:border-box; }
+        body { margin:0; background:#eef3f8; color:#19344d; font:14px "Segoe UI",Arial,sans-serif; }
+        .preview-toolbar { position:sticky; top:0; z-index:2; background:white; border-bottom:1px solid #d8e2ec; padding:14px 20px; box-shadow:0 3px 14px #19344d0b; }
+        .preview-top { display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; margin-bottom:12px; }
+        h1 { font-size:17px; margin:0; } p { margin:5px 0 0; color:#6b7f92; font-size:12px; }
+        .preview-tabs { display:flex; gap:8px; overflow:auto; padding-bottom:3px; }
+        button { padding:10px 15px; border:1px solid #b7c8da; border-radius:8px; font:inherit; font-weight:600; cursor:pointer; background:white; color:#19344d; }
+        [role=tab] { white-space:nowrap; }
+        [role=tab][aria-selected=true], .print-button { background:#0b4a8b; color:white; border-color:#0b4a8b; }
+        button:disabled { opacity:.55; cursor:wait; }
+        iframe { display:block; width:100%; min-height:80vh; border:0; }
+        @media(max-width:620px) { .preview-toolbar { padding:12px; } .preview-top { align-items:start; } }
+    </style>
+</head>
+<body>
+    <header class="preview-toolbar">
+        <div class="preview-top"><div><h1>Folha de serviço e checklists</h1><p>Consulte cada documento nos separadores. Cada local tem o seu próprio PDF.</p></div><button class="print-button" id="preview-print" type="button" disabled>Imprimir / Guardar este PDF</button></div>
+        <nav class="preview-tabs" role="tablist" aria-label="Documentos do serviço"></nav>
+    </header>
+    <section role="tabpanel" id="preview-panel"><iframe id="preview-frame" title="Documento selecionado"></iframe></section>
+    <script type="application/json" id="preview-data">{{ preview | tojson }}</script>
+    <script>
+        const preview = JSON.parse(document.getElementById("preview-data").textContent);
+        const tabs = document.querySelector(".preview-tabs");
+        const frame = document.getElementById("preview-frame");
+        const printButton = document.getElementById("preview-print");
+        let resizeObserver;
+        function selectDocument(index, focus = false) {
+            const selected = preview.documents[index];
+            [...tabs.children].forEach((button, i) => {
+                button.setAttribute("aria-selected", String(i === index));
+                button.tabIndex = i === index ? 0 : -1;
+            });
+            document.getElementById("preview-panel").setAttribute("aria-labelledby", "tab-" + selected.id);
+            printButton.disabled = true;
+            frame.title = selected.label;
+            frame.srcdoc = selected.html;
+            if (focus) tabs.children[index].focus();
+        }
+        preview.documents.forEach((document, index) => {
+            const button = window.document.createElement("button");
+            button.type = "button";
+            button.id = "tab-" + document.id;
+            button.setAttribute("role", "tab");
+            button.setAttribute("aria-controls", "preview-panel");
+            button.textContent = document.label;
+            button.onclick = () => selectDocument(index);
+            button.onkeydown = event => {
+                const count = preview.documents.length;
+                const next = {ArrowRight:(index + 1) % count, ArrowLeft:(index + count - 1) % count, Home:0, End:count - 1}[event.key];
+                if (next !== undefined) { event.preventDefault(); selectDocument(next, true); }
+            };
+            tabs.append(button);
+        });
+        frame.addEventListener("load", () => {
+            resizeObserver?.disconnect();
+            const body = frame.contentDocument.body;
+            if (!body || !body.querySelector(".sheet-page")) return;
+            body.querySelector(".print-actions")?.remove();
+            const resize = () => { frame.style.height = Math.ceil(body.getBoundingClientRect().height + 2) + "px"; };
+            resizeObserver = new ResizeObserver(resize);
+            resizeObserver.observe(body);
+            resize();
+            printButton.disabled = false;
+        });
+        printButton.onclick = () => { frame.contentWindow.focus(); frame.contentWindow.print(); };
+        const initial = preview.documents.findIndex(document => document.id === preview.selected);
+        selectDocument(Math.max(initial, 0));
+    </script>
+</body>
+</html>

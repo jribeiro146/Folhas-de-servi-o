@@ -84,11 +84,41 @@
         return;
     }
 
+    const showUpdateNotice = () => {
+        const workspace = document.querySelector(".workspace");
+        if (!workspace || document.getElementById("pwa-update-notice")) return;
+        const notice = document.createElement("section");
+        notice.id = "pwa-update-notice";
+        notice.className = "pwa-update-notice";
+        notice.setAttribute("role", "status");
+        notice.textContent = "Está disponível uma nova versão. Confirme que o trabalho ficou guardado no servidor; " +
+            "depois feche todas as abas e janelas desta aplicação e volte a abri-la para atualizar.";
+        workspace.prepend(notice);
+    };
+    const observeUpdate = registration => {
+        if (registration.waiting) showUpdateNotice();
+        const watchInstalling = () => {
+            const candidate = registration.installing;
+            if (!candidate) return;
+            const showWhenInstalled = () => {
+                if (candidate.state === "installed" && registration.active) showUpdateNotice();
+            };
+            candidate.addEventListener("statechange", showWhenInstalled);
+            showWhenInstalled();
+        };
+        registration.addEventListener("updatefound", watchInstalling);
+        // Navigation can start installation before load/register resolves, so
+        // its updatefound event may already have happened. Observe that worker too.
+        watchInstalling();
+        // Deliberately no skipWaiting message or controllerchange reload:
+        // installing a release must not discard a form or pending photographs.
+        return registration;
+    };
     window.addEventListener("load", () => {
         navigator.serviceWorker.register("/service-worker.js", {
             scope: "/",
             updateViaCache: "none"
-        }).then((registration) => registration.update()).catch(() => {});
+        }).then(observeUpdate).then((registration) => registration.update()).catch(() => {});
         showIOSInstallControls();
         showInstallControls();
     });

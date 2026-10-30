@@ -7,6 +7,7 @@ devem ser definidos aqui. Nenhum módulo deve hardcode estes valores.
 
 import os
 import sys
+import logging
 from pathlib import Path
 
 
@@ -101,6 +102,8 @@ LOG_ENABLED: bool = _env_flag("FS_LOG_ENABLED", True)
 LOG_LEVEL: str = os.environ.get("FS_LOG_LEVEL", "INFO").strip().upper() or "INFO"
 _LOG_DIR_VALUE = os.environ.get("FS_LOG_DIR", "").strip()
 LOG_DIR: Path = Path(_LOG_DIR_VALUE) if _LOG_DIR_VALUE else APP_DATA_DIR / "logs"
+# Explicit private directory, independent of data admission and shared with web.
+WORKER_HEALTH_DIR: str = os.environ.get("FS_WORKER_HEALTH_DIR", "").strip()
 LOG_FILE_NAME: str = (
     os.environ.get("FS_LOG_FILE_NAME", "folhas-servico.jsonl").strip()
     or "folhas-servico.jsonl"
@@ -130,6 +133,9 @@ GRAPH_CLIENT_SECRET: str = os.environ.get("GRAPH_CLIENT_SECRET", "").strip()
 # ---------------------------------------------------------------------------
 
 AUTH_PROVIDER: str = os.environ.get("FS_AUTH_PROVIDER", "none").strip().lower()
+# Explicit administrator identity; never enroll the first matching email.
+ADMIN_TENANT_ID: str = os.environ.get("FS_ADMIN_TENANT_ID", "").strip()
+ADMIN_OBJECT_ID: str = os.environ.get("FS_ADMIN_OBJECT_ID", "").strip()
 MICROSOFT_AUTH_REDIRECT_URI: str = os.environ.get("MICROSOFT_AUTH_REDIRECT_URI", "").strip()
 MICROSOFT_AUTH_ALLOWED_DOMAINS: list[str] = [
     domain.strip().lower().lstrip("@")
@@ -147,6 +153,8 @@ MICROSOFT_AUTH_ALLOWED_DOMAINS: list[str] = [
 MAIL_ENABLED: bool = _env_flag("FS_MAIL_ENABLED", False)
 MAIL_SENDER: str = os.environ.get("FS_MAIL_SENDER", "").strip()
 MAIL_TEST_RECIPIENT: str = os.environ.get("FS_MAIL_TEST_RECIPIENT", "").strip()
+# Optional private image in APP_DATA_DIR/mail-assets; only a filename is accepted.
+MAIL_SIGNATURE_FILE: str = os.environ.get("FS_MAIL_SIGNATURE_FILE", "").strip()
 
 # O destino (canal ou chat) é escolhido no Workflow do Teams associado ao URL.
 TEAMS_NOTIFICATIONS_ENABLED: bool = _env_flag("FS_TEAMS_NOTIFICATIONS_ENABLED", False)
@@ -157,6 +165,22 @@ TEAMS_WEBHOOK_URL: str = os.environ.get("FS_TEAMS_WEBHOOK_URL", "").strip()
 # ---------------------------------------------------------------------------
 
 STORAGE_BACKEND: str = os.environ.get("FS_STORAGE_BACKEND", "local").strip().lower()
+
+
+def _warn_implicit_environment() -> None:
+    """Avisa uma configuração incompleta sem ativar transportes ou produção."""
+    if "FS_ENVIRONMENT" not in os.environ and (
+        AUTH_PROVIDER == "microsoft" or STORAGE_BACKEND == "graph"
+    ):
+        logging.getLogger(__name__).warning(
+            "FS_ENVIRONMENT ausente com Microsoft/Graph configurado. "
+            "Mantém-se development: cookies sem Secure e transportes externos "
+            "bloqueados. Defina o modo explicitamente no ambiente de destino."
+        )
+
+
+_warn_implicit_environment()
+
 # Em alojamento WSGI/Passenger, usar False e executar ``python -m src.queue_worker``
 # num processo ou tarefa agendada independente.
 GRAPH_QUEUE_IN_WEB: bool = _env_flag("FS_GRAPH_QUEUE_IN_WEB", True)

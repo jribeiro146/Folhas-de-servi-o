@@ -1,18 +1,51 @@
+x-image: &image
+  build:
+    context: .
+    args:
+      APP_UID: ${APP_UID:-10001}
+      APP_GID: ${APP_GID:-10001}
+  image: ${FS_IMAGE:?Defina FS_IMAGE com a etiqueta do commit verificado}
+
+x-runtime: &runtime
+  <<: *image
+  restart: unless-stopped
+  init: true
+  volumes:
+    - app-data:/app/data
+    - type: bind
+      source: ${FS_LOG_HOST_DIR:-/var/www/vhosts/service.sensorpoint.pt/private/folhas-servico/logs}
+      target: /app/logs
+      bind:
+        create_host_path: false
+  env_file:
+    - .env
+  environment:
+    FS_BASE_PATH: /app/data
+    FS_APP_DATA_DIR: /app/data
+    GRAPH_CACHE_DIR: /app/data/graph-cache
+    FS_LOG_DIR: /app/logs
+    FS_WORKER_HEALTH_DIR: /app/logs/worker-health
+    FS_GRAPH_QUEUE_IN_WEB: "false"
+
 services:
-  app:
-    build: .
-    image: folhas-servico:latest
-    container_name: folhas-servico
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8000:8000"
+  # Only an explicit command for a NEW empty volume, never automatic adoption.
+  prepare:
+    <<: *image
+    profiles: [maintenance]
+    restart: "no"
+    network_mode: none
     volumes:
       - app-data:/app/data
-    env_file:
-      - .env
-    environment:
-      - FS_APP_DATA_DIR=/app/data
-      - GRAPH_CACHE_DIR=/app/data/graph-cache
+    command: ["python", "-B", "tools/prepare_runtime.py", "init", "--data-dir", "/app/data"]
+  app:
+    <<: *runtime
+    container_name: folhas-servico
+    ports:
+      - "127.0.0.1:8000:8000"
+  worker:
+    <<: *runtime
+    container_name: folhas-servico-worker
+    command: ["python", "-B", "-m", "src.queue_worker", "--watch", "--interval", "5"]
 
 volumes:
   app-data:

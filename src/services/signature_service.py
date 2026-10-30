@@ -9,6 +9,7 @@ import secrets
 import shutil
 import time
 from pathlib import Path
+from src.services.bundle_removals import record_removal, cancel_removal
 
 CLIENT_SIGNATURE_LABEL = "Assinatura Cliente"
 TECHNICIAN_SIGNATURE_LABEL = "Assinatura Técnico"
@@ -104,6 +105,7 @@ class SignatureService:
     def _write_signature(self, path: Path, value: object) -> None:
         normalized = self.normalize_value(value)
         if not normalized:
+            record_removal(self.file_path.parent, path)
             if path.exists():
                 path.unlink()
             return
@@ -115,6 +117,7 @@ class SignatureService:
         try:
             temp_path.write_bytes(raw_bytes)
             os.replace(str(temp_path), str(path))
+            cancel_removal(self.file_path.parent, path)
         finally:
             try:
                 temp_path.unlink()

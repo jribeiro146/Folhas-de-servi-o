@@ -1,0 +1,25 @@
+# Linux Python 3.13 / Docker: versions observed in CI run 38243794527.
+# Constraints only: QA entries do not install pytest into the runtime image.
+# Update together with the base digest and a reviewed synthetic Docker run.
+pip==26.2.1
+gunicorn==26.2.0
+blinker==1.9.0
+click==8.5.0
+concurrent-log-handler==0.9.30
+et-xmlfile==2.0.0
+flask==3.1.3
+itsdangerous==2.2.0
+jinja2==3.1.6
+markupsafe==3.0.4
+openpyxl==3.1.5
+pillow==12.1.1
+portalocker==4.4.0
+pypdf==6.20.0
+werkzeug==3.1.9
+
+# QA target only (pytest and its Linux dependencies).
+iniconfig==2.3.1
+packaging==26.3
+pluggy==1.6.0
+pygments==2.21.0
+pytest==9.1.1

@@ -464,7 +464,7 @@ def test_feature_five_assets_and_api_are_not_http_cached(tmp_path):
     assert 'id="autosave-status"' in html
     assert "editing-coordinator.js" in html
     assert "no-store" in api_response.headers["Cache-Control"]
-    assert 'requestUrl.pathname.startsWith("/api/")' in service_worker
+    assert 'url.pathname.startsWith("/api/")' in service_worker
     assert 'caches.match("/")' not in service_worker
     assert "editing-state.css" in service_worker
     coordinator = Path("src/web/static/js/editing-coordinator.js").read_text(encoding="utf-8")
@@ -495,4 +495,6 @@ def test_feature_five_assets_and_api_are_not_http_cached(tmp_path):
     assert "window.location.reload()" in document_editor
     assert 'id="btn-save-send"' in html and 'data-i18n="save_send" disabled' in html
     assert 'id="btn-save-draft"' in html and 'data-i18n="save_draft" disabled' in html
-    assert 'BUILD_VERSION = "20260813-edit-session-v3"' in service_worker
+    # Cache identity now follows admitted content, not a manually maintained date.
+    assert 'const BUILD_VERSION = RELEASE_ID.slice(0, 16)' in service_worker
+    assert '"/static/js/document-validation.js"' in service_worker

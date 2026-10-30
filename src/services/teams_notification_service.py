@@ -4,19 +4,77 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib import error, parse, request
 
-from src.config import TEAMS_WEBHOOK_URL
+from src.config import TEAMS_WEBHOOK_URL, TEAMS_NOTIFICATIONS_ENABLED
+from src.services.runtime_safety import require_live_delivery
 
 
 class TeamsNotificationError(Exception):
     """Erro de configuração ou comunicação com o Teams."""
 
+    retryable = False
+
+    def __init__(self, message: str, *, http_status=None, retry_not_before=None):
+        super().__init__(message)
+        self.http_status = http_status
+        self.retry_not_before = retry_not_before
+
+
+class TeamsNotificationUnknownResultError(TeamsNotificationError):
+    """O POST pode ter sido aceite; nunca repetir sem reconciliação."""
+
+
+class TeamsNotificationThrottledError(TeamsNotificationError):
+    retryable = True
+
+    def __init__(self, deadline: float):
+        super().__init__("Teams Workflow recusou por limite de pedidos (HTTP 429).",
+                         http_status=429, retry_not_before=deadline)
+        self.retry_after_seconds = max(0.0, deadline - time.time())
+        self.retryable = self.retry_after_seconds <= 86400
+
+
+class _NoRedirect(request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _retry_after(headers) -> float | None:
+    value = str(headers.get("Retry-After", "")).strip() if headers is not None else ""
+    try:
+        if re.fullmatch(r"[0-9]{1,64}", value):
+            return time.time() + float(value)
+        else:
+            parsed = parsedate_to_datetime(value)
+            if parsed.tzinfo is None:
+                return None
+            return max(time.time(), parsed.timestamp())
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _check_response(status: int, headers) -> None:
+    if 200 <= status < 300:
+        return
+    if status == 429:
+        deadline = _retry_after(headers)
+        if deadline is not None:
+            raise TeamsNotificationThrottledError(deadline)
+    if 400 <= status < 500 and status not in {408, 425}:
+        raise TeamsNotificationError(f"Teams Workflow recusou o pedido (HTTP {status}).", http_status=status)
+    raise TeamsNotificationUnknownResultError(
+        f"Resultado Teams desconhecido (HTTP {status}); requer reconciliação."
+    )
 
 class TeamsNotificationConfigurationError(TeamsNotificationError):
     """O webhook necessário para notificar o Teams não está configurado."""
+
+    retryable = False
 
 
 @dataclass(frozen=True)
@@ -31,8 +89,9 @@ class TeamsNotificationConfig:
 class TeamsNotificationService:
     """Publica um Adaptive Card num canal ou chat escolhido no Teams Workflow."""
 
-    def __init__(self, config: TeamsNotificationConfig | None = None):
+    def __init__(self, config: TeamsNotificationConfig | None = None, *, transport=None):
         self.config = config or TeamsNotificationConfig.from_env()
+        self._transport = transport
 
     def validate_config(self) -> None:
         value = self.config.webhook_url.strip()
@@ -87,16 +146,30 @@ class TeamsNotificationService:
             },
         }
 
-    def send_prepared(self, prepared: dict[str, Any], *, operation_id: str) -> dict[str, Any]:
+    def validate_prepared(self, prepared: dict[str, Any]) -> bytes:
+        """Validate configuration and payload before recording a possible POST."""
         self.validate_config()
-        payload = dict(prepared.get("payload") or {})
-        if payload.get("type") != "message" or not payload.get("attachments"):
+        if self._transport is None:
+            try:
+                require_live_delivery(TEAMS_NOTIFICATIONS_ENABLED)
+            except ValueError as exc:
+                raise TeamsNotificationConfigurationError(str(exc)) from exc
+        payload = prepared.get("payload") if isinstance(prepared, dict) else None
+        if (not isinstance(payload, dict) or payload.get("type") != "message"
+                or not isinstance(payload.get("attachments"), list) or not payload["attachments"]
+                or any(not isinstance(item, dict) for item in payload["attachments"])):
             raise TeamsNotificationError("A notificação Teams preparada não é válida.")
+        try:
+            return json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (ValueError, TypeError, UnicodeError):
+            raise TeamsNotificationError("A notificação Teams preparada não é válida.") from None
 
+    def send_prepared(self, prepared: dict[str, Any], *, operation_id: str, request_id: str | None = None) -> dict[str, Any]:
+        encoded = self.validate_prepared(prepared)
         correlation_id = re.sub(r"[^A-Za-z0-9._:-]+", "-", str(operation_id))[:200]
         req = request.Request(
             self.config.webhook_url,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            data=encoded,
             headers={
                 "Content-Type": "application/json; charset=utf-8",
                 "User-Agent": "Sensorpoint-FolhasServico/1.0",
@@ -104,20 +177,32 @@ class TeamsNotificationService:
             },
             method="POST",
         )
+        if request_id is not None:
+            from uuid import UUID
+            req.add_header("X-Sensorpoint-Request-Id", str(UUID(request_id)))
+        transport = self._transport or request.build_opener(_NoRedirect()).open
         try:
-            with request.urlopen(req, timeout=30) as response:
-                response.read()
+            with transport(req, timeout=30) as response:
                 status_code = int(response.status)
+                _check_response(status_code, getattr(response, "headers", None))
         except error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise TeamsNotificationError(
-                f"Teams Workflow HTTP {exc.code}: {detail}"
-            ) from exc
-        except error.URLError as exc:
-            raise TeamsNotificationError(f"Teams Workflow indisponível: {exc}") from exc
+            try:
+                status_code = exc.code
+                _check_response(exc.code, exc.headers)
+            except TeamsNotificationError as classified:
+                raise classified from None
+            finally:
+                exc.close()
+        except TeamsNotificationError:
+            raise
+        except Exception:
+            # Do not expose signed webhook URLs or provider response bodies.
+            raise TeamsNotificationUnknownResultError(
+                "Resultado Teams desconhecido após o pedido; requer reconciliação."
+            ) from None
 
         return {
-            "accepted": 200 <= status_code < 300,
+            "accepted": True,
             "status_code": status_code,
             "service_number": str(prepared.get("service_number") or ""),
         }

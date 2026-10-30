@@ -1,0 +1,335 @@
+"""Durable provider deadlines, shared by web, workers and administrative actions.
+
+No network/configuration import at module load: offline migration/backup tools
+use the same validation without instantiating the application.
+"""
+from contextlib import closing
+from email.utils import parsedate_to_datetime
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import re
+import sqlite3
+import threading
+import time
+import uuid
+
+from src.services.sqlite_storage_format import initialize_store, validate_store
+
+STORE_NAME = 'provider-waits.sqlite3'
+AUTOMATIC_WAIT_LIMIT = 86400
+_SCOPE = re.compile(r'(storage|mail|teams|application):[0-9a-f]{64}\Z')
+_deferred_lock = threading.RLock()
+# Emergency containment when the durable write fails. Shared by every service
+# instance using this database in this process; never treated as durable proof.
+_deferred_waits = {}
+
+
+def default_store_path():
+    from src.config import APP_DATA_DIR
+    return APP_DATA_DIR / STORE_NAME
+
+
+def provider_scope(provider, *identifiers):
+    if provider not in {'storage', 'mail', 'teams', 'application'}:
+        raise ValueError('Âmbito de fornecedor inválido.')
+    value = json.dumps([str(item).strip().casefold() for item in identifiers], separators=(',', ':'))
+    return provider + ':' + hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+
+def parse_retry_after(value, *, now, fallback):
+    """Never shorten a valid delay. Huge valid integers suspend, not fallback."""
+    raw = str(value).strip() if value is not None else ''
+    deadline = None
+    kind = 'missing' if not raw else 'invalid'
+    if re.fullmatch(r'[0-9]+', raw):
+        kind = 'seconds'
+        # Avoid Python integer/string conversion limits and floating overflow.
+        # No representable deadline means explicit indefinite intervention.
+        if len(raw.lstrip('0') or '0') <= 64:
+            deadline = now + float(raw.lstrip('0') or '0')
+        else:
+            return {'deadline': None, 'suspended': True, 'source': 'anomalous'}
+    elif raw:
+        try:
+            parsed = parsedate_to_datetime(raw)
+            if parsed.tzinfo is not None:
+                deadline = max(now, parsed.timestamp())
+                kind = 'http_date'
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if deadline is None:
+        deadline = now + fallback
+    if not math.isfinite(deadline):
+        return {'deadline': None, 'suspended': True, 'source': 'anomalous'}
+    return {'deadline': deadline, 'suspended': deadline - now > AUTOMATIC_WAIT_LIMIT, 'source': kind}
+
+
+def _invalid_constant(_):
+    raise ValueError('Constante inválida no prazo do fornecedor.')
+
+
+def validate_pause(value, scope):
+    required = {'format', 'scope', 'provider', 'version', 'deadline', 'suspended', 'source',
+                'observed_at', 'http_status', 'evidence_id', 'failures'}
+    if (not isinstance(value, dict) or set(value) != required or value['format'] != 1
+            or type(value['format']) is not int or not _SCOPE.fullmatch(scope)
+            or value['scope'] != scope or value['provider'] != scope.split(':')[0]
+            or type(value['version']) is not int or value['version'] < 1
+            or type(value['failures']) is not int or not 1 <= value['failures'] <= 16
+            or type(value['suspended']) is not bool
+            or value['source'] not in {'seconds', 'http_date', 'missing', 'invalid', 'anomalous'}
+            or type(value['http_status']) is not int or not 400 <= value['http_status'] <= 599
+            or not isinstance(value['evidence_id'], str) or not re.fullmatch(r'[a-f0-9]{32}', value['evidence_id'])):
+        raise ValueError('Estado de espera inválido; requer diagnóstico.')
+    for key in ('deadline', 'observed_at'):
+        item = value[key]
+        if key == 'deadline' and item is None and value['suspended']:
+            continue
+        if type(item) not in (int, float) or not math.isfinite(item) or item <= 0:
+            raise ValueError('Prazo de fornecedor inválido; requer diagnóstico.')
+    return value
+
+
+def decode_pause(raw, scope):
+    return validate_pause(json.loads(raw, parse_constant=_invalid_constant), scope)
+
+
+class ProviderWaitError(RuntimeError):
+    """A request was refused or prevented; no new remote effect is implied."""
+    def __init__(self, pause, *, now=None):
+        now = time.time() if now is None else now
+        self.pause = validate_pause(dict(pause), pause['scope'])
+        self.scope = pause['scope']
+        self.retry_not_before = pause['deadline']
+        self.retry_after_seconds = max(0.0, pause['deadline'] - now) if pause['deadline'] is not None else None
+        self.retryable = not pause['suspended']
+        self.http_status = pause['http_status']
+        super().__init__('A Microsoft indicou uma espera que requer análise administrativa.' if pause['suspended']
+                         else 'A aguardar o prazo indicado pela Microsoft.')
+
+
+class ProviderWaitStore:
+    def __init__(self, database_path=None, *, clock=None):
+        self.database_path = Path(database_path) if database_path is not None else default_store_path()
+        self._deferred_key = os.path.normcase(str(self.database_path.resolve()))
+        self.clock = clock or time.time
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(self._connect(check_format=False)) as db:
+            initialize_store(db, 'provider_waits')
+            db.execute('PRAGMA journal_mode=WAL')
+            db.execute('PRAGMA synchronous=FULL')
+
+    def _connect(self, *, check_format=True):
+        db = sqlite3.connect(self.database_path, timeout=10, isolation_level=None)
+        db.row_factory = sqlite3.Row
+        try:
+            if check_format:
+                validate_store(db, 'provider_waits')
+            return db
+        except BaseException:
+            db.close()
+            raise
+
+    @staticmethod
+    def _read(db, scope):
+        if not isinstance(scope, str) or not _SCOPE.fullmatch(scope):
+            raise ValueError('Âmbito inválido.')
+        row = db.execute('SELECT state_json FROM provider_waits WHERE scope=?', (scope,)).fetchone()
+        return decode_pause(row[0], scope) if row else None
+
+    @staticmethod
+    def _audit(db, *, actor, action, before, after, reason, now):
+        db.execute('INSERT INTO provider_wait_actions VALUES(?,?,?,?,?,?,?,?)',
+            (uuid.uuid4().hex, after['scope'], actor, action, reason,
+             json.dumps(before), json.dumps(after), now))
+
+    def record(self, scope, *, http_status, retry_after, base_delay=1.0):
+        now = self.clock()
+        with closing(self._connect()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                before = self._read(db, scope)
+                # Consecutive retries keep their exponential backoff, but an
+                # unrelated episode after five quiet minutes starts afresh.
+                # Expiry alone must not reset every scheduled retry to one second.
+                same_episode = before and (before['suspended'] or now <= before['deadline'] + 300)
+                failures = min(16, (before['failures'] if same_episode else 0) + 1)
+                wait = parse_retry_after(retry_after, now=now,
+                    fallback=min(300.0, base_delay * 2 ** min(failures - 1, 8)))
+                if before:
+                    wait['suspended'] = before['suspended'] or wait['suspended']
+                    if before['deadline'] is None or wait['deadline'] is None:
+                        wait['deadline'] = None
+                    else:
+                        wait['deadline'] = max(before['deadline'], wait['deadline'])
+                value = {'format': 1, 'scope': scope, 'provider': scope.split(':')[0],
+                         'version': (before['version'] if before else 0) + 1,
+                         **wait, 'observed_at': now, 'http_status': http_status,
+                         'evidence_id': uuid.uuid4().hex, 'failures': failures}
+                validate_pause(value, scope)
+                db.execute('INSERT INTO provider_waits VALUES(?,?,?) ON CONFLICT(scope) DO UPDATE '
+                           'SET state_json=excluded.state_json,updated_at=excluded.updated_at',
+                           (scope, json.dumps(value), now))
+                self._audit(db, actor='system', action='provider_wait_recorded', before=before,
+                            after=value, reason='Resposta Microsoft registada.', now=now)
+                db.commit()
+                return value
+            except BaseException:
+                db.rollback()
+                raise
+
+    def blocking(self, scopes):
+        scopes = tuple(scopes)
+        deferred = self._flush_deferred(scopes)
+        now = self.clock()
+        with closing(self._connect()) as db:
+            db.execute('BEGIN')
+            observed = {scope: value for scope in scopes if (value := self._read(db, scope)) is not None}
+        for value in deferred:
+            observed[value['scope']] = self._merge_observed(observed.get(value['scope']), value)
+        values = [value for value in observed.values() if value['suspended'] or value['deadline'] > now]
+        return max(values, key=lambda value: (value['suspended'], value['deadline'] is None,
+                   value['deadline'] or 0)) if values else None
+
+    def defer(self, scope, *, http_status, retry_after):
+        """Contain a failed durable write and retain its original absolute time."""
+        now = self.clock()
+        wait = parse_retry_after(retry_after, now=now, fallback=30.0)
+        value = {'format': 1, 'scope': scope, 'provider': scope.split(':')[0], 'version': 1,
+                 **wait, 'observed_at': now, 'http_status': http_status,
+                 'evidence_id': uuid.uuid4().hex, 'failures': 1}
+        validate_pause(value, scope)
+        key = (self._deferred_key, scope)
+        with _deferred_lock:
+            before = _deferred_waits.get(key)
+            if before:
+                value = self._merge_observed(before['value'], value)
+            _deferred_waits[key] = {'value': value, 'retry_at': now}
+        return dict(value)
+
+    @staticmethod
+    def _merge_observed(before, value):
+        if before is None:
+            return dict(value)
+        return {**value, 'version': before['version'] + 1,
+                'suspended': before['suspended'] or value['suspended'],
+                'deadline': (max(before['deadline'], value['deadline'])
+                             if before['deadline'] is not None and value['deadline'] is not None else None)}
+
+    def _persist_deferred(self, value):
+        # Do not reparse a relative Retry-After: doing so would extend the wait
+        # on every recovery attempt or lose an anomalous suspension near expiry.
+        with closing(self._connect()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                before = self._read(db, value['scope'])
+                after = self._merge_observed(before, value)
+                validate_pause(after, after['scope'])
+                db.execute('INSERT INTO provider_waits VALUES(?,?,?) ON CONFLICT(scope) DO UPDATE '
+                           'SET state_json=excluded.state_json,updated_at=excluded.updated_at',
+                           (after['scope'], json.dumps(after), self.clock()))
+                self._audit(db, actor='system', action='provider_wait_recorded', before=before,
+                            after=after, reason='Espera recuperada após falha de armazenamento.', now=self.clock())
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+
+    def _flush_deferred(self, scopes=None):
+        path = self._deferred_key
+        now = self.clock()
+        with _deferred_lock:
+            pending = [(key, dict(entry['value']), entry['retry_at'])
+                       for key, entry in _deferred_waits.items()
+                       if key[0] == path and (scopes is None or key[1] in scopes)]
+            for key, value, retry_at in pending:
+                if retry_at <= now:
+                    _deferred_waits[key]['retry_at'] = now + 10
+        for key, value, retry_at in pending:
+            if retry_at > now:
+                continue
+            try:
+                self._persist_deferred(value)
+            except Exception:
+                continue  # Keep the in-process guard; never turn failure into readiness.
+            with _deferred_lock:
+                current = _deferred_waits.get(key)
+                if current and current['value']['evidence_id'] == value['evidence_id']:
+                    del _deferred_waits[key]
+        with _deferred_lock:
+            return [dict(entry['value']) for key, entry in _deferred_waits.items()
+                    if key[0] == path and (scopes is None or key[1] in scopes)]
+
+    def require_ready(self, scopes):
+        value = self.blocking(scopes)
+        if value:
+            raise ProviderWaitError(value, now=self.clock())
+
+    def resume(self, scope, *, expected_version, evidence_id, actor, reason):
+        if (type(expected_version) is not int or not isinstance(actor, str) or not actor.strip()
+                or not isinstance(reason, str) or not 3 <= len(reason.strip()) <= 400):
+            raise ValueError('Identifique o responsável e o motivo da decisão.')
+        now = self.clock()
+        with closing(self._connect()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                before = self._read(db, scope)
+                if (not before or before['version'] != expected_version or before['evidence_id'] != evidence_id):
+                    raise ValueError('A espera mudou. Atualize o diagnóstico antes de decidir.')
+                if not before['suspended']:
+                    raise ValueError('Esta espera não requer uma decisão administrativa.')
+                if before['deadline'] is None or now < before['deadline']:
+                    raise ValueError('O prazo do fornecedor não pode ser antecipado. Confirme a causa da resposta anómala.')
+                after = {**before, 'suspended': False, 'version': before['version'] + 1,
+                         'evidence_id': uuid.uuid4().hex}
+                self._audit(db, actor=actor, action='provider_wait_resumed', before=before,
+                            after=after, reason=reason.strip(), now=now)
+                db.execute('UPDATE provider_waits SET state_json=?,updated_at=? WHERE scope=?',
+                           (json.dumps(after), now, scope))
+                db.commit()
+                return self.public(after, now=now)
+            except BaseException:
+                db.rollback()
+                raise
+
+    @staticmethod
+    def public(value, *, now):
+        validate_pause(value, value['scope'])
+        return {key: value[key] for key in ('scope', 'provider', 'version', 'deadline', 'suspended',
+                'observed_at', 'evidence_id')} | {'blocked': value['suspended'] or value['deadline'] > now,
+                'can_resume': value['suspended'] and value['deadline'] is not None and value['deadline'] <= now}
+
+    def overview(self):
+        deferred = self._flush_deferred()
+        now = self.clock()
+        with closing(self._connect()) as db:
+            rows = db.execute('SELECT scope,state_json FROM provider_waits ORDER BY updated_at DESC LIMIT 100').fetchall()
+        values = {row['scope']: decode_pause(row['state_json'], row['scope']) for row in rows}
+        for value in deferred:
+            values[value['scope']] = self._merge_observed(values.get(value['scope']), value)
+        unrecorded = {value['scope'] for value in deferred}
+        return [self.public(value, now=now) | ({'can_resume': False} if scope in unrecorded else {})
+                for scope, value in values.items()]
+
+    def history(self, *, automatic=None):
+        clause, params = '', ()
+        if automatic is not None:
+            clause = 'WHERE action=? '
+            params = ('provider_wait_recorded' if automatic else 'provider_wait_resumed',)
+        with closing(self._connect()) as db:
+            rows = db.execute('SELECT id,scope,actor,action,reason,created_at FROM provider_wait_actions '
+                              + clause + 'ORDER BY created_at DESC,id DESC LIMIT 100', params).fetchall()
+        return [dict(row) for row in rows]
+
+
+def validate_provider_rows(db):
+    """Offline validation for migration/backup; unknown guard state is not reset."""
+    for scope, raw in db.execute('SELECT scope,state_json FROM provider_waits'):
+        decode_pause(raw, scope)
+    for scope, before, after in db.execute('SELECT scope,before_json,after_json FROM provider_wait_actions'):
+        if before != 'null':
+            decode_pause(before, scope)
+        decode_pause(after, scope)

@@ -102,6 +102,7 @@ def isolated_dirs(monkeypatch):
 
     monkeypatch.setattr(archive_module, "EXCEL_ARQUIVADAS_DIR", archived_dir)
     monkeypatch.setattr(archive_module, "EXCEL_CANCELADAS_DIR", canceled_dir)
+    monkeypatch.setattr(application_module, "EXCEL_CANCELADAS_DIR", canceled_dir)
     try:
         yield {
             "active": active_dir,
@@ -263,6 +264,8 @@ def test_web_api_flow_send_and_cancel(isolated_dirs):
         "technician_records": [
             {
                 "technician": "João Freire",
+                "start_time": "09:00",
+                "end_time": "11:30",
                 "date": "2026-04-17",
             }
         ],
@@ -611,6 +614,7 @@ def test_web_api_allows_client_absence_without_signature_and_records_it(isolated
         f"/api/file/{draft_name}/send",
         json={
             "customer_name": "Cliente ausente",
+            "technician_records": [{"technician": "Técnico fictício", "start_time": "09:00", "end_time": "10:00", "date": "2026-07-10"}],
             "client_not_present": True,
             "customer_signature_date": "2026-07-10",
             "_edit": edit_metadata(editing),
@@ -744,7 +748,7 @@ def test_send_queues_customer_email_with_technician_cc_and_teams_notice(
             "customer_email": "cliente@example.com",
             "client_not_present": True,
             "intervention_report": "Serviço concluído",
-            "technician_records": [{"technician": "João Freire"}],
+            "technician_records": [{"technician": "João Freire", "start_time": "09:00", "end_time": "10:00", "date": "2026-09-08"}],
             "_edit": edit_metadata(editing, client_id="mail-tab"),
         },
     )
@@ -825,7 +829,7 @@ def test_send_without_customer_email_archives_without_mail_or_preflight(isolated
             "customer_name": "Cliente sem email",
             "client_not_present": True,
             "intervention_report": "Serviço concluído",
-            "technician_records": [{"technician": "João Freire"}],
+            "technician_records": [{"technician": "João Freire", "start_time": "09:00", "end_time": "10:00", "date": "2026-09-08"}],
             "_edit": edit_metadata(editing, client_id="no-mail-tab"),
         },
     )
@@ -879,7 +883,7 @@ def test_customer_email_is_optional_in_editor_when_mail_is_enabled(isolated_dirs
     assert '"key": "customer_email"' not in html
 
 
-def test_mail_diagnostic_endpoint_authenticates_without_sending(isolated_dirs):
+def test_mail_diagnostic_endpoint_refuses_anonymous_without_contacting_provider(isolated_dirs):
     class DiagnosticMail:
         calls = 0
 
@@ -912,19 +916,12 @@ def test_mail_diagnostic_endpoint_authenticates_without_sending(isolated_dirs):
 
     response = client.get("/api/mail/test")
 
-    assert response.status_code == 200
-    assert response.get_json() == {
-        "success": True,
-        "mail": {
-            "authenticated": True,
-            "mail_send_permission": True,
-            "sender": "service@sensorpoint.pt",
-        },
-    }
-    assert mail.calls == 1
+    assert response.status_code == 403
+    assert response.get_json()["code"] == "diagnostic_access_denied"
+    assert mail.calls == 0
 
 
-def test_send_checks_mail_credentials_before_archiving(isolated_dirs, monkeypatch):
+def test_send_checks_mail_credentials_before_archiving(isolated_dirs, monkeypatch, caplog):
     import src.web.application as application_module
 
     monkeypatch.setattr(application_module, "ACTIVE_AUTH_PROVIDER", "microsoft")
@@ -986,18 +983,86 @@ def test_send_checks_mail_credentials_before_archiving(isolated_dirs, monkeypatc
             "customer_email": "cliente@example.com",
             "client_not_present": True,
             "intervention_report": "Serviço concluído",
-            "technician_records": [{"technician": "João Freire"}],
+            "technician_records": [{"technician": "João Freire", "start_time": "09:00", "end_time": "10:00", "date": "2026-09-08"}],
             "_edit": edit_metadata(editing, client_id="mail-preflight-tab"),
         },
     )
 
     assert response.status_code == 503
-    assert response.get_json()["error"] == "A permissão Mail.Send não está disponível."
+    assert response.get_json()["code"] == "mail_preflight_configuration_failed"
+    assert response.get_json()["reference"] == response.headers["X-Request-ID"]
+    assert response.get_json()["reference"] in response.get_json()["error"]
+    failure = next(record for record in caplog.records if getattr(record, "event", None) == "mail_preflight_configuration_failed")
+    assert failure.event_fields["cause"] == "missing_mail_send"
     assert source.exists()
     assert queue.calls == []
 
 
-def test_failed_job_can_only_be_retried_through_explicit_endpoint(isolated_dirs):
+@pytest.mark.parametrize("signature_state", ["missing", "invalid", "valid"])
+def test_signature_preflight_happens_before_claim_archive_and_queue(isolated_dirs, monkeypatch, tmp_path, signature_state):
+    import sqlite3
+    from contextlib import closing
+    from dataclasses import replace
+    from PIL import Image
+    import src.web.application as application_module
+    import src.services.graph_mail_service as mail_module
+    from tests.test_durable_mail import make_mail
+
+    monkeypatch.setattr(application_module, "ACTIVE_AUTH_PROVIDER", "microsoft")
+    monkeypatch.setattr(application_module, "AUTH_ENABLED", True)
+    monkeypatch.setattr(mail_module, "APP_DATA_DIR", tmp_path)
+    private = tmp_path / "mail-assets"
+    private.mkdir()
+    if signature_state == "valid":
+        Image.new("RGB", (100, 30), "white").save(private / "institution.png")
+    elif signature_state == "invalid":
+        (private / "institution.png").write_bytes(b"fake")
+    mail = make_mail([])
+    mail.config = replace(mail.config, signature_filename="institution.png")
+    checks = []
+    monkeypatch.setattr(mail, "test_connection", lambda: checks.append("credentials") or {"authenticated": True})
+    draft_name = "2026_7002_2026-08-12_JF"
+    source = copy_sample(isolated_dirs["active"], f"{draft_name}.xlsx")
+    class Auth:
+        @staticmethod
+        def user_from_session(payload):
+            return SimpleNamespace(**payload) if payload else None
+    class Queue:
+        def __init__(self):
+            self.calls = []
+        def enqueue(self, kind, payload, *, job_id=None):
+            self.calls.append((kind, payload, job_id))
+            return {"id": job_id, "status": "pending"}
+    queue = Queue()
+    editing_service = EditingStateService(isolated_dirs["editing"])
+    app = create_app(file_service=FileService(isolated_dirs["active"]), archive_service=ArchiveService(),
+        mail_service=mail, microsoft_auth_service=Auth(), editing_state_service=editing_service,
+        graph_sync_queue=queue)
+    client = app.test_client()
+    with client.session_transaction() as state:
+        state["microsoft_user"] = {"id": "synthetic-tech", "display_name": "Técnico Teste", "email": "tech@example.invalid"}
+    editing = acquire_editing(client, draft_name, "signature-tab")
+    response = client.post(f"/api/file/{draft_name}/send", json={
+        "service_number": "2026_7002", "customer_name": "Cliente fictício",
+        "customer_email": "customer@example.invalid", "client_not_present": True,
+        "intervention_report": "Serviço concluído",
+        "technician_records": [{"technician": "João Freire", "start_time": "09:00", "end_time": "10:00", "date": "2026-09-08"}],
+        "_edit": edit_metadata(editing, client_id="signature-tab")})
+    if signature_state == "valid":
+        assert response.status_code == 200, response.get_json()
+        assert response.get_json()["success"] and len(queue.calls) == 1
+        assert list(isolated_dirs["archived"].rglob("*.xlsx")) and checks == ["credentials"]
+    else:
+        assert response.status_code == 503, response.get_json()
+        assert "assinatura" in response.get_json()["error"].lower()
+        assert source.exists() and not queue.calls and not checks
+        assert not list(isolated_dirs["archived"].rglob("*.xlsx"))
+        with closing(sqlite3.connect(editing_service.repository.database_path)) as db:
+            raw = db.execute("SELECT state_json FROM editing_states WHERE document_id=?", (editing["document_id"],)).fetchone()[0]
+        assert not json.loads(raw).get("operations")
+
+
+def test_legacy_retry_endpoint_requires_authenticated_admin(isolated_dirs):
     class RetryQueue:
         calls = []
 
@@ -1020,12 +1085,8 @@ def test_failed_job_can_only_be_retried_through_explicit_endpoint(isolated_dirs)
 
     response = client.post("/api/graph/jobs/send%3Amanual%3A1/retry")
 
-    assert response.status_code == 202
-    assert response.get_json() == {
-        "success": True,
-        "job": {"id": "send:manual:1", "status": "pending", "will_retry": False},
-    }
-    assert queue.calls == ["send:manual:1"]
+    assert response.status_code == 403
+    assert queue.calls == []
 
 
 def test_editor_loads_mail_job_monitor_before_document_actions(isolated_dirs):

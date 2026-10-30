@@ -1,0 +1,95 @@
+name: Production reconciliation
+on:
+  push:
+    branches: [codex/producao-melhorias-20260928, 'codex/validacao-linux-*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Preserve command failures through tee; GitHub's implicit shell lacks pipefail.
+defaults:
+  run:
+    shell: bash
+
+# A newer commit cancels obsolete work on this branch; failures never auto-rerun.
+concurrency:
+  group: validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  javascript:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Synthetic browser logic
+        run: |
+          mkdir "$RUNNER_TEMP/js-evidence"
+          git rev-parse HEAD > "$RUNNER_TEMP/js-evidence/commit.txt"
+          node --test tests/js/*.test.cjs | tee "$RUNNER_TEMP/js-evidence/node.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: javascript-${{ github.sha }}
+          path: ${{ runner.temp }}/js-evidence/
+          retention-days: 30
+
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - identity: default
+            uid: '10001'
+            gid: '10001'
+            compose: v5.6.0
+          - identity: hs4
+            uid: '100'
+            gid: '101'
+            compose: v2.27.0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: docker/setup-compose-action@v2
+        with:
+          version: ${{ matrix.compose }}
+      - name: Package the exact clean commit
+        run: |
+          mkdir "$RUNNER_TEMP/package-evidence"
+          python -B tools/build_release.py --revision "$(git rev-parse HEAD)" --output "$RUNNER_TEMP/release.zip" | tee "$RUNNER_TEMP/package-evidence/package.json"
+          sha256sum "$RUNNER_TEMP/release.zip" > "$RUNNER_TEMP/package-evidence/zip-sha256.txt"
+          python -m zipfile -e "$RUNNER_TEMP/release.zip" "$RUNNER_TEMP/release"
+      - name: Build and run synthetic Linux acceptance without runtime network
+        env:
+          APP_UID: ${{ matrix.uid }}
+          APP_GID: ${{ matrix.gid }}
+        run: bash tools/validate_docker.sh "$RUNNER_TEMP/release" "$RUNNER_TEMP/evidence" "$APP_UID" "$APP_GID"
+      - name: Record execution in the run summary
+        if: always()
+        env:
+          RESULT: ${{ job.status }}
+          IDENTITY: ${{ matrix.identity }}
+        run: |
+          printf '### Linux/Docker %s\n\nCommit: `%s` â€” job: **%s**\n\n' "$IDENTITY" "$GITHUB_SHA" "$RESULT" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Synthetic data only. Production AlmaLinux kernel/PDF remains an installer check. See attached evidence.\n' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-${{ matrix.identity }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/evidence/
+            ${{ runner.temp }}/package-evidence/
+          retention-days: 30

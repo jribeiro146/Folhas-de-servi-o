@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import logging
 import mimetypes
 import os
 import re
@@ -10,6 +12,7 @@ import secrets
 import shutil
 import stat
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,6 +27,13 @@ from src.config import (
     GRAPH_TENANT_ID,
 )
 from src.services.photo_attachment_service import PHOTO_FOLDER_NAME, PhotoAttachmentService
+from src.services.local_changes import DIRTY_MARKER, bundle_guard, dirty_version
+from src.services.file_mutex import FileMutexBusy
+from src.services.active_file_index import ACTIVE_INDEX_NAME
+from src.services.file_diagnostics import SYNC_ID, diagnostic, file_fields, fingerprint
+from src.services.bundle_removals import REMOVALS_NAME, read_removals, write_removals, metadata
+from src.services.signature_service import ALL_SIGNATURE_FIELD_TO_SUFFIX
+from src.services.provider_waits import ProviderWaitStore, ProviderWaitError, provider_scope
 
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
@@ -41,6 +51,12 @@ class GraphStorageError(Exception):
 
 class GraphConflictError(GraphStorageError):
     """Raised when a conditional Graph update targets an obsolete eTag."""
+
+    retryable = False
+
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -76,10 +92,25 @@ class GraphConfig:
 class GraphStorageService:
     """Downloads active Excel files and uploads archived bundles through Graph."""
 
-    def __init__(self, config: GraphConfig | None = None):
+    def __init__(self, config: GraphConfig | None = None, *, provider_wait_store=None):
         self.config = config or GraphConfig.from_env()
+        self._provider_wait_store = provider_wait_store
         self._access_token: str | None = None
         self._access_token_expires_at = 0.0
+
+    @property
+    def provider_wait_store(self):
+        if self._provider_wait_store is None:
+            self._provider_wait_store = ProviderWaitStore()
+        return self._provider_wait_store
+
+    @property
+    def provider_scopes(self):
+        return (provider_scope('storage', self.config.tenant_id, self.config.client_id, self.config.drive_id),
+                provider_scope('application', self.config.tenant_id, self.config.client_id))
+
+    def provider_pause(self):
+        return self.provider_wait_store.blocking(self.provider_scopes)
 
     def validate_config(self) -> None:
         missing = self.config.missing_fields()
@@ -112,28 +143,117 @@ class GraphStorageService:
 
     def sync_active_files(self, local_active_dir: Path) -> list[Path]:
         """Download active Excel files and draft bundles into the local cache."""
+        context = SYNC_ID.set(SYNC_ID.get() or secrets.token_hex(16))
+        started = time.perf_counter()
+        diagnostic("active_sync_started")
+        try:
+            with bundle_guard(local_active_dir):
+                result = self._sync_active_files_unlocked(local_active_dir)
+            diagnostic("active_sync_completed", file_count=len(result),
+                       duration_ms=round((time.perf_counter() - started) * 1000, 2))
+            return result
+        except Exception as exc:
+            diagnostic("active_sync_failed", level=logging.WARNING,
+                       reason="already_running" if isinstance(exc, FileMutexBusy) else "sync_error",
+                       error_type=type(exc).__name__,
+                       duration_ms=round((time.perf_counter() - started) * 1000, 2))
+            raise
+        finally:
+            SYNC_ID.reset(context)
+
+    def _sync_active_files_unlocked(self, local_active_dir: Path) -> list[Path]:
         self.validate_config()
         local_active_dir.mkdir(parents=True, exist_ok=True)
         downloaded: list[Path] = []
         remote_names: set[str] = set()
+        items = self._valid_inventory_items(self.list_active_items())
+        remote_files: list[str] = []
+        unavailable_files: set[str] = set()
+        bundle_children: dict[str, list[dict[str, Any]]] = {}
+        # Complete every listing before changing the cache or publishing the index.
+        for item in items:
+            name = self._safe_file_name(str(item.get("name") or ""))
+            if self._is_graph_metadata_file(Path(name)):
+                continue
+            if self._is_excel_item(item):
+                remote_files.append(name)
+                local_path = local_active_dir / name
+                if not self._is_cache_current(local_path, self._item_meta_path(local_path), item):
+                    unavailable_files.add(name)
+            elif item.get("folder"):
+                children = self._valid_inventory_items(self._list_children(str(item["id"])))
+                bundle_children[str(item["id"])] = children
+                remote_files.extend(
+                    f"{name}/{self._safe_file_name(str(child.get('name') or ''))}"
+                    for child in children if self._is_excel_item(child)
+                )
+                for child in children:
+                    if self._is_excel_item(child):
+                        relative = f"{name}/{self._safe_file_name(str(child.get('name') or ''))}"
+                        local_path = local_active_dir / relative
+                        if not (local_path.exists() and dirty_version(local_path.parent)) and not self._is_cache_current(
+                            local_path, self._item_meta_path(local_path), child
+                        ):
+                            unavailable_files.add(relative)
+        # Visibility follows the completed remote inventory, even when fetching
+        # content subsequently fails. Never publish a partially listed folder.
+        inventory = {"version": 1, "files": sorted(set(remote_files)),
+                     "updated_at": time.time(), "refresh_id": SYNC_ID.get(),
+                     "unavailable_files": sorted(unavailable_files)}
+        self._atomic_write_json(local_active_dir / ACTIVE_INDEX_NAME, inventory)
         self._repair_active_cache(local_active_dir)
 
-        for item in self.list_active_items():
+        failed_downloads = 0
+        for item in items:
             item_name = self._safe_file_name(str(item.get("name") or ""))
             remote_names.add(item_name)
-
-            if self._is_excel_item(item):
-                downloaded.append(self._sync_active_workbook(item, local_active_dir))
+            if self._is_graph_metadata_file(Path(item_name)):
                 continue
 
-            if item.get("folder"):
-                bundle_path = self._sync_active_bundle(item, local_active_dir)
-                if bundle_path is not None:
-                    downloaded.append(bundle_path)
+            try:
+                if self._is_excel_item(item):
+                    downloaded.append(self._sync_active_workbook(item, local_active_dir))
+                    unavailable_files.discard(item_name)
+                    continue
+
+                if item.get("folder"):
+                    bundle_path = self._sync_active_bundle(
+                        item, local_active_dir, children=bundle_children[str(item["id"])]
+                    )
+                    if bundle_path is not None:
+                        downloaded.append(bundle_path)
+                        unavailable_files.difference_update(
+                            relative for relative in tuple(unavailable_files)
+                            if relative.startswith(item_name + "/")
+                            and (local_active_dir / relative).is_file()
+                        )
+            except (GraphStorageError, OSError):
+                failed_downloads += 1
+                diagnostic("active_content_unavailable", level=logging.WARNING,
+                           **file_fields(item_name), reason="download_failed")
 
         self._remove_stale_active_cache(local_active_dir, remote_names)
-
+        inventory["unavailable_files"] = sorted(unavailable_files)
+        self._atomic_write_json(local_active_dir / ACTIVE_INDEX_NAME, inventory)
+        if failed_downloads or unavailable_files:
+            raise GraphStorageError(
+                "Inventário confirmado, mas existe conteúdo indisponível. "
+                "Volte a atualizar para obter os ficheiros em falta."
+            )
         return downloaded
+
+    def _valid_inventory_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        valid = []
+        for item in items:
+            try:
+                self._safe_file_name(str(item.get("name") or ""))
+            except GraphStorageError:
+                diagnostic("graph_inventory_item_skipped", level=logging.WARNING,
+                           graph_item_ref=fingerprint(item.get("id", "")),
+                           reason="invalid_name")
+                continue
+            valid.append(item)
+        return valid
 
     def list_active_workbooks(self) -> list[dict[str, Any]]:
         return [
@@ -143,15 +263,43 @@ class GraphStorageService:
 
     def list_active_items(self) -> list[dict[str, Any]]:
         self.validate_config()
-        response = self._graph_json(
-            "GET",
+        return self._all_pages(
             (
                 f"/drives/{self.config.drive_id}/root:/"
                 f"{self._quote_path(self.config.active_path)}:/children"
                 "?$select=id,name,size,lastModifiedDateTime,eTag,file,folder"
             ),
         )
-        return list(response.get("value") or [])
+
+    def _all_pages(self, path: str) -> list[dict[str, Any]]:
+        response = self._graph_json("GET", path)
+        items: list[dict[str, Any]] = []
+        visited: set[str] = set()
+        while True:
+            page = response.get("value")
+            if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
+                raise GraphStorageError("Listagem Graph incompleta ou inválida; cache preservada.")
+            items.extend(page)
+            diagnostic("graph_inventory_page", page_number=len(visited) + 1, item_count=len(page))
+            for item in page:
+                if self._is_excel_item(item) or file_fields(item.get("name", ""))["sheet_number"]:
+                    diagnostic("graph_inventory_file", **file_fields(item.get("name", "")),
+                               recognized_excel=self._is_excel_item(item),
+                               is_folder=bool(item.get("folder")),
+                               graph_item_ref=fingerprint(item.get("id", "")),
+                               version_ref=fingerprint(item.get("eTag", "")),
+                               location_ref=fingerprint(path.split("?")[0]),
+                               size_bytes=item.get("size"))
+            next_url = response.get("@odata.nextLink")
+            if not next_url:
+                return items
+            parsed = parse.urlsplit(str(next_url))
+            root = parse.urlsplit(GRAPH_ROOT)
+            if (parsed.scheme != "https" or parsed.netloc.casefold() != root.netloc.casefold()
+                    or not parsed.path.startswith(root.path + "/") or str(next_url) in visited):
+                raise GraphStorageError("Paginação Graph inválida; cache preservada.")
+            visited.add(str(next_url))
+            response = self._request_json(str(next_url), method="GET", headers={"Accept": "application/json"})
 
     def list_folder_children(self, folder_path: str) -> list[dict[str, Any]]:
         """Lista todos os filhos diretos de uma pasta, incluindo todas as páginas Graph."""
@@ -223,19 +371,54 @@ class GraphStorageService:
 
         archive_folder_name = archived_excel_path.parent.name
         remote_folder = self._join_graph_path(self.config.archive_path, archive_folder_name)
-        self.ensure_folder_path(remote_folder)
+        folder = self._owned_archive_folder(archived_excel_path.parent)
 
         uploaded: list[str] = []
         for local_file in self._iter_uploadable_files(archived_excel_path.parent):
             remote_path = self._join_graph_path(remote_folder, local_file.name)
-            item = self.upload_file(local_file, remote_path, expected_etag=self._expected_etag(local_file))
+            item = self._upload_archive_file(local_file, remote_path, str(folder["id"]))
             self._write_item_meta(self._item_meta_path(local_file), item)
             uploaded.append(remote_path)
 
         uploaded.extend(
-            self._upload_photo_folder(archived_excel_path.parent, remote_folder)
+            self._upload_photo_folder(archived_excel_path.parent, remote_folder, archive_folder_id=str(folder["id"]))
         )
         return uploaded
+
+    def _owned_archive_folder(self, bundle_dir: Path) -> dict[str, Any]:
+        remote_path = self._join_graph_path(self.config.archive_path, bundle_dir.name)
+        owner_path = bundle_dir / ".fs-archive-owner.json"
+        try:
+            owner = json.loads(owner_path.read_text(encoding="utf-8")) if owner_path.exists() else {}
+            if not isinstance(owner, dict):
+                raise ValueError("Invalid archive ownership")
+        except (OSError, ValueError) as exc:
+            raise GraphConflictError("Prova local do arquivo inválida; requer revisão.") from exc
+        remote = self._get_item_by_path(remote_path)
+        if remote is not None:
+            if not owner.get("id") or owner["id"] != remote.get("id") or "folder" not in remote:
+                raise GraphConflictError("Já existe um arquivo remoto com este nome sem prova de propriedade local.")
+            self._require_folder(remote, bundle_dir.name, expected_id=owner["id"])
+            return remote
+        return self._create_owned_folder(bundle_dir, owner_path, self.config.archive_path)
+
+    def _upload_archive_file(self, local_file: Path, remote_path: str, parent_id: str) -> dict[str, Any]:
+        expected = self._expected_etag(local_file)
+        if expected:
+            return self.upload_file(local_file, remote_path, expected_etag=expected, parent_item_id=parent_id)
+        try:
+            return self.upload_file(local_file, remote_path, create_only=True, parent_item_id=parent_id)
+        except GraphConflictError:
+            # A lost creation reply is recoverable only within our owned folder,
+            # by reading the exact bytes. Never overwrite to "verify" a file.
+            item = self._graph_json("GET", f"/drives/{self.config.drive_id}/items/{parse.quote(parent_id, safe='')}:/{self._quote_path(local_file.name)}")
+            if (not item.get("id") or not item.get("eTag") or "file" not in item
+                    or item.get("name") != local_file.name):
+                raise GraphConflictError("O ficheiro do arquivo remoto não corresponde à publicação local.")
+            content = self._graph_bytes("GET", f"/drives/{self.config.drive_id}/items/{parse.quote(str(item['id']), safe='')}/content")
+            if hashlib.sha256(content).digest() != hashlib.sha256(local_file.read_bytes()).digest():
+                raise GraphConflictError("O ficheiro do arquivo remoto tem conteúdo diferente; foi preservado.")
+            return item
 
     def export_archive_pdf(self, archived_excel_path: Path) -> tuple[Path, str]:
         """Converte o HTML final remoto em PDF e publica o mesmo artefacto."""
@@ -254,11 +437,11 @@ class GraphStorageService:
             archived_excel_path.parent.name,
         )
         remote_html = self._join_graph_path(archive_folder, html_path.name)
+        folder = self._owned_archive_folder(archived_excel_path.parent)
         pdf_bytes = self._graph_bytes(
             "GET",
             (
-                f"/drives/{self.config.drive_id}/root:/"
-                f"{self._quote_path(remote_html)}:/content?format=pdf"
+                f"/drives/{self.config.drive_id}/items/{parse.quote(str(folder['id']), safe='')}:/{self._quote_path(html_path.name)}:/content?format=pdf"
             ),
         )
         if not pdf_bytes.startswith(b"%PDF-"):
@@ -280,11 +463,7 @@ class GraphStorageService:
                 pass
 
         remote_pdf = self._join_graph_path(archive_folder, pdf_path.name)
-        item = self.upload_file(
-            pdf_path,
-            remote_pdf,
-            expected_etag=self._expected_etag(pdf_path),
-        )
+        item = self._upload_archive_file(pdf_path, remote_pdf, str(folder["id"]))
         self._write_item_meta(self._item_meta_path(pdf_path), item)
         return pdf_path, remote_pdf
 
@@ -296,27 +475,164 @@ class GraphStorageService:
 
         bundle_dir = draft_excel_path.parent
         remote_folder = self._join_graph_path(self.config.active_path, bundle_dir.name)
-        if fail_if_exists and self._path_exists(remote_folder):
-            raise GraphStorageError(
-                f"Já existe um rascunho no SharePoint com o nome '{bundle_dir.name}'. "
-                "Atualize a lista e volte a guardar para criar um nome único."
+        remote = self._get_item_by_path(remote_folder)
+        ownership_path = bundle_dir / ".fs-upload-owner.json"
+        def stored_id(path: Path) -> str:
+            try:
+                return str(json.loads(path.read_text(encoding="utf-8")).get("id") or "")
+            except (OSError, ValueError, AttributeError):
+                return ""
+        if remote:
+            known_id = stored_id(ownership_path) if fail_if_exists else (
+                stored_id(bundle_dir / ".graph_bundle.json") or stored_id(ownership_path)
             )
-
-        self.ensure_folder_path(remote_folder)
+            if not known_id or known_id != str(remote.get("id") or ""):
+                raise GraphConflictError(
+                    "Já existe um rascunho remoto com este nome sem correspondência local. "
+                    "Resolva o conflito antes de publicar."
+                )
+            self._require_folder(remote, bundle_dir.name, expected_id=known_id)
+        else:
+            remote = self._create_owned_active_folder(bundle_dir, ownership_path)
+        self._apply_explicit_removals(bundle_dir, remote_folder)
         uploaded: list[str] = []
         for local_file in self._iter_uploadable_files(bundle_dir):
             remote_path = self._join_graph_path(remote_folder, local_file.name)
-            item = self.upload_file(local_file, remote_path, expected_etag=self._expected_etag(local_file))
-            self._write_item_meta(self._item_meta_path(local_file), item)
+            if metadata(local_file).get("deleted"):
+                item = self.upload_file(local_file, remote_path, create_only=True)
+            else:
+                item = self.upload_file(local_file, remote_path, expected_etag=self._expected_etag(local_file))
+            self._write_item_meta(self._item_meta_path(local_file), {**item, "_local_publication": True})
             uploaded.append(remote_path)
 
         uploaded.extend(
-            self._upload_photo_folder(bundle_dir, remote_folder, prune=True)
+            self._upload_photo_folder(bundle_dir, remote_folder, prune=True, active_folder_id=str(remote["id"]))
         )
         folder_item = self._get_item_by_path(remote_folder) or {"name": bundle_dir.name}
         folder_item["remote_path"] = remote_folder
         self._write_bundle_meta(bundle_dir, folder_item)
         return uploaded
+
+    def _apply_explicit_removals(self, bundle_dir: Path, remote_folder: str) -> None:
+        records = read_removals(bundle_dir)
+        signature_names = {f"{bundle_dir.name}__assinatura_{suffix}.png"
+                           for suffix in ALL_SIGNATURE_FIELD_TO_SUFFIX.values()}
+        for name, record in records.items():
+            parts = name.split("/")
+            is_photo = (len(parts) == 2 and parts[0] == PHOTO_FOLDER_NAME
+                        and PhotoAttachmentService.is_managed_filename(parts[1]))
+            if name not in signature_names and not is_photo:
+                raise GraphConflictError("Remoção de ficheiro não suportada; requer revisão.")
+            if record.get("confirmed"):
+                continue
+            file = bundle_dir / name
+            receipt = metadata(file)
+            already_removed = (receipt.get("deleted") and receipt.get("id") == record.get("id")
+                               and receipt.get("eTag") == record.get("eTag"))
+            if not already_removed:
+                remote = self._get_item_by_path(self._join_graph_path(remote_folder, name))
+                if remote is not None:
+                    if (not record.get("id") or not record.get("eTag") or remote.get("id") != record["id"]
+                            or remote.get("eTag") != record["eTag"]):
+                        raise GraphConflictError("O anexo remoto mudou ou não tem versão conhecida. Requer revisão.")
+                    self._delete_item_by_id(record["id"], expected_etag=record["eTag"])
+            self._atomic_write_json(self._item_meta_path(file), {
+                "id": record.get("id", ""), "eTag": record.get("eTag", ""), "deleted": True})
+            record["confirmed"] = True
+            write_removals(bundle_dir, records)
+
+    def _create_owned_active_folder(self, bundle_dir: Path, ownership_path: Path) -> dict[str, Any]:
+        return self._create_owned_folder(bundle_dir, ownership_path, self.config.active_path)
+
+    def _create_owned_folder(self, bundle_dir: Path, ownership_path: Path, root_path: str) -> dict[str, Any]:
+        """Create via a durable random name so a lost POST reply is recoverable.
+
+        Persist the ID before renaming to the human-readable name. A retry can
+        then prove ownership even if the PATCH reply was also lost. Never adopt
+        an existing folder solely because its human-readable name matches.
+        """
+        try:
+            owner = json.loads(ownership_path.read_text(encoding="utf-8"))
+            if not isinstance(owner, dict):
+                owner = {}
+        except (OSError, ValueError):
+            owner = {}
+        temporary_name = str(owner.get("temporary_name") or "")
+        if not re.fullmatch(r"\.fs-upload-[0-9a-f]{32}", temporary_name):
+            temporary_name = ".fs-upload-" + secrets.token_hex(16)
+            owner = {"temporary_name": temporary_name}
+            self._atomic_write_json(ownership_path, owner)
+        temporary_path = self._join_graph_path(root_path, temporary_name)
+        # A conflict on the first POST is terminal. After a prior durable
+        # attempt, 409 can instead be our own successful POST with a lost reply
+        # and delayed read visibility. A random name alone is never ownership.
+        if owner.get("creation_conflict"):
+            raise GraphConflictError("A criação da pasta temporária entrou em conflito; requer revisão.")
+        previous_attempt = owner.get("creation_attempted") is True
+        remote = self._get_item_by_path(temporary_path)
+        if remote is not None and not owner.get("id") and not previous_attempt:
+            raise GraphConflictError("A pasta temporária já existe sem prova de criação local.")
+        if remote is None:
+            if owner.get("id"):
+                raise GraphConflictError("A pasta temporária remota já não está na localização esperada.")
+            root = self.ensure_folder_path(root_path)
+            owner["creation_attempted"] = True
+            self._atomic_write_json(ownership_path, owner)
+            try:
+                remote = self._graph_json(
+                    "POST",
+                    f"/drives/{self.config.drive_id}/items/{parse.quote(str(root['id']), safe='')}/children",
+                    data=json.dumps({"name": temporary_name, "folder": {},
+                        "@microsoft.graph.conflictBehavior": "fail"}).encode("utf-8"),
+                    content_type="application/json",
+                )
+            except GraphConflictError as exc:
+                if exc.status_code == 409 and previous_attempt:
+                    # Reuse the same proof that permits recovery on the first
+                    # GET. Eventual visibility must not turn it into rejection.
+                    remote = self._get_item_by_path(temporary_path)
+                    if remote is None:
+                        raise GraphStorageError("A pasta temporária ainda não pôde ser confirmada.") from exc
+                else:
+                    owner["creation_conflict"] = True
+                    self._atomic_write_json(ownership_path, owner)
+                    raise
+        self._require_folder(remote, temporary_name, expected_id=owner.get("id"))
+        owner["id"] = remote["id"]
+        self._atomic_write_json(ownership_path, owner)
+        # SharePoint can change a newly created folder's eTag before the PATCH.
+        # Refresh only this owned, still-empty staging folder, never a workbook
+        # or a published bundle. Keep If-Match on every attempt.
+        for attempt in range(3):
+            remote = self._get_item_by_path(temporary_path)
+            if remote is None:
+                raise GraphStorageError("A pasta temporária ainda não pôde ser confirmada.")
+            self._require_folder(remote, temporary_name, expected_id=owner["id"])
+            if not remote.get("eTag"):
+                raise GraphStorageError("A versão da pasta temporária ainda não pôde ser confirmada.")
+            if self._list_children(str(remote["id"])):
+                raise GraphConflictError("A pasta temporária remota contém ficheiros inesperados.")
+            try:
+                response = self._graph_bytes(
+                    "PATCH", f"/drives/{self.config.drive_id}/items/{parse.quote(str(remote['id']), safe='')}",
+                    data=json.dumps({"name": bundle_dir.name,
+                        "@microsoft.graph.conflictBehavior": "fail"}).encode("utf-8"),
+                    content_type="application/json", headers={"If-Match": str(remote["eTag"])},
+                )
+            except GraphConflictError as exc:
+                if exc.status_code != 412:
+                    raise
+                if attempt == 2:
+                    raise GraphStorageError(
+                        "A pasta temporária ainda está a estabilizar no SharePoint; "
+                        "a publicação será repetida."
+                    ) from exc
+                continue
+            renamed = json.loads(response) if response else {}
+            if renamed.get("id") != owner["id"]:
+                raise GraphStorageError("A mudança de nome da pasta remota não foi confirmada.")
+            return renamed
+        raise GraphStorageError("A mudança de nome da pasta remota não foi confirmada.")
 
     def assert_active_entry_current(self, local_source_path: Path) -> dict[str, Any]:
         """Verify that the cached active item still has the Graph eTag that was read."""
@@ -414,14 +730,76 @@ class GraphStorageService:
         value = str(payload.get("eTag") or "").strip()
         return value or None
 
-    def ensure_folder_path(self, folder_path: str) -> None:
-        current = ""
+    def ensure_folder_path(self, folder_path: str) -> dict[str, Any]:
+        """Ensure shared roots only; each child is addressed by its parent ID.
+
+        A concurrent creator may supply a shared root, but never replace it.
+        Operation-owned bundles use _create_owned_folder instead. Descendants
+        of an owned bundle must start from its proven ID, not recreate its path.
+        """
+        parent = None
+        item = None
         for segment in [part for part in folder_path.strip("/").split("/") if part]:
-            parent = current
-            current = self._join_graph_path(current, segment)
-            if self._path_exists(current):
-                continue
-            self._create_folder(parent, segment)
+            item = self._ensure_child_folder(parent, segment)
+            parent = item["id"]
+        if item is None:
+            item = self._graph_json("GET", f"/drives/{self.config.drive_id}/root")
+            self._require_folder(item)
+        return item
+
+    def _require_folder(self, item: dict[str, Any], name: str | None = None, *,
+                        expected_id: str | None = None, parent_id: str | None = None,
+                        shared_name: bool = False) -> None:
+        actual_name = item.get("name") if isinstance(item, dict) else None
+        matches_name = name is None or actual_name == name
+        if shared_name and name is not None and isinstance(actual_name, str):
+            # Graph paths are case-insensitive but return stored capitalization.
+            # Only shared path segments use this comparison; operation names,
+            # opaque IDs and all version preconditions remain exact.
+            matches_name = (unicodedata.normalize("NFC", actual_name).casefold()
+                            == unicodedata.normalize("NFC", name).casefold())
+        if (not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"].strip()
+                or not isinstance(item.get("folder"), dict) or any(key in item for key in ("file", "remoteItem", "deleted"))
+                or not matches_name
+                or (expected_id is not None and item["id"] != expected_id)):
+            raise GraphConflictError("O destino remoto não é a pasta esperada; foi preservado.")
+        # The ID-based endpoint establishes the parent. Reject contradictory
+        # provider metadata as well; parentReference is optional in Graph.
+        reference = item.get("parentReference") or {}
+        if (not isinstance(reference, dict)
+                or (reference.get("driveId") and reference["driveId"] != self.config.drive_id)
+                or (parent_id and reference.get("id") and reference["id"] != parent_id)):
+            raise GraphConflictError("A pasta remota pertence a outro destino; foi preservada.")
+
+    def _ensure_child_folder(self, parent_id: str | None, name: str) -> dict[str, Any]:
+        target = (f"/drives/{self.config.drive_id}/items/{parse.quote(parent_id, safe='')}"
+                  if parent_id else f"/drives/{self.config.drive_id}/root")
+        def read():
+            try:
+                return self._graph_json("GET", f"{target}:/{self._quote_path(name)}:")
+            except GraphStorageError as exc:
+                if "HTTP 404" in str(exc):
+                    return None
+                raise
+        item = read()
+        if item is not None:
+            self._require_folder(item, name, parent_id=parent_id, shared_name=True)
+            return item
+        created_id = None
+        try:
+            created = self._create_folder(parent_id, name)
+            self._require_folder(created, name, parent_id=parent_id, shared_name=True)
+            created_id = created["id"]
+        except GraphConflictError as exc:
+            if exc.status_code != 409:
+                raise
+        # Never replace on 409. Re-read even a successful POST, checking the ID
+        # it returned, before allowing callers to write within the folder.
+        item = read()
+        if item is None:
+            raise GraphStorageError("A pasta remota ainda não pôde ser confirmada.")
+        self._require_folder(item, name, expected_id=created_id, parent_id=parent_id, shared_name=True)
+        return item
 
     def upload_file(
         self,
@@ -429,14 +807,20 @@ class GraphStorageService:
         remote_path: str,
         *,
         expected_etag: str | None = None,
+        create_only: bool = False,
+        parent_item_id: str | None = None,
     ) -> dict[str, Any]:
         content_type = mimetypes.guess_type(local_file.name)[0] or "application/octet-stream"
+        target = (f"/drives/{self.config.drive_id}/items/{parse.quote(parent_item_id, safe='')}:/{self._quote_path(local_file.name)}:/content"
+                  if parent_item_id else f"/drives/{self.config.drive_id}/root:/{self._quote_path(remote_path)}:/content")
+        if create_only:
+            target += "?@microsoft.graph.conflictBehavior=fail"
         content = self._graph_bytes(
             "PUT",
-            f"/drives/{self.config.drive_id}/root:/{self._quote_path(remote_path)}:/content",
+            target,
             data=local_file.read_bytes(),
             content_type=content_type,
-            headers={"If-Match": expected_etag} if expected_etag else None,
+            headers={"If-None-Match": "*"} if create_only else ({"If-Match": expected_etag} if expected_etag else None),
         )
         try:
             return json.loads(content.decode("utf-8")) if content else {"name": local_file.name}
@@ -449,20 +833,66 @@ class GraphStorageService:
         self._clear_archived_marker(local_path)
 
         if self._is_cache_current(local_path, meta_path, item):
+            diagnostic("active_cache_file", **file_fields(local_path.name), action="reused")
             return local_path
 
+        diagnostic("active_cache_file", **file_fields(local_path.name), action="download_started",
+                   local_exists=local_path.exists())
         self.download_item(str(item["id"]), local_path)
         self._write_item_meta(meta_path, item)
+        diagnostic("active_cache_file", **file_fields(local_path.name), action="download_completed")
         return local_path
 
-    def _sync_active_bundle(self, folder_item: dict[str, Any], local_active_dir: Path) -> Path | None:
+    def _sync_active_bundle(
+        self, folder_item: dict[str, Any], local_active_dir: Path,
+        *, children: list[dict[str, Any]] | None = None,
+    ) -> Path | None:
         folder_name = self._safe_file_name(str(folder_item.get("name") or ""))
-        children = self._list_children(str(folder_item["id"]))
-        excel_items = [item for item in children if self._is_excel_item(item)]
-        if not excel_items:
+        local_dir = local_active_dir / folder_name
+        try:
+            with bundle_guard(local_dir):
+                if children is None:
+                    children = self._list_children(str(folder_item["id"]))
+                children = self._valid_inventory_items(children)
+                if self._clean_remote_dirty_markers(children, local_dir):
+                    refreshed = self._get_item_by_path(
+                        self._join_graph_path(self.config.active_path, folder_name)
+                    )
+                    if (not refreshed or refreshed.get("id") != folder_item.get("id")
+                            or not refreshed.get("eTag")):
+                        raise GraphStorageError("Pasta remota alterada durante a limpeza; volte a atualizar.")
+                    # The new folder baseline must PRECEDE its child snapshot.
+                    # Never stamp a newer folder eTag onto pre-cleanup contents.
+                    children = self._valid_inventory_items(self._list_children(str(refreshed["id"])))
+                    folder_item = refreshed
+                if dirty_version(local_dir):
+                    diagnostic("active_cache_skipped", **file_fields(folder_name), reason="local_changes")
+                    return next(iter(local_dir.glob("*.xlsx")), None)
+                return self._sync_active_bundle_unlocked(folder_item, local_active_dir, children=children)
+        except FileMutexBusy:
+            diagnostic("active_cache_skipped", **file_fields(folder_name), reason="bundle_busy")
             return None
 
+    def _sync_active_bundle_unlocked(
+        self, folder_item: dict[str, Any], local_active_dir: Path,
+        *, children: list[dict[str, Any]] | None = None,
+    ) -> Path | None:
+        folder_name = self._safe_file_name(str(folder_item.get("name") or ""))
+        if children is None:
+            children = self._list_children(str(folder_item["id"]))
+        children = [
+            item for item in self._valid_inventory_items(children)
+            if not self._is_graph_metadata_file(Path(str(item.get("name") or "")))
+        ]
+        excel_items = [item for item in children if self._is_excel_item(item)]
         local_dir = local_active_dir / folder_name
+        remote_excel_names = {
+            self._safe_file_name(str(item.get("name") or "")) for item in excel_items
+        }
+        if not excel_items:
+            self._remove_stale_bundle_workbooks(local_dir, remote_excel_names)
+            return None
+
         local_dir.mkdir(parents=True, exist_ok=True)
         self._clear_archived_marker(local_dir)
         downloaded_excel: Path | None = None
@@ -481,22 +911,86 @@ class GraphStorageService:
             local_path = local_dir / child_name
             meta_path = local_path.with_name(f"{local_path.name}.graph.json")
             if not self._is_cache_current(local_path, meta_path, child):
+                diagnostic("active_cache_file", **file_fields(local_path.name), action="download_started")
                 self.download_item(str(child["id"]), local_path)
                 self._write_item_meta(meta_path, child)
+                diagnostic("active_cache_file", **file_fields(local_path.name), action="download_completed")
+            elif self._is_excel_item(child):
+                diagnostic("active_cache_file", **file_fields(local_path.name), action="reused")
 
             if self._is_excel_item(child) and downloaded_excel is None:
                 downloaded_excel = local_path
 
+        self._remove_stale_bundle_workbooks(local_dir, remote_excel_names)
+        # A complete listing proves which sidecar signatures still exist remotely.
+        # Remove stale cached signatures too, rather than resurrecting them locally.
+        remote_child_names = {str(child.get("name") or "") for child in children if child.get("file")}
+        for excel in excel_items:
+            for suffix in ALL_SIGNATURE_FIELD_TO_SUFFIX.values():
+                signature = local_dir / f"{Path(str(excel['name'])).stem}__assinatura_{suffix}.png"
+                if signature.name not in remote_child_names:
+                    signature.unlink(missing_ok=True)
+                    self._item_meta_path(signature).unlink(missing_ok=True)
         self._write_bundle_meta(local_dir, folder_item)
         return downloaded_excel
 
+    def _clean_remote_dirty_markers(self, children: list[dict[str, Any]], local_dir: Path) -> bool:
+        """Remove only leaked local dirty markers, with conditional remote deletes."""
+        removed = False
+        for child in children:
+            name = str(child.get("name") or "")
+            if name not in {DIRTY_MARKER, DIRTY_MARKER + ".tmp"} or not child.get("file"):
+                continue
+            marker = local_dir / DIRTY_MARKER
+            imported_meta = self._item_meta_path(marker)
+            try:
+                # Old sync versions downloaded the marker with this sidecar.
+                # Matching bytes prove it is the imported token, not a new edit.
+                if name == DIRTY_MARKER and imported_meta.is_file() and marker.is_file():
+                    remote_bytes = self._graph_bytes(
+                        "GET", f"/drives/{self.config.drive_id}/items/{child['id']}/content"
+                    )
+                    if marker.read_bytes() == remote_bytes:
+                        marker.unlink()
+                        imported_meta.unlink(missing_ok=True)
+                if dirty_version(local_dir):
+                    diagnostic("graph_legacy_marker_cleanup_deferred", level=logging.WARNING,
+                               graph_item_ref=fingerprint(child.get("id", "")), reason="local_changes")
+                    continue
+                etag = str(child.get("eTag") or "")
+                if not etag:
+                    raise GraphStorageError("Marcador remoto sem versão; limpeza adiada.")
+                self._delete_item_by_id(str(child["id"]), expected_etag=etag)
+                removed = True
+                diagnostic("graph_legacy_marker_removed", graph_item_ref=fingerprint(child["id"]))
+            except (GraphStorageError, OSError):
+                # A marker must neither poison the cache nor stop valid downloads.
+                diagnostic("graph_legacy_marker_cleanup_deferred", level=logging.WARNING,
+                           graph_item_ref=fingerprint(child.get("id", "")))
+        return removed
+
+    def _remove_stale_bundle_workbooks(self, local_dir: Path, remote_names: set[str]) -> None:
+        """Base cache housekeeping must never erase a draft's retained work."""
+        if DRAFT_FOLDER_RE.match(local_dir.name):
+            return
+        for meta_path in local_dir.glob("*.graph.json"):
+            owner = self._metadata_owner_path(meta_path)
+            if owner is None or owner.suffix.lower() not in EXCEL_SUFFIXES:
+                continue
+            if owner.name in remote_names:
+                continue
+            diagnostic("active_cache_reconcile", **file_fields(owner.name), reason="absent_from_remote_bundle")
+            self._remove_local_path(owner)
+            # Keep ownership metadata if a locked file could not be removed,
+            # so the next refresh can retry without treating it as a local file.
+            if not owner.exists():
+                self._remove_local_path(meta_path)
+
     def _list_children(self, item_id: str) -> list[dict[str, Any]]:
-        response = self._graph_json(
-            "GET",
+        return self._all_pages(
             f"/drives/{self.config.drive_id}/items/{item_id}/children"
             "?$select=id,name,size,lastModifiedDateTime,eTag,file,folder",
         )
-        return list(response.get("value") or [])
 
     def _access_token_value(self) -> str:
         self.validate_config()
@@ -571,6 +1065,7 @@ class GraphStorageService:
         headers: dict[str, str] | None = None,
         authenticated: bool = True,
     ) -> bytes:
+        self.provider_wait_store.require_ready(self.provider_scopes)
         request_headers = dict(headers or {})
         if authenticated:
             request_headers["Authorization"] = f"Bearer {self._access_token_value()}"
@@ -579,35 +1074,66 @@ class GraphStorageService:
         try:
             return self._open_request_with_retry(req, method)
         except error.HTTPError as exc:
+            if exc.code in {429, 503}:
+                try:
+                    token_url = TOKEN_URL_TEMPLATE.format(tenant_id=parse.quote(self.config.tenant_id))
+                    scope = self.provider_scopes[1 if url == token_url else 0]
+                    retry_after = exc.headers.get('Retry-After') if exc.headers else None
+                    unrecorded = False
+                    try:
+                        pause = self.provider_wait_store.record(scope, http_status=exc.code,
+                            retry_after=retry_after)
+                    except Exception:
+                        unrecorded = True
+                        pause = self.provider_wait_store.defer(scope, http_status=exc.code,
+                            retry_after=retry_after)
+                finally:
+                    exc.close()
+                problem = ProviderWaitError(pause)
+                problem.provider_deadline_unrecordable = unrecorded and pause['deadline'] is None
+                raise problem from exc
             detail = exc.read().decode("utf-8", errors="replace")
             if exc.code in {409, 412}:
                 raise GraphConflictError(
-                    "O ficheiro foi alterado no SharePoint por outro utilizador.") from exc
+                    "O ficheiro foi alterado no SharePoint por outro utilizador.",
+                    status_code=exc.code) from exc
             raise GraphStorageError(f"Microsoft Graph HTTP {exc.code}: {detail}") from exc
         except error.URLError as exc:
             raise GraphStorageError(f"Microsoft Graph indisponível: {exc}") from exc
 
-    @staticmethod
-    def _open_request_with_retry(req: request.Request, method: str) -> bytes:
-        attempts = 2 if method.upper() == "GET" else 1
+    def _open_request_with_retry(self, req: request.Request, method: str) -> bytes:
+        # Keep the historical instrumentation entry point, but never sleep in a
+        # request/worker to retry Graph. The durable scheduler owns the wait.
+        attempts = 1
 
         for attempt in range(attempts):
+            started = time.perf_counter()
+            http_status = None
+            error_type = None
+            response_headers = None
             try:
+                self.provider_wait_store.require_ready(self.provider_scopes)
                 with request.urlopen(req, timeout=60) as response:
+                    http_status = getattr(response, "status", 200)
+                    response_headers = getattr(response, "headers", None)
                     return response.read()
             except error.HTTPError as exc:
-                if exc.code not in {429, 503} or attempt + 1 >= attempts:
-                    raise
-
-                retry_after = exc.headers.get("Retry-After") if exc.headers else None
-                try:
-                    delay_seconds = float(retry_after) if retry_after is not None else 1.0
-                except (TypeError, ValueError):
-                    delay_seconds = 1.0
-                finally:
-                    exc.close()
-
-                time.sleep(max(0.0, min(delay_seconds, 5.0)))
+                http_status = exc.code
+                error_type = type(exc).__name__
+                response_headers = exc.headers
+                raise
+            except Exception as exc:
+                error_type = type(exc).__name__
+                raise
+            finally:
+                graph_request_id = response_headers.get("request-id", "") if response_headers else ""
+                # Never log arbitrary headers or a signed download URL.
+                if not re.fullmatch(r"[0-9a-fA-F-]{36}", graph_request_id):
+                    graph_request_id = None
+                diagnostic("graph_http_attempt", level=logging.INFO if SYNC_ID.get() else logging.DEBUG,
+                           method=method, attempt=attempt + 1, status_code=http_status,
+                           error_type=error_type, graph_request_id=graph_request_id,
+                           duration_ms=round((time.perf_counter() - started) * 1000, 2))
 
         raise GraphStorageError("Microsoft Graph indisponível após nova tentativa.")
 
@@ -625,19 +1151,19 @@ class GraphStorageService:
                 return None
             raise
 
-    def _create_folder(self, parent_path: str, folder_name: str) -> None:
+    def _create_folder(self, parent_item_id: str | None, folder_name: str) -> dict[str, Any]:
         body = json.dumps(
             {
                 "name": folder_name,
                 "folder": {},
-                "@microsoft.graph.conflictBehavior": "replace",
+                "@microsoft.graph.conflictBehavior": "fail",
             }
         ).encode("utf-8")
-        if parent_path:
-            path = f"/drives/{self.config.drive_id}/root:/{self._quote_path(parent_path)}:/children"
+        if parent_item_id:
+            path = f"/drives/{self.config.drive_id}/items/{parse.quote(parent_item_id, safe='')}/children"
         else:
             path = f"/drives/{self.config.drive_id}/root/children"
-        self._graph_json("POST", path, data=body, content_type="application/json")
+        return self._graph_json("POST", path, data=body, content_type="application/json")
 
     @staticmethod
     def _is_cache_current(local_path: Path, meta_path: Path, item: dict[str, Any]) -> bool:
@@ -645,17 +1171,17 @@ class GraphStorageService:
             return False
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return False
-        return (
-            meta.get("id") == item.get("id")
-            and meta.get("lastModifiedDateTime") == item.get("lastModifiedDateTime")
-            and int(meta.get("size") or 0) == int(item.get("size") or 0)
-            and (
-                not item.get("eTag")
-                or str(meta.get("eTag") or "") == str(item.get("eTag") or "")
+            return (
+                meta.get("id") == item.get("id")
+                and str(meta.get("lastModifiedDateTime") or "") == str(item.get("lastModifiedDateTime") or "")
+                and int(meta.get("size") or 0) == int(item.get("size") or 0)
+                and (
+                    not item.get("eTag")
+                    or str(meta.get("eTag") or "") == str(item.get("eTag") or "")
+                )
             )
-        )
+        except (OSError, ValueError, TypeError, AttributeError):
+            return False
 
     @staticmethod
     def _write_item_meta(meta_path: Path, item: dict[str, Any]) -> None:
@@ -667,6 +1193,7 @@ class GraphStorageService:
                 "size": int(item.get("size") or 0),
                 "lastModifiedDateTime": str(item.get("lastModifiedDateTime") or ""),
                 "eTag": str(item.get("eTag") or ""),
+                **({"local_publication": True} if item.get("_local_publication") else {}),
             },
         )
 
@@ -706,7 +1233,17 @@ class GraphStorageService:
                 json.dumps(payload, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            os.replace(str(temp_path), str(path))
+            # Windows readers can briefly deny replacement while the old
+            # snapshot is open. Retrying the same local atomic rename is safe;
+            # no remote request or partially written inventory is retried.
+            for attempt in range(8):
+                try:
+                    os.replace(str(temp_path), str(path))
+                    break
+                except PermissionError as exc:
+                    if getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 7:
+                        raise
+                    time.sleep(min(0.01 * (2 ** attempt), 0.1))
         finally:
             try:
                 temp_path.unlink()
@@ -715,6 +1252,10 @@ class GraphStorageService:
 
     def _remove_stale_active_cache(self, local_active_dir: Path, remote_names: set[str]) -> None:
         for item in list(local_active_dir.iterdir()):
+            # Inventory exclusion is sufficient. Retain whole draft bundles,
+            # including attachments and work referenced by pending operations.
+            if item.is_dir():
+                continue
             if self._is_graph_metadata_file(item):
                 self._remove_orphan_metadata(item, local_active_dir, remote_names)
                 continue
@@ -727,18 +1268,16 @@ class GraphStorageService:
                 continue
 
             if item.is_file() and item.with_name(f"{item.name}.graph.json").exists():
+                diagnostic("active_cache_reconcile", **file_fields(item.name), reason="absent_from_remote_active_list")
                 self._remove_local_path(item)
-                self._remove_local_path(item.with_name(f"{item.name}.graph.json"))
+                if not item.exists():
+                    self._remove_local_path(item.with_name(f"{item.name}.graph.json"))
                 continue
-
-            if item.is_dir() and (
-                (item / ".graph_bundle.json").exists()
-                or DRAFT_FOLDER_RE.match(item.name)
-            ):
-                self._remove_local_path(item)
 
     def _repair_active_cache(self, local_active_dir: Path) -> None:
         for item in list(local_active_dir.iterdir()):
+            if item.is_dir():
+                continue
             if self._is_graph_metadata_file(item):
                 owner = self._metadata_owner_path(item)
                 if owner is None or not owner.exists():
@@ -750,9 +1289,6 @@ class GraphStorageService:
                 if owner is None or not owner.exists():
                     self._remove_local_path(item)
                 continue
-
-            if item.is_dir() and DRAFT_FOLDER_RE.match(item.name):
-                self._repair_bundle_cache(item)
 
     def _repair_bundle_cache(self, bundle_dir: Path) -> None:
         excel_files = [
@@ -773,8 +1309,8 @@ class GraphStorageService:
             self._remove_local_path(item)
             return
 
-        if owner.parent == local_active_dir and owner.name not in remote_names:
-            self._remove_local_path(item)
+        # An existing owner's metadata must survive until the owner is removed.
+        # Directory enumeration may return this sidecar before the workbook.
 
     def _remove_orphan_archived_marker(self, item: Path, local_active_dir: Path, remote_names: set[str]) -> None:
         owner = self._archived_marker_owner_path(item)
@@ -787,15 +1323,20 @@ class GraphStorageService:
 
     @staticmethod
     def _remove_local_path(path: Path) -> None:
+        diagnostic("active_cache_removal", **file_fields(path.name), action="started")
         try:
             if path.is_dir():
                 shutil.rmtree(path, onerror=GraphStorageService._handle_remove_error)
             else:
                 GraphStorageService._unlink_local_file(path)
         except FileNotFoundError:
+            diagnostic("active_cache_removal", **file_fields(path.name), action="already_absent")
             return
-        except OSError:
+        except OSError as exc:
+            diagnostic("active_cache_removal", level=logging.WARNING, **file_fields(path.name),
+                       action="failed", error_type=type(exc).__name__)
             return
+        diagnostic("active_cache_removal", **file_fields(path.name), action="completed")
 
     @staticmethod
     def _unlink_local_file(path: Path) -> None:
@@ -826,7 +1367,12 @@ class GraphStorageService:
 
     @staticmethod
     def _is_graph_metadata_file(path: Path) -> bool:
-        return path.name.endswith(".graph.json") or path.name == ".graph_bundle.json"
+        return path.name.startswith(".fs-upload-") or path.name.endswith(".graph.json") or path.name in {
+            ".graph_bundle.json", DIRTY_MARKER, DIRTY_MARKER + ".tmp", ".fs-finalization.json",
+            ".fs-upload-owner.json",
+            ".fs-archive-owner.json",
+            REMOVALS_NAME,
+        }
 
     @staticmethod
     def _is_archived_marker(path: Path) -> bool:
@@ -881,8 +1427,10 @@ class GraphStorageService:
 
     @staticmethod
     def _safe_file_name(value: str) -> str:
-        safe = "".join(char for char in value if char not in '<>:"/\\|?*').strip()
-        if not safe:
+        safe = value.strip()
+        if not safe or safe != value or safe in {".", ".."} or safe.endswith(".") or any(
+            char in '<>:"/\\|?*' or ord(char) < 32 for char in safe
+        ):
             raise GraphStorageError("Nome de ficheiro Graph inválido.")
         return safe
 
@@ -900,6 +1448,8 @@ class GraphStorageService:
         remote_bundle: str,
         *,
         prune: bool = False,
+        archive_folder_id: str | None = None,
+        active_folder_id: str | None = None,
     ) -> list[str]:
         local_directory = bundle_dir / PHOTO_FOLDER_NAME
         remote_directory = self._join_graph_path(remote_bundle, PHOTO_FOLDER_NAME)
@@ -912,35 +1462,31 @@ class GraphStorageService:
             else []
         )
 
-        remote_item = self._get_item_by_path(remote_directory)
-        if local_files and remote_item is None:
-            self.ensure_folder_path(remote_directory)
-            remote_item = self._get_item_by_path(remote_directory)
+        parent_id = archive_folder_id or active_folder_id
+        remote_item = None
+        if local_files:
+            if not parent_id:
+                raise GraphConflictError("A pasta da operação não tem identidade confirmada.")
+            remote_item = self._ensure_child_folder(parent_id, PHOTO_FOLDER_NAME)
 
         uploaded: list[str] = []
         for local_file in local_files:
             remote_path = self._join_graph_path(remote_directory, local_file.name)
-            item = self.upload_file(
-                local_file,
-                remote_path,
-                expected_etag=self._expected_etag(local_file),
-            )
-            self._write_item_meta(self._item_meta_path(local_file), item)
+            if archive_folder_id:
+                if not remote_item or not remote_item.get("id"):
+                    raise GraphStorageError("A pasta de fotografias do arquivo não foi confirmada.")
+                item = self._upload_archive_file(local_file, remote_path, str(remote_item["id"]))
+            elif metadata(local_file).get("deleted"):
+                item = self.upload_file(local_file, remote_path, create_only=True, parent_item_id=str(remote_item["id"]))
+            else:
+                item = self.upload_file(local_file, remote_path, expected_etag=self._expected_etag(local_file),
+                                        parent_item_id=str(remote_item["id"]))
+            self._write_item_meta(self._item_meta_path(local_file), {**item, "_local_publication": True})
             uploaded.append(remote_path)
 
-        if prune and remote_item is not None:
-            local_names = {path.name for path in local_files}
-            for child in self._list_children(str(remote_item["id"])):
-                child_name = str(child.get("name") or "")
-                if (
-                    child.get("file")
-                    and PhotoAttachmentService.is_managed_filename(child_name)
-                    and child_name not in local_names
-                ):
-                    self._delete_item_by_id(
-                        str(child["id"]),
-                        expected_etag=str(child.get("eTag") or "") or None,
-                    )
+        # Keep the prune argument for callers, but deletion is now exclusively
+        # driven by the recorded intent in _apply_explicit_removals. Absence from
+        # an old local snapshot never authorizes deletion of a new remote photo.
 
         return uploaded
 
@@ -953,7 +1499,7 @@ class GraphStorageService:
         local_directory.mkdir(parents=True, exist_ok=True)
         remote_names: set[str] = set()
 
-        for child in self._list_children(str(folder_item["id"])):
+        for child in self._valid_inventory_items(self._list_children(str(folder_item["id"]))):
             child_name = self._safe_file_name(str(child.get("name") or ""))
             if (
                 not child.get("file")

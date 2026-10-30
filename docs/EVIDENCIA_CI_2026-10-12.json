@@ -1,0 +1,95 @@
+{
+  "date": "2026-10-12",
+  "tested_revision": "0869bfa810794d80dbde6494cd603f6a3d764597",
+  "run_url": "https://github.com/jribeiro146/Folhas-de-servi-o/actions/runs/38243794527",
+  "result": "success",
+  "source_sha256": "49a3dd6fcda4597be22b9d203590d21d8a2942755a88eed15397cdefc4048522",
+  "release_zip_sha256": "15705b9df70dbd07a86655b48d97321d50a6937fcf15f22619adab74249646e0",
+  "zip_platform_comparison": {
+    "cause": "Only newline translation of release-manifest.json differs on Windows",
+    "windows_zip_sha256": "618a768d477ab7fdce8309533dd7dc174aefc43b0c6c159d50e8c0350aebd92e",
+    "linux_zip_sha256": "15705b9df70dbd07a86655b48d97321d50a6937fcf15f22619adab74249646e0",
+    "comparison": "Changing only CRLF to LF in the manifest reproduces the exact SHA256 reported by both Linux runners; all other entry bytes and metadata retained."
+  },
+  "python_per_identity": {
+    "default": {
+      "uid_gid": "10001:10001",
+      "compose": "Docker Compose version v5.6.0",
+      "passed": 1094,
+      "failed": 0,
+      "skipped": 3,
+      "skip_reasons": [
+        "2 Windows UNC-only cases",
+        "1 Windows junction-only case"
+      ],
+      "critical_tests": {
+        "test_posix_database_permissions_are_preserved": "passed",
+        "test_backup_refuses_special_permission_bits": "passed",
+        "test_private_writes_keep_700_directories_and_600_files": "passed",
+        "test_production_finalization_keeps_sadi_only_in_private_app_folder": "passed"
+      },
+      "pdf": {
+        "status": "ok",
+        "pages": 2,
+        "uid": 10001,
+        "gid": 10001,
+        "sandbox_disabled": true
+      },
+      "acceptance": "PASS",
+      "image_id": "sha256:6b4f2d78175a2acade8e1be624fb6ac5199c52931be903925e79ccae978d4535",
+      "evidence_archive_sha256": "247ca7f80e51ac9c1bab390175f37836a34825bc327847f5be6d60199cda157a"
+    },
+    "hs4": {
+      "uid_gid": "100:101",
+      "compose": "Docker Compose version v2.27.0",
+      "passed": 1094,
+      "failed": 0,
+      "skipped": 3,
+      "skip_reasons": [
+        "2 Windows UNC-only cases",
+        "1 Windows junction-only case"
+      ],
+      "critical_tests": {
+        "test_posix_database_permissions_are_preserved": "passed",
+        "test_backup_refuses_special_permission_bits": "passed",
+        "test_private_writes_keep_700_directories_and_600_files": "passed",
+        "test_production_finalization_keeps_sadi_only_in_private_app_folder": "passed"
+      },
+      "pdf": {
+        "status": "ok",
+        "pages": 2,
+        "uid": 100,
+        "gid": 101,
+        "sandbox_disabled": true
+      },
+      "acceptance": "PASS",
+      "image_id": "sha256:378c23d647aa61d33b65f1f69a1496433833889f43a51dae93ee63853c9d8a72",
+      "evidence_archive_sha256": "8e643bafb3612bab55c90a5ff6000f22c3491ebe787bcb189143391208b01d44"
+    }
+  },
+  "javascript": {
+    "passed": 79,
+    "failed": 0,
+    "skipped": 0
+  },
+  "claude_review": {
+    "first": {
+      "id": "20261012T112630Z_38671394_87a3e4",
+      "verdict": "revise",
+      "finding": "Compose normalized JSON omits different boolean values in old and current versions"
+    },
+    "final": {
+      "id": "20261012T113416Z_0869bfa8_c55a93",
+      "verdict": "approve",
+      "findings": 0,
+      "missing_context": 0,
+      "check_exit": 0,
+      "packet_sha256": "bbaa056a3e4c92c966f91f6fa6e92cc67211d17bcaf511e0903363e2595342ac"
+    }
+  },
+  "limitations": [
+    "Synthetic isolated validation; no production operation or deployment.",
+    "Docker Engine 28.0.4 on GitHub Ubuntu; production reported 26.1.3 on AlmaLinux kernel 4.18. Installer must verify PDF and production integration.",
+    "One Windows SADI rename failed with WinError 5; group retest and both Linux suites passed without code changes. Cause remains unconfirmed."
+  ]
+}

@@ -16,6 +16,7 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from src.services.bundle_removals import record_removal, cancel_removal
 from typing import Iterable, Sequence
 
 
@@ -161,6 +162,7 @@ class PhotoAttachmentService:
                     continue
                 photo_path = self.directory / str(photo["filename"])
                 try:
+                    record_removal(self.excel_path.parent, photo_path)
                     self._unlink_if_present(photo_path)
                     self._unlink_if_present(
                         photo_path.with_name(f"{photo_path.name}.graph.json")
@@ -179,12 +181,14 @@ class PhotoAttachmentService:
         for photo in prepared:
             existing = existing_by_id.get(photo.id)
             if existing is not None and existing.exists():
+                cancel_removal(self.excel_path.parent, existing)
                 continue
             destination = self.directory / photo.filename
             temp_path = self.directory / f".{photo.filename}.{secrets.token_hex(6)}.tmp"
             try:
                 temp_path.write_bytes(photo.data)
                 os.replace(str(temp_path), str(destination))
+                cancel_removal(self.excel_path.parent, destination)
             finally:
                 self._unlink_if_present(temp_path)
 

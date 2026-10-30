@@ -1,0 +1,118 @@
+{
+  "date": "2026-10-16",
+  "status": "LOCAL_FINAL_PASS_WITH_UNRESOLVED_WINDOWS_INTERMITTENCY",
+  "production_ready": false,
+  "tested_commit": "5eee0607c1709e049cd322b8775fb0142106b9ba",
+  "source_sha256": "173dc0a9152267bc458d171237069adff97f169e6b9b01b4f5955bbe9ae0d8cf",
+  "source_files": 123,
+  "runtime_unchanged_since": "ebd65e40c421fb70191c5534b7999fc5e870ac03",
+  "final_commit_note": "Subsequent consolidation changes documentation only; delivery report and release-manifest identify the packaged commit.",
+  "results": {
+    "python": {
+      "passed": 1570,
+      "skipped": 4,
+      "failed": 0,
+      "seconds": 441.85,
+      "observer": "Passive logging of existing SADI ExcelFileLockedError; no altered result or suppressed error"
+    },
+    "javascript_passed": 205,
+    "chromium_integrated_groups": 29,
+    "sadi_pdf_groups": 5,
+    "pwa_groups": 6,
+    "pdf_pages_visually_checked": 8,
+    "manual": "PASS: one draft, reload, accented text, zero minutes, empty materials row and finalization; no mail"
+  },
+  "python_skips": [
+    {
+      "test": "tests.test_maintenance_access::test_private_writes_keep_700_directories_and_600_files",
+      "reason": "POSIX permissions verified by Linux CI"
+    },
+    {
+      "test": "tests.test_release_identity::test_broken_source_symlink_is_refused_instead_of_ignored",
+      "reason": "O sistema não permite criar symlinks neste ensaio."
+    },
+    {
+      "test": "tests.test_runtime_backup::test_backup_refuses_special_permission_bits",
+      "reason": "Bits especiais POSIX exigem ensaio Linux real."
+    },
+    {
+      "test": "tests.test_runtime_migration::test_posix_database_permissions_are_preserved",
+      "reason": "Real POSIX ownership/modes require Linux"
+    }
+  ],
+  "previous_results": [
+    {
+      "commit": "ebd65e40",
+      "passed": 1562,
+      "skipped": 4,
+      "failed": 8,
+      "diagnosis": "Six long-path errors; sandbox junction permission; nested-request context contamination in a synthetic test."
+    },
+    {
+      "commit": "5eee0607",
+      "passed": 1569,
+      "skipped": 4,
+      "failed": 1,
+      "test": "tests/test_maintenance.py::test_checklist_signature_exceptions_save_reopen_render_and_finalize[roles0]",
+      "diagnosis": "HTTP400 Excel lock message during finalization. Original operation and locking process not identified. Excel and two-site sidecar preserved."
+    }
+  ],
+  "lock_followup": {
+    "independent_processes": 10,
+    "passed": 10,
+    "root_cause_demonstrated": false,
+    "subsequent_full_suite_passed": true,
+    "no_new_sadi_lock_exception_captured": true
+  },
+  "limits": [
+    "Current Linux/Docker package not executed; prior CI predates F01-F03.",
+    "AlmaLinux destination, real configuration and provider delivery not verified.",
+    "Intermittent Windows Excel access refusal remains unexplained; passing retries do not establish a fix.",
+    "Historical Windows errors and in-app preview observation remain recorded.",
+    "Retention 90/180/365 days simulated only; no deletion policy chosen."
+  ],
+  "operational_actions": {
+    "git_push": false,
+    "deploy": false,
+    "real_email": false,
+    "real_teams": false,
+    "operational_graph_writes": false,
+    "production_config_changes": false
+  },
+  "review_note": "A valid independent final review/check is required separately. First invocation did not preserve a verdict due to temporary-directory access failure; no approval inferred.",
+  "evidence_directory": "qa-output/consolidacao-20261007/final-readiness-20261016",
+  "evidence_sha256": {
+    "python.txt": "a8086c464231c08026a0c2d0b3564e49ff731adbccb61950238c8ea561d5082b",
+    "python.xml": "9777016c380514038e5d253a16e87ff15771324d65862c7cbc1bc412755255b4",
+    "python-short-final.txt": "87f3586a809af7b6e3b94aa08f71ce8abffec6ef0155bca8d913777cc798374e",
+    "python-short-final.xml": "915d4d13ed9d9ded497489ac772ab58bd8663abc156d26dfd69c45150f74a410",
+    "python-observed-final.txt": "ded1792dcf5e932bf2f4f60bd29e760d12c1d52617b6d8373816768fbdeb306b",
+    "python-observed-final.xml": "d98afbc0d60db2bf060bc27cf08ff6f2875d8df06afa5ade5cc1c6393119997a",
+    "logging-pair-before.txt": "ceb9aac5a95664bd4f09dbab3215ea11c27a7a0c2edf532be6a7dba1242a8ee9",
+    "logging-pair-after.txt": "8283fe2e6698bb445f53538ce0b497d0c1caf4427391b59747e3fdf6f0a345fb",
+    "focused-short-path.txt": "851df423815091ceb7fc4ed6cea78d82c543f957c53b4aec8ef657ab19e52d29",
+    "windows-path-diagnostic.json": "d714293bc18bd25feb7f85edaf4db4d7bd7832f716999c89fe6e6cddeadfce6e",
+    "maintenance-lock-loop-results.json": "3a421532e463caa313a0e65c1e51961622b00a7ae6e668bd517c16dfc75d7ccc",
+    "javascript-final.txt": "11648b5e310f97b2fbaf711bbc0923bc31eae87de9783128f91c73e007880e2a",
+    "integrated-final.txt": "5b6a082cdc3e471953f48c6b4ad32bcd0104df719cafd27c931be31dc8638ebf",
+    "sadi-pdf-final.txt": "3ebcfedf2c55f823674f94c94f08bc6bc899bcd66d087255db9777d5c9f04725",
+    "pwa-final.txt": "8cb2ad8df20c51f1902ec6b25e859c99eaaeabce3045e3350acb2911fd3cb1d3",
+    "manual.json": "e5570d47c40ab55ced9cc6f3c3f3c3767c49688ae3982b7050491e2df461ad34",
+    "pdf-visual-final.json": "e1269bd8f4f8a5f1106f7f99e1405534172a2d8d67d5810e574cf9cd8833d7ca",
+    "windows-versions.json": "5d78189bd8aaac60d9e7d84e412bbabb841e72c433677693714f5007b2f40985"
+  },
+  "browser_outputs": {
+    "integrated": "output/playwright/m16-fst-02192cad/result.json",
+    "sadi": "output/pdf/m18-fst-6f940083/result.json"
+  },
+  "versions": {
+    "python": "3.13.1 (tags/v3.13.1:0671451, Dec  3 2024, 19:06:28) [MSC v.1942 64 bit (AMD64)]",
+    "packages": {
+      "Flask": "3.1.3",
+      "openpyxl": "3.1.5",
+      "Pillow": "12.1.1",
+      "pytest": "9.0.2",
+      "playwright": "1.61.0"
+    }
+  }
+}
